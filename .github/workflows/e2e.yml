@@ -744,7 +744,8 @@ jobs:
           LABEL="$(sudo jq -r .node_name /var/lib/veiltrium/report.json)"
           sudo grep -m1 '^vless://' /root/veiltrium/client.txt | grep -F "#${LABEL}" >/dev/null
           # the maintenance modes work on the moved node
-          sudo bash ./veiltrium.sh --diagnose > /tmp/diag.log 2>&1 || { cat /tmp/diag.log; exit 1; }
+          # (GLOBALPING=0: a CI runner is never reachable from Russia, which --diagnose rightly reports as a failure)
+          sudo env GLOBALPING=0 bash ./veiltrium.sh --diagnose > /tmp/diag.log 2>&1 || { cat /tmp/diag.log; exit 1; }
           sudo bash ./veiltrium.sh --list-clients --json - | jq -e '.clients | map(.name) == ["main", "anna"]'
           # a second run changes nothing and restarts nothing
           ALL="$KEYS /etc/hysteria/config.yaml /etc/trusttunnel/vpn.toml /etc/trusttunnel/hosts.toml
