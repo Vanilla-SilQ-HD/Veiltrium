@@ -688,7 +688,8 @@ jobs:
             /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/node.env /etc/trusttunnel/credentials.toml"
           keys0="$(sudo sha256sum $KEYS)"
           creds0="$(creds /root/hy2-client.txt /root/hy2-clients/anna.txt)"
-          state0="$(sudo cat /etc/hy2-secure/probe.env /etc/hy2-secure/node.env /etc/hy2-secure/clients/anna.env)"
+          state0="$(sudo cat /etc/hy2-secure/probe.env /etc/hy2-secure/clients/anna.env)"
+          name0="$(sudo grep '^N_NAME=' /etc/hy2-secure/node.env)"
           test "$(printf '%s\n' "$creds0" | grep -c .)" = 6      # three links each for main and anna
           sudo nft list table inet hy2fw >/dev/null
           # 1) a move cut off early (apt fails in step 2): the firewall file on disk must still load
@@ -716,12 +717,14 @@ jobs:
           grep -F 'run the installer once' /tmp/half.log >/dev/null || { cat /tmp/half.log; exit 1; }
           # 2) the move run to the end
           sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
-          grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null
+          grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null || { echo "the move did not run"; tail -60 /tmp/up.log; exit 1; }
           if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then exit 1; fi
-          # the same secrets and links
-          test "$keys0" = "$(sudo sha256sum $KEYS)"
-          test "$creds0" = "$(creds /root/veiltrium/client.txt /root/veiltrium/clients/anna.txt)"
-          test "$state0" = "$(sudo cat /etc/veiltrium/probe.env /etc/veiltrium/node.env /etc/veiltrium/clients/anna.env)"
+          # the same secrets and links (the node name file only gains the GLOBALPING setting)
+          [ "$keys0" = "$(sudo sha256sum $KEYS)" ] || { echo "keys or configs changed:"; diff <(echo "$keys0") <(sudo sha256sum $KEYS); exit 1; }
+          creds1="$(creds /root/veiltrium/client.txt /root/veiltrium/clients/anna.txt)"
+          [ "$creds0" = "$creds1" ] || { echo "links changed"; diff <(echo "$creds0") <(echo "$creds1") | sed -E 's/[0-9a-f]{20,}/<secret>/g'; exit 1; }
+          [ "$state0" = "$(sudo cat /etc/veiltrium/probe.env /etc/veiltrium/clients/anna.env)" ] || { echo "probe key or client state changed"; exit 1; }
+          sudo grep -x "$name0" /etc/veiltrium/node.env >/dev/null || { echo "node name lost"; sudo cat /etc/veiltrium/node.env; exit 1; }
           # nothing of the old names is left
           for f in /etc/hy2-secure /var/lib/hy2-secure /root/hy2-client.txt /root/hy2-probe.env /root/hy2-clients \
                    /etc/systemd/system/hy2-scanner-block.timer /etc/systemd/system/hy2-secure-recover.service \
