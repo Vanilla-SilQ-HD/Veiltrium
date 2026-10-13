@@ -1,0 +1,28 @@
+name: Veiltrium fast checks
+# Veiltrium FAST: syntax, lint, BusyBox, unit tests, HMAC agreement. Seconds, on every push.
+# The full end-to-end suite is e2e.yml (manual on all branches, including main).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get -q update >/dev/null
+          sudo apt-get -q install -y busybox jq shellcheck >/dev/null
+          shellcheck --version | head -2; busybox | head -1; jq --version
+      - name: Fast checks
+        run: bash tests/fast.sh
