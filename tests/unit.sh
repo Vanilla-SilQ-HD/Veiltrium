@@ -281,5 +281,30 @@ check "$(awk '/^\{/{n++} n==1{print} n==1&&/^\}/{exit}' "${TMPD}/d-legacy.txt" |
     "details of a node with one shared password: the plain password"
 check "$(grep -c '^tt://' "${TMPD}/d-legacy.txt")" 0 "details without TrustTunnel: no tt:// link"
 
+# ---- machine interface for the panel: JSON documents ----------------------------
+H_AUTH=userpass; PUBLIC_IP=192.0.2.1
+client_json a_y "tt://?AAAA" > "${TMPD}/cj.json"
+check "$(jq -r '.schema + " " + .name + " " + (.main | tostring) + " " + .created' "${TMPD}/cj.json")" \
+    "veiltrium-client/1 a_y false 2026-10-13" "client JSON: name, not main, creation date"
+check "$(jq -r '.hysteria2.auth' "${TMPD}/cj.json")" "a_y:$(printf 'a%.0s' {1..48})" "client JSON: Hysteria auth user:password"
+check "$(jq -r '.hysteria2.link' "${TMPD}/cj.json")" "$(hy2_link a_y "$(printf 'a%.0s' {1..48})")" "client JSON: the same hysteria2 link as the text file"
+check "$(jq -r '.vless.link' "${TMPD}/cj.json")" "$(grep -m1 '^vless://' "${TMPD}/d-a_y.txt")" "client JSON: the same vless link as the text file"
+check "$(jq -c '.hysteria2.awg_group[0] | [.tag, .tls.certificate_public_key_sha256[0], (.tls.insecure // false)]' "${TMPD}/cj.json")" \
+    "[\"Veiltrium\",\"${PK_SHA}\",false]" "client JSON: AWG group keeps the key pinning"
+check "$(jq -c '[.hysteria2.outbound.tls.insecure, .vless.outbound.uuid, .trusttunnel.link]' "${TMPD}/cj.json")" \
+    '[false,"11111111-2222-4333-8444-555555555552","tt://?AAAA"]' "client JSON: sing-box outbounds and the tt:// link"
+check "$(client_json main "" | jq -r '[.main, .created, .trusttunnel, .hysteria2.auth] | map(tostring) | join(" ")')" \
+    "true null null main:${H_PASSWORD}" "client JSON of main: no date, no TrustTunnel when there is no link"
+R_SITE=""; check "$(client_json main "" | jq -r '.vless')" null "client JSON without Reality: vless is null"; R_SITE=www.example.com
+check "$(clients_json | jq -c '[.schema, .hysteria_auth, (.clients | map(.name)), .clients[0].main, .clients[1].created]')" \
+    '["veiltrium-clients/1","userpass",["main","a-z","a_y","b-x"],true,"2026-10-13"]' "clients JSON: main first, then the added ones"
+if clients_json | grep -F "$(printf 'a%.0s' {1..48})" >/dev/null; then check leak none "clients JSON has no secrets"; else check ok ok "clients JSON has no secrets"; fi
+exec 8>"${TMPD}/fd8.json"; JSON_OUT="-"; printf '{"a":1}' | json_emit; exec 8>&-
+check "$(cat "${TMPD}/fd8.json")" '{"a":1}' "--json -: the document goes to stdout (fd 8)"
+JSON_OUT="${TMPD}/out.json"; printf '{"b":2}' | json_emit; JSON_OUT=""
+check "$(cat "${TMPD}/out.json")" '{"b":2}' "--json FILE: the document goes to the file"
+check "$(VEILTRIUM_PROGRESS=1 step_mark write 2>&1)" "::step write" "progress markers only when asked"
+check "$(step_mark write 2>&1)" "" "no progress markers by default"
+
 if (( FAIL )); then echo "UNIT TESTS FAILED"; exit 1; fi
 echo "all unit tests passed"

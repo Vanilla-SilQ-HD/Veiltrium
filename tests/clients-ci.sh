@@ -151,6 +151,20 @@ expect "main: hysteria2 link"           "$(hy_case "$H_MAIN")"        204
 expect "main: TrustTunnel"              "$(tt_case "$T_U" "$T_P")"    204
 test "$(tt_fields "$(sudo grep -m1 '^tt://' "$MAIN")")" = "${T_U} ${LABEL}"
 
+# ---- machine interface for the panel ---------------------------------------------------
+sudo bash ./hy2-secure-install.sh --status --json - > "$W/status.json" 2> "$W/status.err"
+jq -e --arg l "$LABEL" '.schema == "veiltrium-status/1" and .node_name == $l and .services.xray == "active"
+    and .clients.added == 1 and .hysteria2.port == 443 and (.reality.sni | length) > 0' "$W/status.json"
+sudo bash ./hy2-secure-install.sh --list-clients --json - > "$W/clients.json"
+jq -e '.clients | map(.name) == ["main", "anna"]' "$W/clients.json"
+if grep -F "$A_HP" "$W/clients.json" "$W/status.json"; then echo "a secret in a JSON overview"; exit 1; fi
+sudo bash ./hy2-secure-install.sh --show-client anna --json - > "$W/anna.json"
+jq -e --arg h "$A_H" --arg v "$A_V" --arg t "$A_T" \
+    '.hysteria2.link == $h and .vless.link == $v and .trusttunnel.link == $t and .hysteria2.awg_group[0].tag == "Veiltrium"' "$W/anna.json"
+jq '.hysteria2.awg_group[0]' "$W/anna.json" > "$W/a6j.json"
+expect "anna: AWG group JSON from --show-client --json" "$(sb_case "$W/a6j.json")" 204
+if sudo bash ./hy2-secure-install.sh --show-client ../anna --json - > /dev/null 2>&1; then echo "a path as a client name"; exit 1; fi
+
 # ---- a plain re-run with clients changes nothing ---------------------------------------
 KEEP="/etc/hysteria/config.yaml /etc/hysteria/node.env /usr/local/etc/xray/config.json
   /etc/trusttunnel/credentials.toml /etc/hy2-secure/clients/anna.env /etc/hy2-secure/node.env"
@@ -179,7 +193,10 @@ systemctl is-active hysteria-server xray trusttunnel
 expect "anna after the rollback: hysteria2" "$(hy_case "$A_H")" 204
 
 # ---- remove: the credentials stop working at once -----------------------------------------
-inst --remove-client anna > "$W/rm.log" 2>&1 || { cat "$W/rm.log"; exit 1; }
+sudo env NEEDRESTART_SUSPEND=1 VEILTRIUM_PROGRESS=1 bash ./hy2-secure-install.sh --remove-client anna --json - \
+    > "$W/rm.json" 2> "$W/rm.log" || { cat "$W/rm.log"; exit 1; }
+jq -e '.ok == true and .action == "remove" and .name == "anna" and .main_hysteria_link_changed == false' "$W/rm.json"
+test "$(grep '^::step ' "$W/rm.log" | cut -d' ' -f2 | tr '\n' ' ')" = "write restart check-hysteria check-reality check-trusttunnel commit finished "
 grep -F 'Client anna removed' "$W/rm.log" >/dev/null
 sudo jq -e '.clients.added == 0' /var/lib/hy2-secure/report.json
 sudo test ! -e /etc/hy2-secure/clients/anna.env

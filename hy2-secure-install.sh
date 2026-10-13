@@ -48,6 +48,7 @@
 #    bash hy2-secure-install.sh --remove-client NAME   revoke a client
 #    bash hy2-secure-install.sh --list-clients      the clients of this node
 #    bash hy2-secure-install.sh --show-client NAME  connection details of a client (main: the first one)
+#    bash hy2-secure-install.sh --status --json -   a fast overview as JSON (no tests, no secrets)
 #    bash hy2-secure-install.sh --help
 #
 #  To regenerate everything:  HY2_RECONFIGURE=1 bash hy2-secure-install.sh
@@ -1481,21 +1482,36 @@ tt_checks() {
 }
 
 # ---- Connection details of the clients --------------------------------------
+# Credentials of client $1 ("main" or an added one). Sets CC_USER (empty with one shared
+# Hysteria password), CC_PASS, CC_AUTH (the Hysteria auth string), CC_UUID, CC_CREATED.
+client_creds() {
+    local i
+    CC_USER=""; CC_CREATED=""
+    if [[ "$1" == "main" ]]; then
+        CC_PASS="${H_PASSWORD}"; CC_UUID="${R_UUID}"
+        if [[ "${H_AUTH}" == "userpass" ]]; then CC_USER="main"; fi
+    else
+        i="$(client_index "$1")"
+        [[ -n "${i}" ]] || die "no client $1."
+        CC_USER="$1"; CC_PASS="${CL_HPASS[i]}"; CC_UUID="${CL_UUID[i]}"; CC_CREATED="${CL_CREATED[i]}"
+    fi
+    CC_AUTH="${CC_PASS}"
+    if [[ -n "${CC_USER}" ]]; then CC_AUTH="${CC_USER}:${CC_PASS}"; fi
+    return 0
+}
+
+vless_link() {   # $1 = UUID
+    printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp#%s' \
+        "$1" "${HOST}" "${REALITY_PORT}" "${R_SITE}" "${REALITY_FP}" "${R_PUB}" "${R_SID}" "$(url_encode "${LABEL}")"
+}
+
 # Globals: HOST, HY2_PORT, HY2_SNI, CERT_SHA, PK_SHA, H_AUTH, H_PASSWORD, R_* (R_SITE
 # empty: no Reality), REALITY_PORT, REALITY_FP, T_SNI, TT_PORT, LABEL, the clients.
 # $1 = client ("main" or an added one), $2 = its tt:// link ("" = none), $3 = its file.
 client_details() {
-    local name="$1" tt="$2" file="$3" i hy_user="" hy_pass uuid auth jauth reality_text="" tt_text="" foot
-    if [[ "${name}" == "main" ]]; then
-        hy_pass="${H_PASSWORD}"; uuid="${R_UUID}"
-        if [[ "${H_AUTH}" == "userpass" ]]; then hy_user="main"; fi
-    else
-        i="$(client_index "${name}")"
-        [[ -n "${i}" ]] || die "no client ${name}."
-        hy_user="${name}"; hy_pass="${CL_HPASS[i]}"; uuid="${CL_UUID[i]}"
-    fi
-    auth="${hy_pass}"
-    if [[ -n "${hy_user}" ]]; then auth="${hy_user}:${hy_pass}"; fi
+    local name="$1" tt="$2" file="$3" hy_user hy_pass uuid auth jauth reality_text="" tt_text="" foot
+    client_creds "${name}"
+    hy_user="${CC_USER}"; hy_pass="${CC_PASS}"; uuid="${CC_UUID}"; auth="${CC_AUTH}"
     jauth="$(json_escape "${auth}")"
     if [[ -n "${R_SITE}" ]]; then   # also when the previous settings were restored: the link stays in the file
         reality_text="$(cat <<EOF
@@ -1506,7 +1522,7 @@ Port: ${REALITY_PORT}/TCP. A prober without the key sees the real site ${R_SITE}
 If the site ever changes (--reselect-reality), only sni / server_name changes.
 
 3) VLESS Reality link (v2rayN, Hiddify, NekoBox, v2rayNG, sing-box, AWG Manager):
-vless://${uuid}@${HOST}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${R_SITE}&fp=${REALITY_FP}&pbk=${R_PUB}&sid=${R_SID}&type=tcp#$(url_encode "${LABEL}")
+$(vless_link "${uuid}")
 
 4) VLESS Reality outbound for sing-box (router):
 {
@@ -1665,6 +1681,89 @@ write_probe_profile() {
     mv -f "${PROBE_PROFILE}.new" "${PROBE_PROFILE}"
 }
 
+# ---- Machine interface (--json -: JSON on stdout, for the panel) ------------
+# With "--json -" the human output goes to stderr and the JSON document to fd 8 (stdout).
+json_emit() {
+    if [[ "${JSON_OUT}" == "-" ]]; then cat >&8; else cat > "${JSON_OUT}"; fi
+}
+
+# Machine-readable progress of a client change (VEILTRIUM_PROGRESS=1), on stderr.
+step_mark() {
+    if [[ "${VEILTRIUM_PROGRESS:-0}" == "1" ]]; then printf '::step %s\n' "$1" >&2; fi
+    return 0
+}
+
+# Connection details of client $1 as JSON; secrets included (root and the panel only).
+# $2 = its tt:// link ("" = none).
+client_json() {
+    local vless=""
+    client_creds "$1"
+    if [[ -n "${R_SITE}" ]]; then vless="$(vless_link "${CC_UUID}")"; fi
+    jq -n --arg name "$1" --arg created "${CC_CREATED}" --arg label "${LABEL}" --arg server "${HOST}" \
+        --arg hy_link "$(hy2_link "${CC_USER}" "${CC_PASS}")" --arg auth "${CC_AUTH}" --arg hy_sni "${HY2_SNI}" \
+        --argjson hy_port "${HY2_PORT}" --arg pk "${PK_SHA}" --arg cert "${CERT_SHA}" \
+        --arg vless "${vless}" --arg uuid "${CC_UUID}" --arg r_site "${R_SITE}" --argjson r_port "${REALITY_PORT}" \
+        --arg fp "${REALITY_FP}" --arg pbk "${R_PUB}" --arg sid "${R_SID}" --arg tt "$2" '
+        {schema: "veiltrium-client/1", name: $name, main: ($name == "main"),
+         created: (if $created == "" then null else $created end), node_name: $label, server: $server,
+         hysteria2: {link: $hy_link, auth: $auth, sni: $hy_sni, port: $hy_port, pin_sha256: $cert,
+           outbound: {type: "hysteria2", tag: "hy2", server: $server, server_port: $hy_port, password: $auth,
+             tls: {enabled: true, server_name: $hy_sni, insecure: false, certificate_public_key_sha256: [$pk]}},
+           awg_group: [{type: "hysteria2", tag: "Veiltrium", server: $server, server_port: $hy_port, password: $auth,
+             tls: {enabled: true, server_name: $hy_sni, certificate_public_key_sha256: [$pk]}}]},
+         vless: (if $vless == "" then null else {link: $vless, sni: $r_site, port: $r_port,
+           outbound: {type: "vless", tag: "reality", server: $server, server_port: $r_port, uuid: $uuid,
+             flow: "xtls-rprx-vision", tls: {enabled: true, server_name: $r_site,
+               utls: {enabled: true, fingerprint: $fp},
+               reality: {enabled: true, public_key: $pbk, short_id: $sid}}}} end),
+         trusttunnel: (if $tt == "" then null else {link: $tt} end)}'
+}
+
+# The clients of the node as JSON (no secrets).
+clients_json() {
+    local i
+    {
+        printf 'main\t\n'
+        for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do printf '%s\t%s\n' "${CL_NAMES[i]}" "${CL_CREATED[i]}"; done
+    } | jq -R -s --arg label "${LABEL}" --arg server "${PUBLIC_IP}" --arg auth "${H_AUTH}" '
+        split("\n") | map(select(length > 0) | split("\t")) |
+        {schema: "veiltrium-clients/1", node_name: $label, server: $server, hysteria_auth: $auth,
+         clients: map({name: .[0], main: (.[0] == "main"), created: (if (.[1] // "") == "" then null else .[1] end)})}'
+}
+
+# A fast overview of the node: no network tests, no secrets.
+status_json() {
+    local svc st="" vh vx vt os report n
+    for svc in hysteria-server xray trusttunnel; do
+        st+="${svc}=$(systemctl is-active "${svc}" 2>/dev/null || true)"$'\n'
+    done
+    vh="$("${HY2_BIN}" version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+    vx="$("${XRAY_BIN}" version 2>/dev/null | awk 'NR == 1 { print "v" $2 }' || true)"
+    vt="$("${TT_BIN}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+    os="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}" || true)"
+    report="$(jq -c '{generated_at, mode, reality: .reality.vps, hysteria2: .hysteria2.vps,
+        trusttunnel_h2: .trusttunnel.h2.vps, trusttunnel_h3: .trusttunnel.h3.vps}' "${REPORT_FILE}" 2>/dev/null || true)"
+    n="$(count_clients)"
+    jq -n --arg now "$(date -u +%FT%TZ)" --arg version "${SCRIPT_VERSION}" --arg label "${LABEL}" \
+        --arg server "${PUBLIC_IP}" --arg os "${os}" --arg uptime "$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)" \
+        --arg reboot "$([[ -f /run/reboot-required ]] && echo 1 || echo 0)" --arg st "${st}" \
+        --arg vh "${vh}" --arg vx "${vx}" --arg vt "${vt:+v${vt}}" --arg n "${n}" --arg h_auth "${H_AUTH}" \
+        --arg r_site "${R_SITE}" --arg r_port "${REALITY_PORT}" --arg r_mts "$(mts_status reality "${R_SITE:-none}")" \
+        --arg h_sni "${H_SNI}" --arg h_port "${HY2_PORT}" --arg h_mts "$(mts_status hysteria2 "${H_SNI:-none}")" \
+        --arg t_sni "${T_SNI}" --arg t_port "${TT_PORT}" --arg t2 "$(mts_status tt_h2 "${T_SNI:-none}")" \
+        --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" '
+        {schema: "veiltrium-status/1", generated_at: $now, script_version: $version, node_name: $label,
+         server: $server, os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
+         services: ($st | split("\n") | map(select(length > 0) | split("=") | {key: .[0], value: .[1]}) | from_entries),
+         versions: {hysteria: $vh, xray: $vx, trusttunnel: $vt},
+         clients: {added: ($n | tonumber), hysteria_auth: $h_auth},
+         reality: (if $r_site == "" then null else {sni: $r_site, port: ($r_port | tonumber), home_network: $r_mts} end),
+         hysteria2: {sni: $h_sni, port: ($h_port | tonumber), home_network: $h_mts},
+         trusttunnel: (if $t_sni == "" then null else
+           {hostname: $t_sni, port: ($t_port | tonumber), home_network_h2: $t2, home_network_h3: $t3} end),
+         last_install_check: $report}'
+}
+
 # ---- Adding and removing clients ---------------------------------------------
 # What runs on an installed node (maintenance modes). Sets HOST, HY2_SNI, HY2_MASQ_URL,
 # CERT_SHA, PK_SHA, H_NOT_AFTER, HAVE_REALITY, HAVE_TT.
@@ -1725,6 +1824,7 @@ clients_change() {
         [[ -n "${i}" ]] || die "the new client ${name} was not saved."
         new_auth="${name}:${CL_HPASS[i]}"; new_uuid="${CL_UUID[i]}"
     fi
+    step_mark write
     install -m 640 -o root -g hysteria /dev/null "${HY2_CONFIG}.new"
     hy2_server_yaml "${HY2_CONFIG}.new"
     mv -f "${HY2_CONFIG}.new" "${HY2_CONFIG}"
@@ -1742,12 +1842,14 @@ clients_change() {
         tt_credentials_toml "${TT_DIR}/credentials.toml.new"
         mv -f "${TT_DIR}/credentials.toml.new" "${TT_DIR}/credentials.toml"
     fi
+    step_mark restart
     info "Restarting the services: connected clients reconnect within a few seconds."
     systemctl restart hysteria-server.service || true
     if (( HAVE_REALITY == 1 )); then systemctl restart xray.service || true; fi
     if (( HAVE_TT == 1 )); then systemctl restart trusttunnel.service || true; fi
 
     # Real clients: the main client still works, the new one works, a removed one does not.
+    step_mark check-hysteria
     if ! wait_listening -Hulpn "${HY2_PORT}" hysteria; then ok=0; warn "Hysteria did not start"; fi
     if (( ok == 1 )); then
         hy2_client_test "${HY2_SNI}" "${CERT_SHA}"
@@ -1762,6 +1864,7 @@ clients_change() {
         if (( HY2_E2E == 0 )); then ok=0; warn "Hysteria: the removed client still connects"; fi
     fi
     if (( ok == 1 && HAVE_REALITY == 1 )); then
+        step_mark check-reality
         reality_verify_production "${R_SITE}"
         if [[ "${RP_STATUS}" != "ok" ]]; then ok=0; warn "VLESS Reality: the main client does not work"; fi
         if (( ok == 1 )) && [[ -n "${new_uuid}" ]]; then
@@ -1774,6 +1877,7 @@ clients_change() {
         fi
     fi
     if (( ok == 1 && HAVE_TT == 1 )); then
+        step_mark check-trusttunnel
         if wait_listening -Htlpn "${TT_PORT}" trusttunnel_end && wait_listening -Hulpn "${TT_PORT}" trusttunnel_end; then
             tt_checks
             if [[ "${TT_VPS_H2}" != "ok" ]]; then ok=0; warn "TrustTunnel: no answer with its certificate"; fi
@@ -1790,6 +1894,7 @@ clients_change() {
     fi
     # The registry entry belongs to the Hysteria change, committed last: if the run is cut
     # off between the commits, the registry and Hysteria agree and a re-run rebuilds the rest.
+    step_mark commit
     CLIENT_FILES_STALE=1
     if (( HAVE_REALITY == 1 )); then txn_commit reality; fi
     if (( HAVE_TT == 1 )); then txn_commit trusttunnel; fi
@@ -1840,7 +1945,8 @@ Settings (environment variables, saved where noted):
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
   --trial-minutes N                 trial length, 5..240 (default 30)
-  --json FILE                       with --diagnose / --dry-run: write the JSON report there
+  --json FILE | -                   with --diagnose, --dry-run, --status and the client modes:
+                                    write a JSON document there ("-": stdout, human text to stderr)
 EOF
 }
 
@@ -1898,6 +2004,7 @@ while (( $# )); do
         --add-client|--remove-client|--show-client)
             MODE="${1#--}"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "$1 needs a client name"; shift ;;
         --list-clients) MODE="list-clients" ;;
+        --status) MODE="status" ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -1926,11 +2033,12 @@ rm -rf /root/.hy2-install.* 2>/dev/null || true
 # =============================================================================
 if [[ "${MODE}" != "install" ]]; then
     LIGHT=1
+    if [[ "${JSON_OUT}" == "-" ]]; then exec 8>&1 1>&2; fi
     TMPD="$(mktemp -d /root/.hy2-install.XXXXXX)"
     chmod 700 "${TMPD}"
     # An interrupted change first: its half-written files must not be read as "damaged".
     if txn_pending; then
-        if [[ "${MODE}" == "diagnose" || "${MODE}" == "dry-run" ]]; then
+        if [[ "${MODE}" == "diagnose" || "${MODE}" == "dry-run" || "${MODE}" == "status" ]]; then
             die "an interrupted change is pending; it is restored automatically within a minute (or by the next install run). Try again then."
         fi
         recover_interrupted
@@ -1957,19 +2065,36 @@ if [[ "${MODE}" != "install" ]]; then
         trial)
             trial_start "${TRIAL_SITES}"
             exit 0 ;;
+        status)
+            command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."
+            [[ -n "${H_PASSWORD}" ]] || die "this server has no installed node yet: run the installer once (bash $0) first."
+            if [[ -n "${JSON_OUT}" ]]; then
+                status_json | json_emit
+            else
+                status_json | jq -r '"\(.node_name) \(.server), \(.os); Veiltrium \(.script_version)",
+                    (.services | to_entries[] | "  \(.key): \(.value)"),
+                    "  clients: main + \(.clients.added) added; reboot required: \(.reboot_required)"'
+            fi
+            exit 0 ;;
         list-clients|show-client|add-client|remove-client)
             [[ -n "${H_PASSWORD}" && -n "${PUBLIC_IP}" && -s "${CLIENT_FILE}" ]] \
                 || die "this server has no installed node yet: run the installer once (bash $0) first."
             node_context
             case "${MODE}" in
                 list-clients)
-                    clients_list ;;
+                    if [[ -n "${JSON_OUT}" ]]; then clients_json | json_emit; else clients_list; fi ;;
                 show-client)
-                    if [[ "${CLIENT_ARG}" == "main" ]]; then cat "${CLIENT_FILE}"
-                    elif [[ -n "$(client_index "${CLIENT_ARG}")" && -s "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt" ]]; then
-                        cat "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
+                    if [[ "${CLIENT_ARG}" == "main" ]]; then CLIENT_TXT="${CLIENT_FILE}"
+                    elif [[ "${CLIENT_ARG}" =~ ${CLIENT_RE} && -n "$(client_index "${CLIENT_ARG}")" && \
+                            -s "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt" ]]; then
+                        CLIENT_TXT="${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
                     else
                         die "no client ${CLIENT_ARG} (see --list-clients)."
+                    fi
+                    if [[ -n "${JSON_OUT}" ]]; then
+                        client_json "${CLIENT_ARG}" "$(grep -m1 '^tt://' "${CLIENT_TXT}" 2>/dev/null || true)" | json_emit
+                    else
+                        cat "${CLIENT_TXT}"
                     fi ;;
                 add-client|remove-client)
                     [[ "${CLIENT_ARG}" =~ ${CLIENT_RE} && "${CLIENT_ARG}" != "main" ]] \
@@ -1983,13 +2108,23 @@ if [[ "${MODE}" != "install" ]]; then
                         (( ${#CL_NAMES[@]} < 250 )) || die "too many clients (250)."
                         write_client_env "${TMPD}/client.env" "${CLIENT_ARG}" "$(cat /proc/sys/kernel/random/uuid)" \
                             "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "$(date +%F)"
+                        AUTH_BEFORE="${H_AUTH}"
                         clients_change add "${CLIENT_ARG}"
-                        printf '\n'
-                        cat "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
-                        printf '\n(Saved in %s, root only.)\n' "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
+                        if [[ -z "${JSON_OUT}" ]]; then
+                            printf '\n'
+                            cat "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
+                            printf '\n(Saved in %s, root only.)\n' "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
+                        fi
                     else
                         [[ -n "$(client_index "${CLIENT_ARG}")" ]] || die "no client ${CLIENT_ARG} (see --list-clients)."
+                        AUTH_BEFORE="${H_AUTH}"
                         clients_change remove "${CLIENT_ARG}"
+                    fi
+                    step_mark finished
+                    if [[ -n "${JSON_OUT}" ]]; then
+                        jq -n --arg action "${MODE%-client}" --arg name "${CLIENT_ARG}" --arg before "${AUTH_BEFORE}" \
+                            '{schema: "veiltrium-result/1", ok: true, action: $action, name: $name,
+                              main_hysteria_link_changed: ($before != "userpass")}' | json_emit
                     fi ;;
             esac
             exit 0 ;;
@@ -2016,7 +2151,10 @@ if [[ "${MODE}" != "install" ]]; then
             info "Clients would only change sni / server_name of the VLESS link to ${R_CHOSEN};"
             info "UUID, public key and shortId stay; Hysteria and TrustTunnel are not affected."
         fi
-        if [[ -n "${JSON_OUT}" ]]; then build_report > "${JSON_OUT}"; ok "JSON report: ${JSON_OUT}"; fi
+        if [[ -n "${JSON_OUT}" ]]; then
+            build_report | json_emit
+            if [[ "${JSON_OUT}" != "-" ]]; then ok "JSON report: ${JSON_OUT}"; fi
+        fi
         exit 0
     fi
     # --diagnose
@@ -2066,7 +2204,10 @@ if [[ "${MODE}" != "install" ]]; then
         esac
         info "Home network (MTS): HTTP/2 $(mts_status tt_h2 "${T_SNI}"), HTTP/3 $(mts_status tt_h3 "${T_SNI}")"
     fi
-    if [[ -n "${JSON_OUT}" ]]; then build_report > "${JSON_OUT}"; printf '\n'; ok "JSON report: ${JSON_OUT}"; fi
+    if [[ -n "${JSON_OUT}" ]]; then
+        build_report | json_emit
+        if [[ "${JSON_OUT}" != "-" ]]; then printf '\n'; ok "JSON report: ${JSON_OUT}"; fi
+    fi
     exit $(( DIAG_FAIL == 0 ? 0 : 2 ))
 fi
 
