@@ -10,6 +10,10 @@ on:
       upgrade_from:
         description: "Release the upgrade job starts from (a commit or tag of this repository)"
         default: "v2026.10.13.1"
+      only_upgrade:
+        description: "Run only the upgrade job (a targeted re-test of the move, about 15 minutes)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,6 +26,7 @@ concurrency:
 jobs:
   install:
     name: ${{ matrix.os }}
+    if: ${{ !inputs.only_upgrade }}
     strategy:
       fail-fast: false
       matrix:
@@ -692,8 +697,8 @@ jobs:
           chmod 755 /tmp/failapt/apt-get
           rc=0
           sudo env PATH="/tmp/failapt:$PATH" NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/cut.log 2>&1 || rc=$?
-          echo "cut-off move: rc=$rc"; test "$rc" = 1
-          grep -F 'could not update package lists' /tmp/cut.log >/dev/null
+          echo "cut-off move: rc=$rc"
+          [ "$rc" = 1 ] && grep -F 'could not update package lists' /tmp/cut.log >/dev/null || { tail -40 /tmp/cut.log; exit 1; }
           sudo nft -c -f /etc/nftables.conf
           sudo systemctl restart nftables        # as after a reboot: only what is on disk
           sudo nft list table inet veiltrium >/dev/null
@@ -701,7 +706,7 @@ jobs:
           sudo systemctl restart fail2ban
           # a half-moved node: the maintenance modes refuse, the installer finishes the move
           if sudo bash ./veiltrium.sh --diagnose > /tmp/half.log 2>&1; then echo "diagnose ran on a half-moved node"; exit 1; fi
-          grep -F 'run the installer once' /tmp/half.log >/dev/null
+          grep -F 'run the installer once' /tmp/half.log >/dev/null || { cat /tmp/half.log; exit 1; }
           # 2) the move run to the end
           sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
           grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null
