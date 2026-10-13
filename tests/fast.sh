@@ -13,9 +13,9 @@ run() {
     if out="$("$@" 2>&1)"; then echo "ok    $*"; else echo "FAIL  $*"; printf '%s\n' "${out}" | tail -n 40; FAIL=1; fi
 }
 
-for f in hy2-secure-install.sh tests/*.sh; do run bash -n "${f}"; done
+for f in veiltrium.sh tests/*.sh; do run bash -n "${f}"; done
 if have shellcheck && [[ "${SKIP_SHELLCHECK:-0}" != 1 ]]; then
-    run shellcheck -S warning hy2-secure-install.sh
+    run shellcheck -S warning veiltrium.sh
     run shellcheck -s sh -S warning keenetic-vpn-probe.sh
 else
     SKIPPED+=(shellcheck)

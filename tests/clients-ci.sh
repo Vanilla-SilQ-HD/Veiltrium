@@ -10,7 +10,7 @@ SB="$(find /tmp/sb -type f -name sing-box | head -1)"
 TTC="$(find /tmp/ttc -type f -name trusttunnel_client | head -1)"
 test -x "$SB"; test -x "$TTC"
 W="$(mktemp -d)"
-inst() { sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh "$@"; }
+inst() { sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh "$@"; }
 code204() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 12 --socks5-hostname "127.0.0.1:$1" \
         https://www.gstatic.com/generate_204 || true
@@ -88,10 +88,10 @@ expect() {   # $1 = name, $2 = got, $3 = want (204 | not204)
 }
 
 TSNI="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
-LABEL="$(sudo jq -r .node_name /var/lib/hy2-secure/report.json)"
+LABEL="$(sudo jq -r .node_name /var/lib/veiltrium/report.json)"
 echo "node name: $LABEL"
 [[ "$LABEL" =~ ^Veiltrium(-[A-Za-z0-9-]+)?$ ]]
-MAIN=/root/hy2-client.txt
+MAIN=/root/veiltrium/client.txt
 main_links() { sudo grep -E '^(hysteria2|vless|tt)://' "$MAIN"; }
 main0="$(main_links)"
 H_MAIN="$(sudo grep -m1 '^hysteria2://' "$MAIN")"
@@ -111,24 +111,24 @@ grep -F 'Client anna added; checked with real clients: Hysteria, VLESS Reality, 
 if grep -F 'MAIN client' "$W/add.log"; then echo "a per-client node must not change the main links"; exit 1; fi
 if inst --add-client anna > "$W/dup.log" 2>&1; then echo "added the same client twice"; exit 1; fi
 grep -F 'client anna already exists' "$W/dup.log" >/dev/null
-test "$(sudo stat -c '%a' /etc/hy2-secure/clients)" = 700
-test "$(sudo stat -c '%a' /etc/hy2-secure/clients/anna.env)" = 600
-test "$(sudo stat -c '%a' /root/hy2-clients)" = 700
-test "$(sudo stat -c '%a' /root/hy2-clients/anna.txt)" = 600
+test "$(sudo stat -c '%a' /etc/veiltrium/clients)" = 700
+test "$(sudo stat -c '%a' /etc/veiltrium/clients/anna.env)" = 600
+test "$(sudo stat -c '%a' /root/veiltrium/clients)" = 700
+test "$(sudo stat -c '%a' /root/veiltrium/clients/anna.txt)" = 600
 test "$main0" = "$(main_links)"
-sudo bash ./hy2-secure-install.sh --list-clients | tee "$W/list.txt"
+sudo bash ./veiltrium.sh --list-clients | tee "$W/list.txt"
 grep -E '^  anna +added ' "$W/list.txt" >/dev/null
-sudo bash ./hy2-secure-install.sh --show-client anna > "$W/show.txt"
+sudo bash ./veiltrium.sh --show-client anna > "$W/show.txt"
 grep -m1 '^vless://' "$W/show.txt" >/dev/null
-A=/root/hy2-clients/anna.txt
-sudo bash ./hy2-secure-install.sh --diagnose > "$W/diag.log" 2>&1 || { cat "$W/diag.log"; exit 1; }
+A=/root/veiltrium/clients/anna.txt
+sudo bash ./veiltrium.sh --diagnose > "$W/diag.log" 2>&1 || { cat "$W/diag.log"; exit 1; }
 if grep -F 'ERROR' "$W/diag.log"; then echo "--diagnose printed an error"; exit 1; fi
 grep -F 'clients main + 1 added' "$W/diag.log" >/dev/null
-A_UUID="$(sudo awk -F= '$1=="C_UUID"{print $2}' /etc/hy2-secure/clients/anna.env)"
-A_HP="$(sudo awk -F= '$1=="C_HY2_PASS"{print $2}' /etc/hy2-secure/clients/anna.env)"
-A_TP="$(sudo awk -F= '$1=="C_TT_PASS"{print $2}' /etc/hy2-secure/clients/anna.env)"
+A_UUID="$(sudo awk -F= '$1=="C_UUID"{print $2}' /etc/veiltrium/clients/anna.env)"
+A_HP="$(sudo awk -F= '$1=="C_HY2_PASS"{print $2}' /etc/veiltrium/clients/anna.env)"
+A_TP="$(sudo awk -F= '$1=="C_TT_PASS"{print $2}' /etc/veiltrium/clients/anna.env)"
 sudo grep -Fx "    'anna': '${A_HP}'" /etc/hysteria/config.yaml >/dev/null
-sudo jq -e '.clients.added == 1' /var/lib/hy2-secure/report.json
+sudo jq -e '.clients.added == 1' /var/lib/veiltrium/report.json
 sudo jq -e --arg u "$A_UUID" '.inbounds[0].settings.clients | any(.id == $u and .email == "anna")' /usr/local/etc/xray/config.json
 sudo grep -Fx 'username = "anna"' /etc/trusttunnel/credentials.toml >/dev/null
 A_H="$(sudo grep -m1 '^hysteria2://' "$A")"; A_V="$(sudo grep -m1 '^vless://' "$A")"; A_T="$(sudo grep -m1 '^tt://' "$A")"
@@ -152,22 +152,22 @@ expect "main: TrustTunnel"              "$(tt_case "$T_U" "$T_P")"    204
 test "$(tt_fields "$(sudo grep -m1 '^tt://' "$MAIN")")" = "${T_U} ${LABEL}"
 
 # ---- machine interface for the panel ---------------------------------------------------
-sudo bash ./hy2-secure-install.sh --status --json - > "$W/status.json" 2> "$W/status.err"
+sudo bash ./veiltrium.sh --status --json - > "$W/status.json" 2> "$W/status.err"
 jq -e --arg l "$LABEL" '.schema == "veiltrium-status/1" and .node_name == $l and .services.xray == "active"
     and .clients.added == 1 and .hysteria2.port == 443 and (.reality.sni | length) > 0' "$W/status.json"
-sudo bash ./hy2-secure-install.sh --list-clients --json - > "$W/clients.json"
+sudo bash ./veiltrium.sh --list-clients --json - > "$W/clients.json"
 jq -e '.clients | map(.name) == ["main", "anna"]' "$W/clients.json"
 if grep -F "$A_HP" "$W/clients.json" "$W/status.json"; then echo "a secret in a JSON overview"; exit 1; fi
-sudo bash ./hy2-secure-install.sh --show-client anna --json - > "$W/anna.json"
+sudo bash ./veiltrium.sh --show-client anna --json - > "$W/anna.json"
 jq -e --arg h "$A_H" --arg v "$A_V" --arg t "$A_T" \
     '.hysteria2.link == $h and .vless.link == $v and .trusttunnel.link == $t and .hysteria2.awg_group[0].tag == "Veiltrium"' "$W/anna.json"
 jq '.hysteria2.awg_group[0]' "$W/anna.json" > "$W/a6j.json"
 expect "anna: AWG group JSON from --show-client --json" "$(sb_case "$W/a6j.json")" 204
-if sudo bash ./hy2-secure-install.sh --show-client ../anna --json - > /dev/null 2>&1; then echo "a path as a client name"; exit 1; fi
+if sudo bash ./veiltrium.sh --show-client ../anna --json - > /dev/null 2>&1; then echo "a path as a client name"; exit 1; fi
 
 # ---- a plain re-run with clients changes nothing ---------------------------------------
 KEEP="/etc/hysteria/config.yaml /etc/hysteria/node.env /usr/local/etc/xray/config.json
-  /etc/trusttunnel/credentials.toml /etc/hy2-secure/clients/anna.env /etc/hy2-secure/node.env"
+  /etc/trusttunnel/credentials.toml /etc/veiltrium/clients/anna.env /etc/veiltrium/node.env"
 ids() { for s in hysteria-server xray trusttunnel; do systemctl show "$s" -p InvocationID --value; done; }
 links() { sudo grep -hE '^(hysteria2|vless|tt)://' "$MAIN" "$A"; }
 before="$(sudo sha256sum $KEEP)"; ids0="$(ids)"; links0="$(links)"
@@ -185,21 +185,21 @@ sudo rm -rf /run/systemd/system/xray.service.d; sudo systemctl daemon-reload
 sudo systemctl reset-failed xray; sudo systemctl restart xray
 echo "failed add: rc=$rc"; test "$rc" = 1
 grep -F 'the previous clients and settings were restored' "$W/fail.log" >/dev/null
-sudo test ! -e /etc/hy2-secure/clients/bob.env
-sudo test ! -e /root/hy2-clients/bob.txt
+sudo test ! -e /etc/veiltrium/clients/bob.env
+sudo test ! -e /root/veiltrium/clients/bob.txt
 test "$before" = "$(sudo sha256sum $KEEP)"
-test -z "$(sudo find /var/lib/hy2-secure/txn -name pending)"
+test -z "$(sudo find /var/lib/veiltrium/txn -name pending)"
 systemctl is-active hysteria-server xray trusttunnel
 expect "anna after the rollback: hysteria2" "$(hy_case "$A_H")" 204
 
 # ---- remove: the credentials stop working at once -----------------------------------------
-sudo env NEEDRESTART_SUSPEND=1 VEILTRIUM_PROGRESS=1 bash ./hy2-secure-install.sh --remove-client anna --json - \
+sudo env NEEDRESTART_SUSPEND=1 VEILTRIUM_PROGRESS=1 bash ./veiltrium.sh --remove-client anna --json - \
     > "$W/rm.json" 2> "$W/rm.log" || { cat "$W/rm.log"; exit 1; }
 jq -e '.ok == true and .action == "remove" and .name == "anna" and .main_hysteria_link_changed == false' "$W/rm.json"
 test "$(grep '^::step ' "$W/rm.log" | cut -d' ' -f2 | tr '\n' ' ')" = "write restart check-hysteria check-reality check-trusttunnel commit finished "
 grep -F 'Client anna removed' "$W/rm.log" >/dev/null
-sudo jq -e '.clients.added == 0' /var/lib/hy2-secure/report.json
-sudo test ! -e /etc/hy2-secure/clients/anna.env
+sudo jq -e '.clients.added == 0' /var/lib/veiltrium/report.json
+sudo test ! -e /etc/veiltrium/clients/anna.env
 sudo test ! -e "$A"
 if sudo grep -F 'anna' /etc/hysteria/config.yaml /usr/local/etc/xray/config.json /etc/trusttunnel/credentials.toml; then
     echo "the removed client is still in a config"; exit 1

@@ -37,4 +37,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/veiltrium-panel-linux-amd64 dist/veiltrium-panel-linux-arm64 dist/SHA256SUMS \
             --title "Veiltrium panel ${GITHUB_REF_NAME#panel-v}" \
-            --notes "Web panel binaries for hy2-secure-install.sh (loopback only, reached through an SSH tunnel). The installer downloads them itself and checks the SHA-256 sums below."
+            --notes "Web panel binaries for veiltrium.sh (loopback only, reached through an SSH tunnel). The installer downloads them itself and checks the SHA-256 sums below."

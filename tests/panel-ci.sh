@@ -13,8 +13,8 @@ J="$W/cookies"
 # ---- services, sockets, sandbox -------------------------------------------------------
 systemctl is-active veiltrium-panel veiltrium-helper.socket
 test "$(sudo stat -c '%a %U %G' /run/veiltrium/helper.sock)" = "660 root veiltrium-panel"
-test "$(sudo stat -c '%a %U %G' /etc/veiltrium/panel-auth)" = "640 root veiltrium-panel"
-test "$(sudo stat -c '%a' /root/hy2-panel.txt)" = 600
+test "$(sudo stat -c '%a %U %G' /etc/veiltrium-panel/auth)" = "640 root veiltrium-panel"
+test "$(sudo stat -c '%a' /root/veiltrium/panel.txt)" = 600
 systemctl show veiltrium-panel -p User -p IPAddressDeny -p NoNewPrivileges | tee "$W/unit.txt"
 grep -x 'User=veiltrium-panel' "$W/unit.txt" >/dev/null
 grep -x 'NoNewPrivileges=yes' "$W/unit.txt" >/dev/null
@@ -59,7 +59,7 @@ if sudo -u nobody python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.
 fi
 
 # ---- HTTP: login, CSRF, host check -------------------------------------------------
-PW="$(sudo sed -n 's/^Password: //p' /root/hy2-panel.txt)"
+PW="$(sudo sed -n 's/^Password: //p' /root/veiltrium/panel.txt)"
 test "${#PW}" = 24
 h=(-H 'Content-Type: application/json' -H 'X-Veiltrium: 1')
 code() { curl -s -o "$W/body" -w '%{http_code}' "$@"; }
@@ -99,7 +99,7 @@ tail -n 1 "$W/rm.ndjson" | jq -e '.result.ok == true and .result.action == "remo
 test "$(code -b "$J" -X DELETE "$U/api/clients/main" "${h[@]}")" = 400
 
 # ---- a new password signs everybody out ------------------------------------------------
-sudo bash ./hy2-secure-install.sh --panel-password > "$W/pw.txt"
+sudo bash ./veiltrium.sh --panel-password > "$W/pw.txt"
 NEW="$(sed -n 's/^Password: //p' "$W/pw.txt")"
 test "${#NEW}" = 24; test "$NEW" != "$PW"
 for _ in $(seq 1 20); do [ -n "$(ss -Htln "sport = :$P")" ] && break; sleep 0.3; done
@@ -109,9 +109,9 @@ test "$(code -c "$J" -X POST "$U/api/login" "${h[@]}" -d "{\"password\":\"$NEW\"
 
 # ---- a plain re-run keeps the panel as it is ----------------------------------------------
 id0="$(systemctl show veiltrium-panel -p InvocationID --value)"
-f0="$(sudo sha256sum /usr/local/bin/veiltrium-panel /etc/veiltrium/panel-auth /etc/systemd/system/veiltrium-panel.service)"
-sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh > "$W/rerun.log" 2>&1 || { tail -40 "$W/rerun.log"; exit 1; }
+f0="$(sudo sha256sum /usr/local/bin/veiltrium-panel /etc/veiltrium-panel/auth /etc/systemd/system/veiltrium-panel.service)"
+sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > "$W/rerun.log" 2>&1 || { tail -40 "$W/rerun.log"; exit 1; }
 test "$id0" = "$(systemctl show veiltrium-panel -p InvocationID --value)"
-test "$f0" = "$(sudo sha256sum /usr/local/bin/veiltrium-panel /etc/veiltrium/panel-auth /etc/systemd/system/veiltrium-panel.service)"
-if sudo grep -F "$NEW" /var/log/hy2-secure-install.log; then echo "the panel password is in the install log"; exit 1; fi
+test "$f0" = "$(sudo sha256sum /usr/local/bin/veiltrium-panel /etc/veiltrium-panel/auth /etc/systemd/system/veiltrium-panel.service)"
+if sudo grep -F "$NEW" /var/log/veiltrium-install.log; then echo "the panel password is in the install log"; exit 1; fi
 echo "panel: all checks passed"

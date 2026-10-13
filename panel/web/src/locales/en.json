@@ -8,7 +8,7 @@
   "top.signout": "Sign out",
 
   "login.title": "Panel password",
-  "login.hint": "Forgot it? On the server: bash hy2-secure-install.sh --panel-password",
+  "login.hint": "Forgot it? On the server: bash veiltrium.sh --panel-password",
   "login.button": "Sign in",
   "login.busy": "Signing in…",
   "login.note": "Reached through your SSH tunnel; the panel never listens on a public address.",

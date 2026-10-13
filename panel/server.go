@@ -134,7 +134,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	hash, err := readHash(s.authFile)
 	if err != nil {
 		log.Printf("login: %v", err)
-		writeError(w, http.StatusServiceUnavailable, "no panel password is set: bash hy2-secure-install.sh --panel-password")
+		writeError(w, http.StatusServiceUnavailable, "no panel password is set: bash veiltrium.sh --panel-password")
 		return
 	}
 	if !VerifyPassword(hash, body.Password) {

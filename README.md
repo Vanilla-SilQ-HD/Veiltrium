@@ -4,7 +4,7 @@
 
 Automated, security-focused deployment of Hysteria2, VLESS Reality and TrustTunnel on Ubuntu VPS.
 
-Veiltrium is a single, self-contained Bash installer (`hy2-secure-install.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved.
+Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved.
 
 The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol **Vt**).
 
@@ -22,7 +22,7 @@ The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol 
 - **Several clients.** `--add-client NAME` gives one more person or device its own credentials for every protocol; `--remove-client NAME` revokes them at once. Each change is checked with real clients and rolled back if it fails.
 - Client apps show the node as `Veiltrium-<country>` (for example `Veiltrium-PL`).
 - **A small web panel** on every node: overview and clients (links, QR codes, add, revoke). It listens on `127.0.0.1` only and is reached through an SSH tunnel.
-- A JSON report without secrets (`/var/lib/hy2-secure/report.json`), plus `--diagnose` and `--dry-run` modes that change nothing.
+- A JSON report without secrets (`/var/lib/veiltrium/report.json`), plus `--diagnose` and `--dry-run` modes that change nothing.
 
 ## Protocols
 
@@ -42,12 +42,12 @@ Xray is intentionally pinned to `v26.3.27`. From `26.9.8` on, the Reality server
 
 ## Architecture and security
 
-- **Firewall (nftables, own table `inet hy2fw`).** Only SSH and the proxy ports are reachable from outside. SSH is rate-limited. Scanner networks from public lists (refreshed weekly) see only SSH, never the proxy ports. Other tables (e.g. fail2ban) are left alone.
+- **Firewall (nftables, own table `inet veiltrium`).** Only SSH and the proxy ports are reachable from outside. SSH is rate-limited. Scanner networks from public lists (refreshed weekly) see only SSH, never the proxy ports. Other tables (e.g. fail2ban) are left alone.
 - **Egress isolation.** The proxy users may not connect to the server's own addresses, private ranges or port 25.
 - **SSH.** Hardened (`MaxAuthTries`, `LoginGraceTime`, `MaxStartups`, verbose logging) **without** disabling password or root login. This is by design; brute force is handled by nftables limits, fail2ban and OpenSSH `PerSourcePenalties`.
 - **Updates.** Unattended security upgrades with a nightly reboot window. `needrestart` is told never to restart the proxies, so a library update does not drop clients.
-- **Secrets.** Root-only state files (`0600`). Connection details are printed to the terminal and saved to `/root/hy2-client.txt`, never into the install log. Reports and probe results contain no secrets.
-- **Crash safety.** A change is a transaction: backup, pending marker, real client check, then commit. Rollback happens through the EXIT trap (errors, Ctrl+C, SIGTERM), a systemd watchdog timer (SIGKILL or a hung run), and `hy2-secure-recover.service` at boot (power loss).
+- **Secrets.** Root-only state files (`0600`). Connection details are printed to the terminal and saved to `/root/veiltrium/client.txt`, never into the install log. Reports and probe results contain no secrets.
+- **Crash safety.** A change is a transaction: backup, pending marker, real client check, then commit. Rollback happens through the EXIT trap (errors, Ctrl+C, SIGTERM), a systemd watchdog timer (SIGKILL or a hung run), and `veiltrium-recover.service` at boot (power loss).
 
 ### Self-signed certificates: what they do and do not give you
 
@@ -63,21 +63,21 @@ Without a domain, Hysteria 2 and TrustTunnel use self-signed certificates.
 On the server, as root:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Vanilla-SilQ-HD/Veiltrium/main/hy2-secure-install.sh
-bash hy2-secure-install.sh
+curl -fsSLO https://raw.githubusercontent.com/Vanilla-SilQ-HD/Veiltrium/main/veiltrium.sh
+bash veiltrium.sh
 ```
 
 Or copy it from your computer:
 
 ```bash
 git clone https://github.com/Vanilla-SilQ-HD/Veiltrium.git
-scp Veiltrium/hy2-secure-install.sh root@SERVER_IP:/root/
-ssh root@SERVER_IP "bash /root/hy2-secure-install.sh"
+scp Veiltrium/veiltrium.sh root@SERVER_IP:/root/
+ssh root@SERVER_IP "bash /root/veiltrium.sh"
 ```
 
 Read the script before you run it: it changes the firewall, SSH settings and system updates of the server.
 
-The run takes a few minutes. At the end it prints, and saves to `/root/hy2-client.txt` (root only):
+The run takes a few minutes. At the end it prints, and saves to `/root/veiltrium/client.txt` (root only):
 
 - a `hysteria2://` link and a sing-box outbound with key pinning;
 - a `vless://` link and a sing-box outbound;
@@ -87,7 +87,7 @@ The run takes a few minutes. At the end it prints, and saves to `/root/hy2-clien
 Copy links without passing them through chat apps or Markdown renderers, which break `&` and `_`. For example, from PowerShell:
 
 ```powershell
-ssh root@SERVER_IP "grep -m1 '^vless://' /root/hy2-client.txt" | Set-Clipboard
+ssh root@SERVER_IP "grep -m1 '^vless://' /root/veiltrium/client.txt" | Set-Clipboard
 ```
 
 Optional settings are environment variables:
@@ -106,15 +106,15 @@ Optional settings are environment variables:
 | `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` |
 | `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
 | `SCANNER_BLOCK` | `1` | `0` turns the scanner blocklist off |
-| `HY2_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
-| `HY2_RECONFIGURE` | `0` | `1` issues new passwords, keys and certificates, for the added clients too (all clients must be updated) |
+| `VT_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
+| `VT_RECONFIGURE` | `0` | `1` issues new passwords, keys and certificates, for the added clients too (all clients must be updated) |
 
 ## Re-running the installer
 
 Re-run the same command to update or repair a node:
 
 ```bash
-ssh root@SERVER_IP "bash /root/hy2-secure-install.sh"
+ssh root@SERVER_IP "bash /root/veiltrium.sh"
 ```
 
 A plain re-run:
@@ -124,24 +124,32 @@ A plain re-run:
 - never reboots a working node (it reports a pending reboot; the nightly window applies);
 - restores the settings of any interrupted earlier change first.
 
+**Nodes installed by `hy2-secure-install.sh`** (the project's earlier name, up to `v2026.10.13.1`) move to the Veiltrium names on their first run of `veiltrium.sh`:
+
+- `/etc/hy2-secure` → `/etc/veiltrium`, `/var/lib/hy2-secure` → `/var/lib/veiltrium`;
+- root's files → `/root/veiltrium/` (`client.txt`, `clients/`, `probe.env`, `panel.txt`);
+- the firewall table `inet hy2fw` → `inet veiltrium`, the helper units and drop-ins (`veiltrium-scanner-block`, `veiltrium-recover`, sysctl, SSH, fail2ban, needrestart, apt) to their `veiltrium` names;
+- keys, passwords, certificates, clients and links stay as they are; the three proxy services restart once (the comments in their configs change), so connected clients reconnect within seconds;
+- the old files are removed at the end of the run. `HY2_RECONFIGURE` and `HY2_AUTO_REBOOT` still work as old names of `VT_RECONFIGURE` and `VT_AUTO_REBOOT`; results of an older `keenetic-vpn-probe.sh` are still accepted.
+
 Maintenance modes. Each takes the same lock as the installer; the first three change nothing on the server.
 
 ```bash
-bash /root/hy2-secure-install.sh --diagnose            # check the node, change nothing
-bash /root/hy2-secure-install.sh --diagnose --json /root/diag.json
-bash /root/hy2-secure-install.sh --dry-run             # what --reselect-reality would choose, change nothing
-bash /root/hy2-secure-install.sh --help
+bash /root/veiltrium.sh --diagnose            # check the node, change nothing
+bash /root/veiltrium.sh --diagnose --json /root/diag.json
+bash /root/veiltrium.sh --dry-run             # what --reselect-reality would choose, change nothing
+bash /root/veiltrium.sh --help
 ```
 
 ## Clients
 
-The first client, `main`, is created by the installer (`/root/hy2-client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID and a TrustTunnel login. Revoking one never affects the others.
+The first client, `main`, is created by the installer (`/root/veiltrium/client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID and a TrustTunnel login. Revoking one never affects the others.
 
 ```bash
-bash /root/hy2-secure-install.sh --add-client anna      # prints the details, saves /root/hy2-clients/anna.txt
-bash /root/hy2-secure-install.sh --list-clients
-bash /root/hy2-secure-install.sh --show-client anna
-bash /root/hy2-secure-install.sh --remove-client anna
+bash /root/veiltrium.sh --add-client anna      # prints the details, saves /root/veiltrium/clients/anna.txt
+bash /root/veiltrium.sh --list-clients
+bash /root/veiltrium.sh --show-client anna
+bash /root/veiltrium.sh --remove-client anna
 ```
 
 - Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`.
@@ -157,7 +165,7 @@ Every node gets a small web panel: an overview of the node and its protocols, an
 ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to http://localhost:2096/
 ```
 
-- The password is printed at the end of the install and kept in `/root/hy2-panel.txt` (root only). `bash /root/hy2-secure-install.sh --panel-password` sets a new one and signs everybody out.
+- The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt` (root only). `bash /root/veiltrium.sh --panel-password` sets a new one and signs everybody out.
 - **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only; the SSH tunnel is the way in. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
 - **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts five requests (status, list, show, add, remove) with checked names and runs the same tested code as the command line.
 - Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` host names (no DNS rebinding), a strict Content Security Policy with no external resources, and a lockout after failed logins.
@@ -169,9 +177,9 @@ ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to 
 The Reality site is chosen on a new node, and only changes when you ask for it:
 
 ```bash
-bash /root/hy2-secure-install.sh --dry-run             # see the scores first
-bash /root/hy2-secure-install.sh --reselect-reality    # re-evaluate and switch if clearly better
-REALITY_SNI=www.example.com bash /root/hy2-secure-install.sh --reselect-reality
+bash /root/veiltrium.sh --dry-run             # see the scores first
+bash /root/veiltrium.sh --reselect-reality    # re-evaluate and switch if clearly better
+REALITY_SNI=www.example.com bash /root/veiltrium.sh --reselect-reality
 ```
 
 **How a site is evaluated.**
@@ -190,8 +198,8 @@ REALITY_SNI=www.example.com bash /root/hy2-secure-install.sh --reselect-reality
 **Trial from home.** `--trial-reality` adds extra server names for a limited time through a runtime drop-in and a timer. A reboot also ends it. While it runs, a prober using a trial name sees the production site's certificate, so keep trials short.
 
 ```bash
-bash /root/hy2-secure-install.sh --trial-reality www.example.com --trial-minutes 30
-bash /root/hy2-secure-install.sh --trial-stop
+bash /root/veiltrium.sh --trial-reality www.example.com --trial-minutes 30
+bash /root/veiltrium.sh --trial-stop
 ```
 
 ## Diagnostics from a Keenetic router (Entware)
@@ -200,10 +208,10 @@ A result measured from a European VPS says nothing about reachability from a hom
 
 The examples use the Entware SSH server on the router (often port 222); adjust address and port.
 
-1. Each install writes a probe profile `/root/hy2-probe.env` (contains passwords; keep it `0600`). Copy it to the router, one file per server:
+1. Each install writes a probe profile `/root/veiltrium/probe.env` (contains passwords; keep it `0600`). Copy it to the router, one file per server:
 
    ```bash
-   ssh root@SERVER_IP "cat /root/hy2-probe.env" | ssh -p 222 root@ROUTER "mkdir -p /opt/etc/vpn-probe && cat > /opt/etc/vpn-probe/server1.env && chmod 600 /opt/etc/vpn-probe/server1.env"
+   ssh root@SERVER_IP "cat /root/veiltrium/probe.env" | ssh -p 222 root@ROUTER "mkdir -p /opt/etc/vpn-probe && cat > /opt/etc/vpn-probe/server1.env && chmod 600 /opt/etc/vpn-probe/server1.env"
    scp -O -P 222 keenetic-vpn-probe.sh root@ROUTER:/opt/bin/
    ```
 
@@ -220,7 +228,7 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 3. Import the result on each server:
 
    ```bash
-   ssh -p 222 root@ROUTER "cat /opt/tmp/vpn-probe.json" | ssh root@SERVER_IP "bash /root/hy2-secure-install.sh --import-mts -"
+   ssh -p 222 root@ROUTER "cat /opt/tmp/vpn-probe.json" | ssh root@SERVER_IP "bash /root/veiltrium.sh --import-mts -"
    ```
 
 **What counts as proof.**
@@ -235,7 +243,7 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 
 ## AWG Manager and sing-box compatibility
 
-- **Hysteria 2.** AWG Manager deliberately drops `pinSHA256` from `hysteria2://` links and imports them with `insecure=true`, i.e. **without any certificate check**. Instead, use section 6 of `/root/hy2-client.txt`: a sing-box JSON block with `certificate_public_key_sha256`, imported as a server group (sing-box JSON). The router's sing-box build (`1.15.0-alpha.12-awgm.33`) enforces the pin, including over QUIC; CI checks this with the same build. `keenetic-vpn-probe.sh --check-awg` shows whether the router's config actually pins the key.
+- **Hysteria 2.** AWG Manager deliberately drops `pinSHA256` from `hysteria2://` links and imports them with `insecure=true`, i.e. **without any certificate check**. Instead, use section 6 of `/root/veiltrium/client.txt`: a sing-box JSON block with `certificate_public_key_sha256`, imported as a server group (sing-box JSON). The router's sing-box build (`1.15.0-alpha.12-awgm.33`) enforces the pin, including over QUIC; CI checks this with the same build. `keenetic-vpn-probe.sh --check-awg` shows whether the router's config actually pins the key.
 - **VLESS Reality.** The `vless://` link imports as is (`fp=chrome`, `flow=xtls-rprx-vision`).
 - **TrustTunnel.** The `tt://` link carries the certificate. AWG Manager verifies it, but uses HTTP/2 only.
 - **sing-box clients in general.** Use the JSON outbounds from the client file. `certificate_public_key_sha256` is the base64 SHA-256 of the public key (SPKI), which is not the same value as Hysteria's hex `pinSHA256`.

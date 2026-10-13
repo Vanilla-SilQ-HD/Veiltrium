@@ -61,7 +61,7 @@ func VerifyPassword(line, password string) bool {
 }
 
 // readHash reads the hash line from the auth file on every login, so a new password
-// (hy2-secure-install.sh --panel-password) takes effect without a restart.
+// (veiltrium.sh --panel-password) takes effect without a restart.
 func readHash(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {

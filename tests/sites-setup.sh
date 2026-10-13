@@ -23,7 +23,7 @@ openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 
 openssl req -x509 -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -days 30 \
     -subj "/CN=untrusted CA" -keyout bad-ca.key -out bad-ca.crt \
     -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
-sudo cp ca.crt /usr/local/share/ca-certificates/hy2-ci-test-ca.crt
+sudo cp ca.crt /usr/local/share/ca-certificates/veiltrium-ci-test-ca.crt
 sudo update-ca-certificates >/dev/null
 leaf() {   # name, ca
     openssl req -nodes -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -subj "/CN=$1" -keyout "$1.key" -out "$1.csr"

@@ -14,7 +14,7 @@ start() {
     mkdir -p "$W"
     # Hysteria: the share link as delivered, pointed at the server's outside address
     local url u pub sid user pass sni ttc i p
-    url="$(sudo grep -m1 '^hysteria2://' /root/hy2-client.txt | sed -E 's#@[^:/]+:#@192.0.2.1:#')"
+    url="$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt | sed -E 's#@[^:/]+:#@192.0.2.1:#')"
     printf 'server: "%s"\nsocks5:\n  listen: 127.0.0.1:18301\n' "$url" > "$W/h.yaml"
     sudo ip netns exec ext /usr/local/bin/hysteria client -c "$W/h.yaml" > "$W/h.log" 2>&1 &
     # VLESS Reality

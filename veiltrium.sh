@@ -3,14 +3,14 @@
 #  Veiltrium - Secure Multi-Protocol VPN Deployment
 #  https://github.com/Vanilla-SilQ-HD/Veiltrium
 #
-#  hy2-secure-install.sh: self-contained, hardened installer for Hysteria 2,
+#  veiltrium.sh: self-contained, hardened installer for Hysteria 2,
 #  VLESS Reality (Xray) and TrustTunnel on a fresh Ubuntu 26.04 server. No
 #  third-party panels or install scripts: only the official release binaries,
 #  SHA-256 pinned.
 #
-#  The file name, paths, service names, variables and state files keep their
-#  original "hy2-secure-install" / "hy2" names on purpose: servers installed by
-#  earlier versions update in place, and existing commands keep working.
+#  Nodes installed by the earlier hy2-secure-install.sh move to the Veiltrium
+#  names on their first run of this script: state, keys, passwords and links are
+#  kept; HY2_RECONFIGURE and HY2_AUTO_REBOOT still work as old names.
 #
 #  One run as root, no questions asked:
 #    1. upgrades the system and enables automatic security updates;
@@ -29,30 +29,30 @@
 #    - TrustTunnel: its own self-signed certificate, embedded in the tt:// link.
 #  Changing the Reality site never touches the Hysteria or TrustTunnel
 #  certificates, and no secret (password, key, UUID, shortId) changes unless
-#  HY2_RECONFIGURE=1 is given.
+#  VT_RECONFIGURE=1 is given.
 #
 #  Re-running is safe: passwords, keys, certificates and the chosen sites are
 #  kept. Settings given as variables (HY2_SNI, TT_SNI, HY2_MASQUERADE_URL,
 #  REALITY_CANDIDATES) are saved and stay in effect on later runs.
 #
 #  Modes:
-#    bash hy2-secure-install.sh                     install / update / repair
-#    bash hy2-secure-install.sh --reselect-reality  re-evaluate the Reality site
+#    bash veiltrium.sh                     install / update / repair
+#    bash veiltrium.sh --reselect-reality  re-evaluate the Reality site
 #                                                   (only the VLESS sni changes)
-#    bash hy2-secure-install.sh --dry-run           what --reselect-reality would do; no changes
-#    bash hy2-secure-install.sh --diagnose          check the node; no changes
-#    bash hy2-secure-install.sh --import-mts FILE   import keenetic-vpn-probe.sh results
-#    bash hy2-secure-install.sh --trial-reality SITE[,SITE]   temporary extra Reality
+#    bash veiltrium.sh --dry-run           what --reselect-reality would do; no changes
+#    bash veiltrium.sh --diagnose          check the node; no changes
+#    bash veiltrium.sh --import-mts FILE   import keenetic-vpn-probe.sh results
+#    bash veiltrium.sh --trial-reality SITE[,SITE]   temporary extra Reality
 #                                                   names for a probe from home; auto-revert
-#    bash hy2-secure-install.sh --add-client NAME   a new client: own credentials for all protocols
-#    bash hy2-secure-install.sh --remove-client NAME   revoke a client
-#    bash hy2-secure-install.sh --list-clients      the clients of this node
-#    bash hy2-secure-install.sh --show-client NAME  connection details of a client (main: the first one)
-#    bash hy2-secure-install.sh --status --json -   a fast overview as JSON (no tests, no secrets)
-#    bash hy2-secure-install.sh --help
+#    bash veiltrium.sh --add-client NAME   a new client: own credentials for all protocols
+#    bash veiltrium.sh --remove-client NAME   revoke a client
+#    bash veiltrium.sh --list-clients      the clients of this node
+#    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
+#    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
+#    bash veiltrium.sh --help
 #
-#  To regenerate everything:  HY2_RECONFIGURE=1 bash hy2-secure-install.sh
-#  Without VLESS Reality:     REALITY_ENABLE=0 bash hy2-secure-install.sh
+#  To regenerate everything:  VT_RECONFIGURE=1 bash veiltrium.sh
+#  Without VLESS Reality:     REALITY_ENABLE=0 bash veiltrium.sh
 # =============================================================================
 if [ -z "${BASH_VERSION:-}" ]; then
     echo "Run it with bash:  bash $0"
@@ -114,15 +114,16 @@ PANEL_ENABLE="${PANEL_ENABLE:-1}"              # 0: no web panel
 PANEL_PORT="${PANEL_PORT:-2096}"               # the panel listens on 127.0.0.1 only (SSH tunnel)
 PANEL_BINARY="${PANEL_BINARY:-}"               # a local panel binary instead of the release (tests)
 SCANNER_BLOCK="${SCANNER_BLOCK:-1}"            # 1: proxy ports stay silent for known scanner networks
-HY2_RECONFIGURE="${HY2_RECONFIGURE:-0}"        # 1: new passwords, keys and certificates
-HY2_AUTO_REBOOT="${HY2_AUTO_REBOOT:-1}"        # 1: a NEW node reboots in a minute if updates require it
+VT_RECONFIGURE="${VT_RECONFIGURE:-${HY2_RECONFIGURE:-0}}"   # 1: new passwords, keys and certificates
+VT_AUTO_REBOOT="${VT_AUTO_REBOOT:-${HY2_AUTO_REBOOT:-1}}"   # 1: a NEW node reboots in a minute if updates require it
 AUTO_REBOOT_TIME="${AUTO_REBOOT_TIME:-01:30}"
 MTS_MAX_AGE_DAYS="${MTS_MAX_AGE_DAYS:-14}"     # older home-network probe results are ignored
 TRIAL_MINUTES="${TRIAL_MINUTES:-30}"
 
-LOG_FILE="/var/log/hy2-secure-install.log"
-CLIENT_FILE="/root/hy2-client.txt"
-PROBE_PROFILE="/root/hy2-probe.env"
+LOG_FILE="/var/log/veiltrium-install.log"
+VT_ROOT_DIR="/root/veiltrium"                  # what root reads: client details, probe profile, panel password
+CLIENT_FILE="${VT_ROOT_DIR}/client.txt"
+PROBE_PROFILE="${VT_ROOT_DIR}/probe.env"
 HY2_BIN="/usr/local/bin/hysteria"
 HY2_DIR="/etc/hysteria"
 HY2_CONFIG="${HY2_DIR}/config.yaml"
@@ -135,36 +136,36 @@ XRAY_STATE="${XRAY_DIR}/reality.env"
 TT_BIN="/usr/local/bin/trusttunnel_endpoint"
 TT_DIR="/etc/trusttunnel"
 TT_STATE="${TT_DIR}/node.env"
-SCANNER_DIR="/etc/hy2-secure"
+SCANNER_DIR="/etc/veiltrium"
 SCANNER_FILE="${SCANNER_DIR}/scanners.nft"
-SCANNER_BIN="/usr/local/sbin/hy2-scanner-block"
+SCANNER_BIN="/usr/local/sbin/veiltrium-scanner-block"
 CANDIDATES_FILE="${SCANNER_DIR}/reality-candidates"
 PROBE_ENV="${SCANNER_DIR}/probe.env"           # key that authenticates home-network probe results
 NODE_ENV="${SCANNER_DIR}/node.env"             # N_NAME: the saved node name
 CLIENTS_DIR="${SCANNER_DIR}/clients"           # added clients: <name>.env with their credentials
-CLIENT_FILES_DIR="/root/hy2-clients"           # their connection details: <name>.txt
-STATE_DIR="/var/lib/hy2-secure"
+CLIENT_FILES_DIR="${VT_ROOT_DIR}/clients"           # their connection details: <name>.txt
+STATE_DIR="/var/lib/veiltrium"
 REPORT_FILE="${STATE_DIR}/report.json"
 SELECTION_FILE="${STATE_DIR}/reality-selection.json"
 MTS_RECORDS="${STATE_DIR}/mts-records"
 MTS_LAST_IMPORT="${STATE_DIR}/mts-last-import.json"
 MTS_RUNS="${STATE_DIR}/mts-runs"
 TXN_DIR="${STATE_DIR}/txn"                     # backups of changes in progress (see txn_begin)
-RECOVER_BIN="/usr/local/sbin/hy2-secure-recover"
-WATCHDOG_UNIT="hy2-secure-watchdog"
-RUN_DIR="/run/hy2-secure"
+RECOVER_BIN="/usr/local/sbin/veiltrium-recover"
+WATCHDOG_UNIT="veiltrium-watchdog"
+RUN_DIR="/run/veiltrium-trial"
 TRIAL_CONFIG="${RUN_DIR}/xray-trial.json"
 TRIAL_ENV="${RUN_DIR}/trial.env"
 TRIAL_END="${RUN_DIR}/trial-end.sh"
 TRIAL_DROPIN_DIR="/run/systemd/system/xray.service.d"
-TRIAL_DROPIN="${TRIAL_DROPIN_DIR}/50-hy2-trial.conf"
-TRIAL_UNIT="hy2-reality-trial-end"
+TRIAL_DROPIN="${TRIAL_DROPIN_DIR}/50-veiltrium-trial.conf"
+TRIAL_UNIT="veiltrium-trial-end"
 TOTAL_STEPS=13
 PANEL_BIN="/usr/local/bin/veiltrium-panel"
 PANEL_LIB="/usr/local/lib/veiltrium"            # the copy of this script the panel helper runs
-PANEL_ETC="/etc/veiltrium"
-PANEL_AUTH="${PANEL_ETC}/panel-auth"
-PANEL_FILE="/root/hy2-panel.txt"
+PANEL_ETC="/etc/veiltrium-panel"                # readable by the panel's group (the node's own state is not)
+PANEL_AUTH="${PANEL_ETC}/auth"
+PANEL_FILE="${VT_ROOT_DIR}/panel.txt"
 HELPER_SOCK="/run/veiltrium/helper.sock"
 
 # ---- Output -----------------------------------------------------------------
@@ -288,7 +289,7 @@ URL_RE='^https?://[^[:space:]'\''"]+$'
 # H_MASQ ("auto" or a URL; empty if none), H_AUTH (password|userpass; empty: a new node).
 load_hy2_state() {
     H_PASSWORD=""; H_SNI=""; H_PORT=""; H_MASQ=""; H_AUTH=""
-    [[ "${HY2_RECONFIGURE}" != "1" ]] || return 0
+    [[ "${VT_RECONFIGURE}" != "1" ]] || return 0
     [[ -e "${HY2_STATE}" || -e "${HY2_CONFIG}" ]] || return 0    # a new node
     local damaged=""
     if [[ -s "${HY2_STATE}" ]]; then
@@ -305,7 +306,7 @@ load_hy2_state() {
         damaged=""; H_PASSWORD=""; H_SNI=""; H_PORT=""; H_MASQ=""; H_AUTH=""   # a first install that never finished: start over
     fi
     if [[ -n "${damaged}" ]]; then
-        die "the Hysteria node is damaged (${damaged}); nothing was changed. New password and certificate (clients must be updated): HY2_RECONFIGURE=1 bash $0"
+        die "the Hysteria node is damaged (${damaged}); nothing was changed. New password and certificate (clients must be updated): VT_RECONFIGURE=1 bash $0"
     fi
     # Nodes from before 2026-10-09 have no H_MASQ: take what their config.yaml uses
     # ("auto" when it is https://<SNI>), so the first run of this version changes nothing.
@@ -348,7 +349,7 @@ hy2_server_yaml() {
         auth="  type: password"$'\n'"  password: $(yaml_sq "${H_PASSWORD}")"
     fi
     cat > "$1" <<EOF
-# hy2-secure-install: Hysteria 2 server
+# veiltrium: Hysteria 2 server
 listen: :${HY2_PORT}
 tls:
   cert: ${HY2_CERT}
@@ -403,7 +404,7 @@ detect_country() {
 save_node_name() {
     install -d -m 700 "${SCANNER_DIR}"
     install -m 600 /dev/null "${NODE_ENV}.new"
-    printf '# hy2-secure-install: node name in client apps (Veiltrium-<N_NAME>)\nN_NAME=%q\n' "${N_NAME}" > "${NODE_ENV}.new"
+    printf '# veiltrium: node name in client apps (Veiltrium-<N_NAME>)\nN_NAME=%q\n' "${N_NAME}" > "${NODE_ENV}.new"
     mv -f "${NODE_ENV}.new" "${NODE_ENV}"
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
 }
@@ -436,7 +437,7 @@ write_client_env() {   # $1 = file, then name, UUID, Hysteria password, TrustTun
     mv -f "$1.new" "$1"
 }
 
-# HY2_RECONFIGURE=1: the added clients get new secrets too (names and dates stay).
+# VT_RECONFIGURE=1: the added clients get new secrets too (names and dates stay).
 renew_client_secrets() {
     local i
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
@@ -488,15 +489,15 @@ tt_export_link() {
 # Reality keys and site from a previous run. Sets R_UUID, R_PRIV, R_PUB, R_SID, R_SITE.
 load_reality_state() {
     R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""
-    if [[ "${HY2_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" ]]; then
+    if [[ "${VT_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" ]]; then
         # shellcheck disable=SC1090
         source "${XRAY_STATE}"
     fi
     if [[ ! "${R_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ || \
           ! "${R_PRIV}" =~ ^[A-Za-z0-9_-]{43}$ || ! "${R_PUB}" =~ ^[A-Za-z0-9_-]{43}$ || \
           ! "${R_SID}" =~ ^[0-9a-f]{16}$ ]]; then
-        if [[ "${HY2_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" && -e "${CLIENT_FILE}" ]]; then
-            die "${XRAY_STATE} is damaged; nothing was changed. New keys (clients must be updated): HY2_RECONFIGURE=1 bash $0"
+        if [[ "${VT_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" && -e "${CLIENT_FILE}" ]]; then
+            die "${XRAY_STATE} is damaged; nothing was changed. New keys (clients must be updated): VT_RECONFIGURE=1 bash $0"
         fi
         R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""
     fi
@@ -506,13 +507,13 @@ load_reality_state() {
 
 load_tt_state() {
     T_USER=""; T_PASS=""; T_SNI=""; T_IPV6=""
-    if [[ "${HY2_RECONFIGURE}" != "1" && -e "${TT_STATE}" ]]; then
+    if [[ "${VT_RECONFIGURE}" != "1" && -e "${TT_STATE}" ]]; then
         # shellcheck disable=SC1090
         source "${TT_STATE}"
         if [[ -z "${T_USER}" || -z "${T_PASS}" || ! -s "${TT_DIR}/cert.pem" || ! -s "${TT_DIR}/key.pem" ]] || \
            [[ "$(openssl x509 -in "${TT_DIR}/cert.pem" -noout -pubkey 2>/dev/null)" != "$(openssl pkey -in "${TT_DIR}/key.pem" -pubout 2>/dev/null)" ]]; then
             if [[ -e "${CLIENT_FILE}" ]]; then
-                die "the TrustTunnel endpoint is damaged (${TT_STATE}, cert.pem/key.pem); nothing was changed. New credentials: HY2_RECONFIGURE=1 bash $0"
+                die "the TrustTunnel endpoint is damaged (${TT_STATE}, cert.pem/key.pem); nothing was changed. New credentials: VT_RECONFIGURE=1 bash $0"
             fi
             T_USER=""; T_PASS=""; T_SNI=""; T_IPV6=""   # a first install that never finished: start over
         fi
@@ -570,7 +571,7 @@ load_candidates() {
 save_candidates() {
     if [[ "${CAND_SOURCE}" == "explicit" ]]; then
         install -d -m 700 "${SCANNER_DIR}"
-        printf '# hy2-secure-install: Reality mask site candidates (REALITY_CANDIDATES), one per line\n%s\n' \
+        printf '# veiltrium: Reality mask site candidates (REALITY_CANDIDATES), one per line\n%s\n' \
             "$(printf '%s\n' "${CAND_LIST[@]}")" > "${CANDIDATES_FILE}.new"
         chmod 600 "${CANDIDATES_FILE}.new"
         mv -f "${CANDIDATES_FILE}.new" "${CANDIDATES_FILE}"
@@ -947,25 +948,25 @@ selection_json() {
 #   - error, Ctrl+C, SIGTERM: right away (EXIT trap);
 #   - SIGKILL, a hung run: a systemd timer (${WATCHDOG_UNIT}) checks every 30 s and
 #     restores as soon as the installer no longer holds its lock;
-#   - power loss, reboot: hy2-secure-recover.service, before the proxies start;
+#   - power loss, reboot: veiltrium-recover.service, before the proxies start;
 #   - and the next installer run, as a last resort.
 RECOVER_SCRIPT='#!/usr/bin/env bash
-# hy2-secure-install: puts back the files of a change that did not finish.
+# veiltrium: puts back the files of a change that did not finish.
 #   --boot      at boot, before the proxy services start
 #   --watchdog  from a timer while a change is pending (only if the installer is gone)
 #   --now       from the installer itself
 # A second argument limits it to one change (reality, hysteria, trusttunnel).
 set -u
-D=/var/lib/hy2-secure/txn
+D=/var/lib/veiltrium/txn
 mode="${1:---watchdog}"; only="${2:-}"
 if [[ "${mode}" == --watchdog ]]; then
-    exec 9>/run/hy2-secure-install.lock
+    exec 9>/run/veiltrium.lock
     flock -n 9 || exit 0
     tries=$(( $(cat "${D}/.tries" 2>/dev/null || echo 0) + 1 ))
     echo "${tries}" > "${D}/.tries"
     if (( tries > 20 )); then
-        echo "hy2-secure-recover: giving up after 20 attempts; the boot service or the next installer run retries" >&2
-        systemctl stop hy2-secure-watchdog.timer >/dev/null 2>&1
+        echo "veiltrium-recover: giving up after 20 attempts; the boot service or the next installer run retries" >&2
+        systemctl stop veiltrium-watchdog.timer >/dev/null 2>&1
         exit 1
     fi
 fi
@@ -978,10 +979,10 @@ for t in "${D}"/*/; do
     while IFS= read -r path; do
         n=$((n + 1))
         if [[ -f "${t}/f${n}" ]]; then
-            if cp -p "${t}/f${n}" "${path}.hy2-restore" && cmp -s "${t}/f${n}" "${path}.hy2-restore"; then
-                mv -f "${path}.hy2-restore" "${path}" || failed=1
+            if cp -p "${t}/f${n}" "${path}.vt-restore" && cmp -s "${t}/f${n}" "${path}.vt-restore"; then
+                mv -f "${path}.vt-restore" "${path}" || failed=1
             else
-                rm -f "${path}.hy2-restore"; failed=1
+                rm -f "${path}.vt-restore"; failed=1
             fi
         else
             rm -f "${path}" || failed=1
@@ -989,7 +990,7 @@ for t in "${D}"/*/; do
     done < "${t}/files"
     sync
     if (( failed )); then
-        echo "hy2-secure-recover: could not restore all ${name} files (disk full?); will retry" >&2
+        echo "veiltrium-recover: could not restore all ${name} files (disk full?); will retry" >&2
         continue
     fi
     while IFS= read -r svc; do
@@ -1003,15 +1004,15 @@ for t in "${D}"/*/; do
     done < "${t}/services"
     rm -f "${t}/pending"
     sync
-    logger -t hy2-secure-recover "restored the previous ${name} settings after an interrupted change" 2>/dev/null
-    echo "hy2-secure-recover: restored the previous ${name} settings"
+    logger -t veiltrium-recover "restored the previous ${name} settings after an interrupted change" 2>/dev/null
+    echo "veiltrium-recover: restored the previous ${name} settings"
 done
 if [[ "${mode}" != --boot ]] && ! compgen -G "${D}/*/pending" >/dev/null; then
-    systemctl stop hy2-secure-watchdog.timer >/dev/null 2>&1
+    systemctl stop veiltrium-watchdog.timer >/dev/null 2>&1
     rm -f "${D}/.tries"
 fi
 # temp dirs of a killed installer run (client configs with keys); none is running now
-if [[ "${mode}" != --now ]]; then rm -rf /root/.hy2-install.* 2>/dev/null; fi
+if [[ "${mode}" != --now ]]; then rm -rf /root/.veiltrium.* 2>/dev/null; fi
 exit 0
 '
 
@@ -1019,10 +1020,10 @@ install_recover() {
     printf '%s' "${RECOVER_SCRIPT}" > "${RECOVER_BIN}.new"
     chmod 700 "${RECOVER_BIN}.new"
     mv -f "${RECOVER_BIN}.new" "${RECOVER_BIN}"
-    cat > /etc/systemd/system/hy2-secure-recover.service.new <<EOF
-# hy2-secure-install: restore the settings of a change interrupted by a reboot or power loss
+    cat > /etc/systemd/system/veiltrium-recover.service.new <<EOF
+# veiltrium: restore the settings of a change interrupted by a reboot or power loss
 [Unit]
-Description=Restore settings of an interrupted hy2-secure-install change
+Description=Restore settings of an interrupted Veiltrium change
 After=local-fs.target
 Before=hysteria-server.service xray.service trusttunnel.service
 ConditionPathExistsGlob=${TXN_DIR}/*/pending
@@ -1034,13 +1035,13 @@ ExecStart=${RECOVER_BIN} --boot
 [Install]
 WantedBy=multi-user.target
 EOF
-    if ! cmp -s /etc/systemd/system/hy2-secure-recover.service.new /etc/systemd/system/hy2-secure-recover.service 2>/dev/null; then
-        mv -f /etc/systemd/system/hy2-secure-recover.service.new /etc/systemd/system/hy2-secure-recover.service
+    if ! cmp -s /etc/systemd/system/veiltrium-recover.service.new /etc/systemd/system/veiltrium-recover.service 2>/dev/null; then
+        mv -f /etc/systemd/system/veiltrium-recover.service.new /etc/systemd/system/veiltrium-recover.service
         systemctl daemon-reload
     else
-        rm -f /etc/systemd/system/hy2-secure-recover.service.new
+        rm -f /etc/systemd/system/veiltrium-recover.service.new
     fi
-    systemctl enable hy2-secure-recover.service >/dev/null 2>&1 || true
+    systemctl enable veiltrium-recover.service >/dev/null 2>&1 || true
 }
 
 txn_pending() { compgen -G "${TXN_DIR}/*/pending" >/dev/null; }
@@ -1069,7 +1070,7 @@ txn_begin() {   # $1 name, $2 service, $3... files the change may replace
     if ! systemctl is-active --quiet "${WATCHDOG_UNIT}.timer"; then
         systemctl reset-failed "${WATCHDOG_UNIT}.timer" "${WATCHDOG_UNIT}.service" >/dev/null 2>&1 || true
         systemd-run --quiet --unit="${WATCHDOG_UNIT}" --on-active=30s --on-unit-active=30s \
-            --timer-property=AccuracySec=5s --description="hy2-secure-install: restore an interrupted change" \
+            --timer-property=AccuracySec=5s --description="Veiltrium: restore an interrupted change" \
             "${RECOVER_BIN}" --watchdog >/dev/null 2>&1 \
             || warn "could not arm the rollback timer; an interrupted change is restored at boot or by the next run"
     fi
@@ -1224,8 +1225,8 @@ mts_import() {
     if [[ "${src}" == "-" ]]; then cat > "${TMPD}/mts.json"; else cp -- "${src}" "${TMPD}/mts.json"; fi
     # tolerate a UTF-8 BOM and CRLF from Windows copies
     sed -i '1s/^\xEF\xBB\xBF//; s/\r$//' "${TMPD}/mts.json"
-    jq -e '.schema == "hy2-vpn-probe/1"' "${TMPD}/mts.json" >/dev/null 2>&1 \
-        || die "not a keenetic-vpn-probe.sh result (schema hy2-vpn-probe/1 expected)."
+    jq -e '.schema == "veiltrium-probe/1" or .schema == "hy2-vpn-probe/1"' "${TMPD}/mts.json" >/dev/null 2>&1 \
+        || die "not a keenetic-vpn-probe.sh result (schema veiltrium-probe/1 expected)."
     now="$(date +%s)"
     install -d -m 700 "${STATE_DIR}"
     touch "${MTS_RECORDS}" "${MTS_RUNS}"; chmod 600 "${MTS_RECORDS}" "${MTS_RUNS}"
@@ -1328,7 +1329,7 @@ trial_start() {
     # so a reboot ends it as well.
     cat > "${TRIAL_END}" <<EOF
 #!/bin/sh
-# hy2-secure-install: end of a Reality trial
+# veiltrium: end of a Reality trial
 rm -f "${TRIAL_DROPIN}" "${TRIAL_CONFIG}" "${TRIAL_ENV}"
 systemctl daemon-reload
 systemctl restart xray.service
@@ -1337,12 +1338,12 @@ EOF
     # The end is scheduled first: if this run is killed at any later point, the timer still
     # ends the trial (and a reboot ends it too: everything lives in /run).
     systemctl reset-failed "${TRIAL_UNIT}.timer" "${TRIAL_UNIT}.service" >/dev/null 2>&1 || true
-    if ! systemd-run --quiet --unit="${TRIAL_UNIT}" --on-active="${TRIAL_MINUTES}m"             --timer-property=AccuracySec=10s --description="End of the hy2-secure-install Reality trial"             /bin/sh "${TRIAL_END}"; then
+    if ! systemd-run --quiet --unit="${TRIAL_UNIT}" --on-active="${TRIAL_MINUTES}m"             --timer-property=AccuracySec=10s --description="End of the Veiltrium Reality trial"             /bin/sh "${TRIAL_END}"; then
         rm -f "${TRIAL_CONFIG}"
         die "could not schedule the end of the trial; nothing was changed."
     fi
     install -d -m 755 "${TRIAL_DROPIN_DIR}"
-    printf '# hy2-secure-install: Reality trial (ends by itself)
+    printf '# veiltrium: Reality trial (ends by itself)
 [Service]
 ExecStart=
 ExecStart=%s run -c %s
@@ -1424,7 +1425,7 @@ build_report() {
         def proof($vps; $mts): {vps_verified: ($vps == "verified" or $vps == "ok"), vps: $vps,
             mts_verified: ($mts == "ok"), mts: $mts};
         {
-          schema: "hy2-secure-install-report/1", generated_at: $now, script_version: $version, mode: $mode,
+          schema: "veiltrium-report/1", generated_at: $now, script_version: $version, mode: $mode,
           server: $server, node_name: $label,
           clients: {added: ($n_clients | tonumber), hysteria_auth: $h_auth},
           reality:(if $r_enabled == "1" then ({
@@ -1576,16 +1577,16 @@ On the server:
   journalctl -u hysteria-server -n 50       Hysteria log
   journalctl -u xray -n 50                  Xray log
   cat ${CLIENT_FILE}                 these details
-  bash hy2-secure-install.sh --diagnose     check everything, change nothing
-  bash hy2-secure-install.sh --dry-run      would another Reality site be better?
-  bash hy2-secure-install.sh --add-client NAME   credentials for one more person or device
+  bash veiltrium.sh --diagnose     check everything, change nothing
+  bash veiltrium.sh --dry-run      would another Reality site be better?
+  bash veiltrium.sh --add-client NAME   credentials for one more person or device
   Re-run the script to update or repair the server; the links stay the same.
-  HY2_RECONFIGURE=1 issues new passwords, keys and certificates (clients must be updated).
+  VT_RECONFIGURE=1 issues new passwords, keys and certificates (clients must be updated).
 Home-network test from the router: ${PROBE_PROFILE} (secret) + keenetic-vpn-probe.sh
 EOF
 )"
     else
-        foot="Revoke this client on the server:  bash hy2-secure-install.sh --remove-client ${name}"
+        foot="Revoke this client on the server:  bash veiltrium.sh --remove-client ${name}"
     fi
     cat <<EOF
 Veiltrium connection details: node ${LABEL}, client ${name} ($(date '+%Y-%m-%d %H:%M %Z'))
@@ -1653,6 +1654,7 @@ EOF
 # TT_URL = the main client's tt:// link ("" = no TrustTunnel).
 write_client_files() {
     local i f n tt
+    install -d -m 700 "${VT_ROOT_DIR}"
     install -m 600 /dev/null "${CLIENT_FILE}.new"
     client_details main "${TT_URL}" "${CLIENT_FILE}" > "${CLIENT_FILE}.new"
     mv -f "${CLIENT_FILE}.new" "${CLIENT_FILE}"
@@ -1678,9 +1680,10 @@ write_client_files() {
 
 # Probe profile of the main client for keenetic-vpn-probe.sh (secret, 0600).
 write_probe_profile() {
+    install -d -m 700 "${VT_ROOT_DIR}"
     install -m 600 /dev/null "${PROBE_PROFILE}.new"
     {
-        printf '# hy2-secure-install probe profile for keenetic-vpn-probe.sh. SECRET: keep it 0600.\n'
+        printf '# veiltrium probe profile for keenetic-vpn-probe.sh. SECRET: keep it 0600.\n'
         printf 'P_VERSION=1\nP_NAME=%s\nP_SERVER=%s\nP_KEY=%s\n' "${LABEL}" "${PUBLIC_IP}" "${PROBE_KEY}"
         printf 'P_HY2_PORT=%s\nP_HY2_SNI=%s\nP_HY2_PASSWORD=%s\nP_HY2_PIN_SPKI=%s\nP_HY2_PIN_CERT=%s\n' \
             "${HY2_PORT}" "${HY2_SNI}" "${HY2_AUTH_MAIN}" "${PK_SHA}" "${CERT_SHA}"
@@ -1694,6 +1697,81 @@ write_probe_profile() {
         fi
     } > "${PROBE_PROFILE}.new"
     mv -f "${PROBE_PROFILE}.new" "${PROBE_PROFILE}"
+}
+
+# ---- Move from the hy2-secure-install names ---------------------------------
+# Nodes installed by hy2-secure-install.sh (up to 2026-10-13) keep their state under the old
+# names. The first install run of veiltrium.sh moves it; the old system files (units,
+# sysctl, SSH, fail2ban, needrestart, apt drop-ins) are removed once their new copies are
+# written, at the end of the run. Keys, passwords, certificates and links stay as they are.
+old_layout_present() {
+    [[ -d /etc/hy2-secure || -d /var/lib/hy2-secure || -e /root/hy2-client.txt ]]
+}
+
+move_tree() {   # $1 = old directory, $2 = new one: what the new one lacks moves over, then the old one goes
+    local e
+    [[ -d "$1" ]] || return 0
+    install -d -m 700 "$2"
+    for e in "$1"/* "$1"/.[!.]*; do
+        [[ -e "${e}" ]] || continue
+        if [[ ! -e "$2/${e##*/}" ]]; then mv -f "${e}" "$2/"; fi
+    done
+    rm -rf -- "$1"
+    return 0
+}
+
+migrate_old_layout() {
+    local f
+    old_layout_present || return 0
+    info "This node was installed by hy2-secure-install.sh: moving it to the Veiltrium names"
+    info "(keys, passwords, certificates and links stay; the old files are removed at the end)."
+    # an interrupted change of the old version comes back first, by its own recover script
+    if compgen -G "/var/lib/hy2-secure/txn/*/pending" >/dev/null && [[ -x /usr/local/sbin/hy2-secure-recover ]]; then
+        /usr/local/sbin/hy2-secure-recover --now || true
+        if compgen -G "/var/lib/hy2-secure/txn/*/pending" >/dev/null; then
+            die "an interrupted change of the old version could not be restored yet; nothing was moved. Try again in a minute."
+        fi
+    fi
+    systemctl stop hy2-secure-watchdog.timer hy2-reality-trial-end.timer >/dev/null 2>&1 || true
+    # the old weekly refresh would write to the old directory; its replacement comes in step 6
+    systemctl disable --now hy2-scanner-block.timer >/dev/null 2>&1 || true
+    if [[ -e /run/systemd/system/xray.service.d/50-hy2-trial.conf ]]; then   # a running trial ends
+        rm -f /run/systemd/system/xray.service.d/50-hy2-trial.conf
+        rm -rf /run/hy2-secure
+        systemctl daemon-reload
+        RESTART_XRAY=1
+    fi
+    move_tree /etc/hy2-secure "${SCANNER_DIR}"
+    move_tree /var/lib/hy2-secure "${STATE_DIR}"
+    if [[ -f "${SCANNER_FILE}" ]]; then sed -i 's/inet hy2fw /inet veiltrium /g' "${SCANNER_FILE}"; fi
+    install -d -m 700 "${VT_ROOT_DIR}"
+    for f in client.txt probe.env; do
+        if [[ -e "/root/hy2-${f}" && ! -e "${VT_ROOT_DIR}/${f}" ]]; then mv -f "/root/hy2-${f}" "${VT_ROOT_DIR}/${f}"; fi
+        rm -f "/root/hy2-${f}"
+    done
+    if [[ -d /root/hy2-clients ]]; then move_tree /root/hy2-clients "${CLIENT_FILES_DIR}"; fi
+    CHANGES+=("moved from the hy2-secure-install names to Veiltrium (root's files are now in ${VT_ROOT_DIR})")
+    return 0
+}
+
+# The old system files, once their Veiltrium copies exist (end of an install run).
+remove_old_names() {
+    local u old=0
+    local -a files=(/etc/systemd/system/hy2-scanner-block.service /etc/systemd/system/hy2-scanner-block.timer
+        /etc/systemd/system/hy2-secure-recover.service /usr/local/sbin/hy2-scanner-block /usr/local/sbin/hy2-secure-recover
+        /etc/sysctl.d/99-zz-hy2-hardening.conf /etc/modules-load.d/hy2-bbr.conf /etc/needrestart/conf.d/50-hy2-secure.conf
+        /etc/systemd/journald.conf.d/50-hy2.conf /etc/ssh/sshd_config.d/00-hy2-hardening.conf
+        /etc/fail2ban/jail.d/hy2-sshd.local /etc/apt/apt.conf.d/52hy2-unattended-upgrades
+        /var/log/hy2-secure-install.log /var/log/hy2-secure-install.log.1)
+    for u in "${files[@]}"; do if [[ -e "${u}" ]]; then old=1; fi; done
+    (( old == 1 )) || return 0
+    for u in hy2-scanner-block.timer hy2-scanner-block.service hy2-secure-recover.service; do
+        systemctl disable --now "${u}" >/dev/null 2>&1 || true
+    done
+    rm -f -- "${files[@]}"
+    systemctl daemon-reload
+    ok "Old hy2-secure-install files removed (their Veiltrium copies are in place)"
+    return 0
 }
 
 # ---- Machine interface (--json -: JSON on stdout, for the panel) ------------
@@ -1759,12 +1837,12 @@ status_json() {
     report="$(jq -c '{generated_at, mode, reality: .reality.vps, hysteria2: .hysteria2.vps,
         trusttunnel_h2: .trusttunnel.h2.vps, trusttunnel_h3: .trusttunnel.h3.vps}' "${REPORT_FILE}" 2>/dev/null || true)"
     n="$(count_clients)"
-    scan="$(nft -j list set inet hy2fw scanners4 2>/dev/null \
+    scan="$(nft -j list set inet veiltrium scanners4 2>/dev/null \
         | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add // 0' 2>/dev/null || echo 0)"
     jq -n --arg now "$(date -u +%FT%TZ)" --arg version "${SCRIPT_VERSION}" --arg label "${LABEL}" \
         --arg ssh "${SSH_PORTS[*]}" --arg scan "${scan:-0}" \
         --arg f2b "$(systemctl is-active fail2ban 2>/dev/null || true)" \
-        --arg fw "$(nft list table inet hy2fw >/dev/null 2>&1 && echo 1 || echo 0)" \
+        --arg fw "$(nft list table inet veiltrium >/dev/null 2>&1 && echo 1 || echo 0)" \
         --arg server "${PUBLIC_IP}" --arg os "${os}" --arg uptime "$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)" \
         --arg reboot "$([[ -f /run/reboot-required ]] && echo 1 || echo 0)" --arg st "${st}" \
         --arg vh "${vh}" --arg vx "${vx}" --arg vt "${vt:+v${vt}}" --arg n "${n}" --arg h_auth "${H_AUTH}" \
@@ -2006,6 +2084,7 @@ panel_new_password() {
     install -m 640 -o root -g veiltrium-panel /dev/null "${PANEL_AUTH}.new"
     printf '%s\n' "${pw}" | "${PANEL_BIN}" hash-password > "${PANEL_AUTH}.new" || die "could not hash the panel password."
     mv -f "${PANEL_AUTH}.new" "${PANEL_AUTH}"
+    install -d -m 700 "${VT_ROOT_DIR}"
     install -m 600 /dev/null "${PANEL_FILE}.new"
     cat > "${PANEL_FILE}.new" <<EOF
 Veiltrium web panel ($(date '+%Y-%m-%d %H:%M %Z'))
@@ -2017,7 +2096,7 @@ The panel listens on 127.0.0.1 only: nothing new is open on the internet.
 Open it through an SSH tunnel from your computer (PowerShell or a terminal):
   ssh -N -L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@$1
 then in the browser:  http://localhost:${PANEL_PORT}/
-New password (signs everybody out):  bash hy2-secure-install.sh --panel-password
+New password (signs everybody out):  bash veiltrium.sh --panel-password
 EOF
     mv -f "${PANEL_FILE}.new" "${PANEL_FILE}"
     systemctl try-restart veiltrium-panel.service >/dev/null 2>&1 || true
@@ -2116,7 +2195,7 @@ done
 
 SCRIPT_PATH="$(readlink -f -- "$0" 2>/dev/null || true)"
 if [[ -n "${SCRIPT_PATH}" && -f "${SCRIPT_PATH}" ]] && \
-   ! grep -q '^# ==== HY2-SECURE-INSTALL END ====$' "${SCRIPT_PATH}"; then
+   ! grep -q '^# ==== VEILTRIUM END ====$' "${SCRIPT_PATH}"; then
     die "the script file is incomplete (truncated while pasting); paste the whole block again."
 fi
 # The panel's root helper: no lock here, the request it runs takes it.
@@ -2126,11 +2205,11 @@ if [[ "${MODE}" == "helper" ]]; then
     exit 0
 fi
 
-exec 9>/run/hy2-secure-install.lock
+exec 9>/run/veiltrium.lock
 flock -n 9 || die "the script is already running (perhaps a previous run is still going after a dropped connection); wait a couple of minutes and run it again."
 # Temp dirs of a run that was killed (they may hold client configs with keys): with the
 # lock held, no other run is using them.
-rm -rf /root/.hy2-install.* 2>/dev/null || true
+rm -rf /root/.veiltrium.* 2>/dev/null || true
 
 # =============================================================================
 # Maintenance modes: no install log, no package changes.
@@ -2138,7 +2217,10 @@ rm -rf /root/.hy2-install.* 2>/dev/null || true
 if [[ "${MODE}" != "install" ]]; then
     LIGHT=1
     if [[ "${JSON_OUT}" == "-" ]]; then exec 8>&1 1>&2; fi
-    TMPD="$(mktemp -d /root/.hy2-install.XXXXXX)"
+    if old_layout_present; then
+        die "this node was installed by hy2-secure-install.sh: run the installer once (bash veiltrium.sh) to move it to the Veiltrium names first."
+    fi
+    TMPD="$(mktemp -d /root/.veiltrium.XXXXXX)"
     chmod 700 "${TMPD}"
     # An interrupted change first: its half-written files must not be read as "damaged".
     if txn_pending; then
@@ -2330,7 +2412,7 @@ if [[ -f "${LOG_FILE}" ]]; then mv -f "${LOG_FILE}" "${LOG_FILE}.1"; fi
 : > "${LOG_FILE}"
 chmod 600 "${LOG_FILE}"
 # tee -p: if SSH drops, tee does not die and keeps writing the log, so the
-# install runs to the end; the result stays in the log and /root/hy2-client.txt.
+# install runs to the end; the result stays in the log and /root/veiltrium/client.txt.
 TEE_ARGS=(-i -a)
 if tee -p /dev/null </dev/null >/dev/null 2>&1; then TEE_ARGS=(-i -p -a); fi
 exec 7>&1
@@ -2338,9 +2420,9 @@ exec 7>&1
 exec > >(tee "${TEE_ARGS[@]}" "${LOG_FILE}" 7>&- 9>&-) 2>&1
 TEE_PID=$!
 banner
-printf '\n===== Veiltrium %s (hy2-secure-install.sh): %s =====\n' "${SCRIPT_VERSION}" "$(date -Is)"
+printf '\n===== Veiltrium %s (veiltrium.sh): %s =====\n' "${SCRIPT_VERSION}" "$(date -Is)"
 
-TMPD="$(mktemp -d /root/.hy2-install.XXXXXX)"
+TMPD="$(mktemp -d /root/.veiltrium.XXXXXX)"
 chmod 700 "${TMPD}"
 
 # nftables: own table only. $1 = 1 to open the VLESS Reality port.
@@ -2373,15 +2455,15 @@ apply_firewall() {
         fi
         scan_include="include \"${SCANNER_FILE}\""
     fi
-    cat > /etc/nftables.conf.hy2-new <<EOF
+    cat > /etc/nftables.conf.vt-new <<EOF
 #!/usr/sbin/nft -f
-# hy2-secure-install: server firewall.
+# veiltrium: server firewall.
 # Only our own table is recreated; rules of fail2ban and other services are left alone.
 
-table inet hy2fw
-delete table inet hy2fw
+table inet veiltrium
+delete table inet veiltrium
 
-table inet hy2fw {
+table inet veiltrium {
     set ssh_ports {
         type inet_service
         elements = { ${SSH_SET} }
@@ -2401,7 +2483,7 @@ table inet hy2fw {
         timeout 2m
     }
 
-    # Filled from ${SCANNER_FILE} (hy2-scanner-block, refreshed weekly)
+    # Filled from ${SCANNER_FILE} (veiltrium-scanner-block, refreshed weekly)
     set scanners4 {
         type ipv4_addr
         flags interval
@@ -2461,10 +2543,10 @@ ${reality_egress}${DNS_RULES}        fib daddr type local reject
 }
 ${scan_include}
 EOF
-    nft -c -f /etc/nftables.conf.hy2-new || die "nftables rejected the rules; the firewall was not changed."
-    chmod 700 /etc/nftables.conf.hy2-new
+    nft -c -f /etc/nftables.conf.vt-new || die "nftables rejected the rules; the firewall was not changed."
+    chmod 700 /etc/nftables.conf.vt-new
     sync
-    mv -f /etc/nftables.conf.hy2-new /etc/nftables.conf
+    mv -f /etc/nftables.conf.vt-new /etc/nftables.conf
     systemctl enable nftables.service >/dev/null 2>&1
     # The nftables service applies /etc/nftables.conf (also on every boot).
     if systemctl is-active --quiet nftables.service; then
@@ -2472,7 +2554,8 @@ EOF
     else
         systemctl start nftables.service
     fi
-    nft list table inet hy2fw >/dev/null 2>&1 || die "the firewall rules did not load."
+    nft list table inet veiltrium >/dev/null 2>&1 || die "the firewall rules did not load."
+    nft delete table inet hy2fw >/dev/null 2>&1 || true      # the table of hy2-secure-install, if any
     OPEN_PORTS="SSH ${SSH_PORTS[*]}/TCP, ${HY2_PORT}/UDP (Hysteria)"
     if [[ "${reality_on}" == "1" ]]; then OPEN_PORTS+=", ${REALITY_PORT}/TCP (VLESS Reality)"; fi
     if [[ "${TT_ENABLE}" == "1" ]]; then OPEN_PORTS+=", ${TT_PORT}/TCP+UDP (TrustTunnel)"; fi
@@ -2495,6 +2578,7 @@ case "${ARCH}" in
            TT_ARCH="aarch64"; TT_SHA256="${TT_SHA256_ARM64}" ;;
     *) die "architecture ${ARCH} is not supported (amd64 or arm64 required)." ;;
 esac
+migrate_old_layout
 load_ports
 [[ "${HY2_PORT}" =~ ^[0-9]{1,5}$ ]] && (( HY2_PORT >= 1 && HY2_PORT <= 65535 )) \
     || die "HY2_PORT must be a number from 1 to 65535."
@@ -2530,9 +2614,9 @@ if trial_active; then
 fi
 load_hy2_state
 load_clients
-if [[ "${HY2_RECONFIGURE}" == "1" ]] && (( ${#CL_NAMES[@]} )); then
+if [[ "${VT_RECONFIGURE}" == "1" ]] && (( ${#CL_NAMES[@]} )); then
     renew_client_secrets
-    info "HY2_RECONFIGURE=1: the added clients get new credentials too (${CL_NAMES[*]})."
+    info "VT_RECONFIGURE=1: the added clients get new credentials too (${CL_NAMES[*]})."
 fi
 load_node_name
 # A node that already works is never rebooted by a re-run (clients would drop).
@@ -2574,8 +2658,8 @@ export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
 # needrestart must not restart the proxies after library updates (that drops every
 # client connection); they pick up new libraries at the next (nightly) reboot.
 install -d -m 755 /etc/needrestart/conf.d
-cat > /etc/needrestart/conf.d/50-hy2-secure.conf <<'EOF'
-# hy2-secure-install: do not restart the proxies automatically (clients would drop)
+cat > /etc/needrestart/conf.d/50-veiltrium.conf <<'EOF'
+# veiltrium: do not restart the proxies automatically (clients would drop)
 $nrconf{override_rc}->{qr(^(hysteria-server|xray|trusttunnel)\.service$)} = 0;
 EOF
 APT_GET=(apt-get -q -o DPkg::Lock::Timeout=900
@@ -2607,8 +2691,8 @@ APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
 EOF
-cat > /etc/apt/apt.conf.d/52hy2-unattended-upgrades <<EOF
-// hy2-secure-install: security updates install automatically;
+cat > /etc/apt/apt.conf.d/52veiltrium-unattended-upgrades <<EOF
+// veiltrium: security updates install automatically;
 // if needed, the server reboots at night at ${AUTO_REBOOT_TIME} (server time).
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
@@ -2627,9 +2711,9 @@ fi
 
 # =============================================================================
 step 4 "Kernel: hardening and QUIC buffers"
-SYSCTL_FILE="/etc/sysctl.d/99-zz-hy2-hardening.conf"
+SYSCTL_FILE="/etc/sysctl.d/99-zz-veiltrium-hardening.conf"
 cat > "${SYSCTL_FILE}" <<'EOF'
-# hy2-secure-install
+# veiltrium
 # --- network: protection against route spoofing and junk packets ---
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
@@ -2664,7 +2748,7 @@ net.core.wmem_max = 16777216
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-echo tcp_bbr > /etc/modules-load.d/hy2-bbr.conf
+echo tcp_bbr > /etc/modules-load.d/veiltrium-bbr.conf
 modprobe tcp_bbr 2>/dev/null || true
 sysctl -q --system >/dev/null 2>&1 || true
 # Our file goes last: otherwise a file applied later overrides the values.
@@ -2681,15 +2765,15 @@ if systemctl cat apport.service >/dev/null 2>&1; then
 fi
 if [[ -f /etc/default/apport ]]; then sed -i 's/^enabled=1/enabled=0/' /etc/default/apport; fi
 install -d -m 755 /etc/systemd/journald.conf.d
-cat > /etc/systemd/journald.conf.d/50-hy2.conf.new <<'EOF'
+cat > /etc/systemd/journald.conf.d/50-veiltrium.conf.new <<'EOF'
 [Journal]
 SystemMaxUse=200M
 MaxRetentionSec=1month
 EOF
-if cmp -s /etc/systemd/journald.conf.d/50-hy2.conf.new /etc/systemd/journald.conf.d/50-hy2.conf; then
-    rm -f /etc/systemd/journald.conf.d/50-hy2.conf.new
+if cmp -s /etc/systemd/journald.conf.d/50-veiltrium.conf.new /etc/systemd/journald.conf.d/50-veiltrium.conf; then
+    rm -f /etc/systemd/journald.conf.d/50-veiltrium.conf.new
 else
-    mv -f /etc/systemd/journald.conf.d/50-hy2.conf.new /etc/systemd/journald.conf.d/50-hy2.conf
+    mv -f /etc/systemd/journald.conf.d/50-veiltrium.conf.new /etc/systemd/journald.conf.d/50-veiltrium.conf
     systemctl restart systemd-journald
 fi
 ok "Crash dumps disabled, journal limited to 200 MB / 1 month"
@@ -2698,8 +2782,8 @@ ok "Crash dumps disabled, journal limited to 200 MB / 1 month"
 step 5 "SSH hardening (password login is kept)"
 if command -v sshd >/dev/null 2>&1; then
     install -d -m 755 /etc/ssh/sshd_config.d
-    cat > /etc/ssh/sshd_config.d/00-hy2-hardening.conf <<'EOF'
-# hy2-secure-install: SSH hardening.
+    cat > /etc/ssh/sshd_config.d/00-veiltrium-hardening.conf <<'EOF'
+# veiltrium: SSH hardening.
 # Login methods (password, root) are NOT changed, as the server owner requested.
 # MaxAuthTries stays at the OpenSSH default: an ssh-agent offering several keys
 # uses up tries before the password prompt; brute force is handled by fail2ban.
@@ -2726,7 +2810,7 @@ EOF
             ok "OpenSSH built-in brute-force protection (PerSourcePenalties) is on"
         fi
     else
-        rm -f /etc/ssh/sshd_config.d/00-hy2-hardening.conf
+        rm -f /etc/ssh/sshd_config.d/00-veiltrium-hardening.conf
         warn "sshd rejected the settings; rolled back, SSH works as before."
     fi
 else
@@ -2774,13 +2858,13 @@ if (( ${#DNS6[@]} )); then
 fi
 SSH_SET="$(IFS=,; echo "${SSH_PORTS[*]}")"
 
-if [[ -f /etc/nftables.conf && ! -f /etc/nftables.conf.orig-hy2 ]] && ! grep -q 'hy2-secure-install' /etc/nftables.conf; then
-    cp -p /etc/nftables.conf /etc/nftables.conf.orig-hy2
+if [[ -f /etc/nftables.conf && ! -f /etc/nftables.conf.orig-veiltrium ]] && ! grep -qE 'veiltrium|hy2-secure-install' /etc/nftables.conf; then
+    cp -p /etc/nftables.conf /etc/nftables.conf.orig-veiltrium
 fi
 # The firewall includes the scanner list: it must exist (possibly empty) before the rules load.
 install -d -m 700 "${SCANNER_DIR}"
 if [[ ! -f "${SCANNER_FILE}" ]]; then
-    printf '# hy2-scanner-block: no list downloaded yet\n' > "${SCANNER_FILE}"
+    printf '# veiltrium-scanner-block: no list downloaded yet\n' > "${SCANNER_FILE}"
     chmod 600 "${SCANNER_FILE}"
 fi
 apply_firewall "${REALITY_ENABLE}"
@@ -2798,11 +2882,11 @@ ok "The proxies cannot reach the server's own addresses, private networks or por
 # proxy ports are closed to them, so the server shows them nothing but SSH.
 cat > "${SCANNER_BIN}" <<'EOS'
 #!/usr/bin/env bash
-# hy2-secure-install: refresh the scanner blocklist (nftables sets scanners4/scanners6).
+# veiltrium: refresh the scanner blocklist (nftables sets scanners4/scanners6).
 # A failed download or a list that looks wrong keeps the current list.
 set -euo pipefail
 umask 077
-OUT="/etc/hy2-secure/scanners.nft"
+OUT="/etc/veiltrium/scanners.nft"
 BASE="https://raw.githubusercontent.com/shadow-netlab/traffic-guard-lists/refs/heads/main/public"
 read -r -a URLS <<<"${SCANNER_URLS:-${BASE}/government_networks.list ${BASE}/antiscanner.list ${BASE}/skipa.list}"
 MIN_ENTRIES=50          # fewer means a broken download
@@ -2813,7 +2897,7 @@ trap 'rm -rf -- "${TMP}"' EXIT
 for url in "${URLS[@]}"; do
     if ! curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 15 --max-time 120 \
             --max-filesize 8000000 "${url}" >> "${TMP}/raw"; then
-        echo "hy2-scanner-block: could not download ${url}; keeping the current list" >&2
+        echo "veiltrium-scanner-block: could not download ${url}; keeping the current list" >&2
         exit 1
     fi
     echo >> "${TMP}/raw"
@@ -2841,40 +2925,40 @@ awk -F/ '
 entries=$(( $(wc -l < "${TMP}/v4") + $(wc -l < "${TMP}/v6") ))
 v4_addrs="$(awk -F/ '{ s += 2 ^ (32 - $2) } END { printf "%d", s }' "${TMP}/v4")"
 if (( entries < MIN_ENTRIES )); then
-    echo "hy2-scanner-block: only ${entries} networks in the downloaded lists; keeping the current list" >&2
+    echo "veiltrium-scanner-block: only ${entries} networks in the downloaded lists; keeping the current list" >&2
     exit 1
 fi
 if (( v4_addrs > MAX_V4_ADDRS )); then
-    echo "hy2-scanner-block: the lists cover ${v4_addrs} IPv4 addresses, more than ${MAX_V4_ADDRS}; keeping the current list" >&2
+    echo "veiltrium-scanner-block: the lists cover ${v4_addrs} IPv4 addresses, more than ${MAX_V4_ADDRS}; keeping the current list" >&2
     exit 1
 fi
 
 {
-    echo "# hy2-scanner-block: ${entries} networks, $(date -u '+%Y-%m-%d %H:%M UTC')"
+    echo "# veiltrium-scanner-block: ${entries} networks, $(date -u '+%Y-%m-%d %H:%M UTC')"
     if [[ -s "${TMP}/v4" ]]; then
-        echo "add element inet hy2fw scanners4 { $(paste -sd, "${TMP}/v4") }"
+        echo "add element inet veiltrium scanners4 { $(paste -sd, "${TMP}/v4") }"
     fi
     if [[ -s "${TMP}/v6" ]]; then
-        echo "add element inet hy2fw scanners6 { $(paste -sd, "${TMP}/v6") }"
+        echo "add element inet veiltrium scanners6 { $(paste -sd, "${TMP}/v6") }"
     fi
 } > "${TMP}/scanners.nft"
 
 # Swap the set contents in one transaction; the file on disk is replaced only if that worked.
-printf 'flush set inet hy2fw scanners4\nflush set inet hy2fw scanners6\ninclude "%s"\n' \
+printf 'flush set inet veiltrium scanners4\nflush set inet veiltrium scanners6\ninclude "%s"\n' \
     "${TMP}/scanners.nft" > "${TMP}/apply.nft"
 if ! nft -f "${TMP}/apply.nft"; then
-    echo "hy2-scanner-block: nftables rejected the new list; keeping the current list" >&2
+    echo "veiltrium-scanner-block: nftables rejected the new list; keeping the current list" >&2
     exit 1
 fi
 install -m 600 "${TMP}/scanners.nft" "${OUT}.new"
 mv -f "${OUT}.new" "${OUT}"
-echo "hy2-scanner-block: ${entries} networks loaded (${v4_addrs} IPv4 addresses)"
+echo "veiltrium-scanner-block: ${entries} networks loaded (${v4_addrs} IPv4 addresses)"
 EOS
 chmod 755 "${SCANNER_BIN}"
-cat > /etc/systemd/system/hy2-scanner-block.service <<EOF
-# hy2-secure-install: refresh the scanner blocklist
+cat > /etc/systemd/system/veiltrium-scanner-block.service <<EOF
+# veiltrium: refresh the scanner blocklist
 [Unit]
-Description=Refresh the scanner blocklist (hy2-secure-install)
+Description=Refresh the scanner blocklist (Veiltrium)
 After=network-online.target nftables.service
 Wants=network-online.target
 
@@ -2892,10 +2976,10 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
 EOF
-cat > /etc/systemd/system/hy2-scanner-block.timer <<'EOF'
-# hy2-secure-install: refresh the scanner blocklist weekly
+cat > /etc/systemd/system/veiltrium-scanner-block.timer <<'EOF'
+# veiltrium: refresh the scanner blocklist weekly
 [Unit]
-Description=Weekly scanner blocklist refresh (hy2-secure-install)
+Description=Weekly scanner blocklist refresh (Veiltrium)
 
 [Timer]
 OnCalendar=weekly
@@ -2907,32 +2991,32 @@ WantedBy=timers.target
 EOF
 systemctl daemon-reload
 if [[ "${SCANNER_BLOCK}" == "1" ]]; then
-    systemctl enable hy2-scanner-block.timer >/dev/null 2>&1
-    systemctl start hy2-scanner-block.timer >/dev/null 2>&1 || true
+    systemctl enable veiltrium-scanner-block.timer >/dev/null 2>&1
+    systemctl start veiltrium-scanner-block.timer >/dev/null 2>&1 || true
     SCANNER_RC=0
-    if grep -q '^# hy2-scanner-block: [0-9]* networks' "${SCANNER_FILE}" && [[ -n "$(find "${SCANNER_FILE}" -mtime -6 2>/dev/null)" ]]; then
+    if grep -q '^# veiltrium-scanner-block: [0-9]* networks' "${SCANNER_FILE}" && [[ -n "$(find "${SCANNER_FILE}" -mtime -6 2>/dev/null)" ]]; then
         # a list from the last days is already loaded (with the firewall above)
-        printf 'hy2-scanner-block: %s (kept; refreshed weekly)\n' "$(head -n 1 "${SCANNER_FILE}" | sed 's/^# hy2-scanner-block: //')" > "${TMPD}/scanner.log"
+        printf 'veiltrium-scanner-block: %s (kept; refreshed weekly)\n' "$(head -n 1 "${SCANNER_FILE}" | sed 's/^# veiltrium-scanner-block: //')" > "${TMPD}/scanner.log"
     else
         "${SCANNER_BIN}" > "${TMPD}/scanner.log" 2>&1 || SCANNER_RC=$?
     fi
     SCANNER_MSG="$(tail -n 1 "${TMPD}/scanner.log")"
     if (( SCANNER_RC == 0 )); then
-        ok "Scanner networks blocked on the proxy ports: ${SCANNER_MSG#hy2-scanner-block: }; refreshed weekly"
+        ok "Scanner networks blocked on the proxy ports: ${SCANNER_MSG#veiltrium-scanner-block: }; refreshed weekly"
     else
-        warn "${SCANNER_MSG#hy2-scanner-block: }"
+        warn "${SCANNER_MSG#veiltrium-scanner-block: }"
         warn "The scanner blocklist will be retried by the weekly timer."
     fi
 else
-    systemctl disable --now hy2-scanner-block.timer >/dev/null 2>&1 || true
+    systemctl disable --now veiltrium-scanner-block.timer >/dev/null 2>&1 || true
     info "Scanner blocklist is off (SCANNER_BLOCK=0)"
 fi
 
 # =============================================================================
 step 7 "Fail2ban"
 if (( HAVE_FAIL2BAN == 1 )); then
-    cat > /etc/fail2ban/jail.d/hy2-sshd.local.new <<EOF
-# hy2-secure-install
+    cat > /etc/fail2ban/jail.d/veiltrium-sshd.local.new <<EOF
+# veiltrium
 [DEFAULT]
 backend = systemd
 banaction = nftables-multiport
@@ -2950,11 +3034,11 @@ mode = aggressive
 port = ${SSH_SET}
 EOF
     systemctl enable fail2ban.service >/dev/null 2>&1 || true
-    if cmp -s /etc/fail2ban/jail.d/hy2-sshd.local.new /etc/fail2ban/jail.d/hy2-sshd.local \
+    if cmp -s /etc/fail2ban/jail.d/veiltrium-sshd.local.new /etc/fail2ban/jail.d/veiltrium-sshd.local \
             && systemctl is-active --quiet fail2ban.service; then
-        rm -f /etc/fail2ban/jail.d/hy2-sshd.local.new
+        rm -f /etc/fail2ban/jail.d/veiltrium-sshd.local.new
     else
-        mv -f /etc/fail2ban/jail.d/hy2-sshd.local.new /etc/fail2ban/jail.d/hy2-sshd.local
+        mv -f /etc/fail2ban/jail.d/veiltrium-sshd.local.new /etc/fail2ban/jail.d/veiltrium-sshd.local
         systemctl restart fail2ban.service || warn "fail2ban did not restart"
     fi
     for _ in $(seq 1 30); do fail2ban-client ping >/dev/null 2>&1 && break; sleep 1; done
@@ -3019,9 +3103,9 @@ RestartSec=3
 EOF
 )"
 cat > /etc/systemd/system/hysteria-server.service <<EOF
-# hy2-secure-install: Hysteria 2 in a systemd sandbox
+# veiltrium: Hysteria 2 in a systemd sandbox
 [Unit]
-Description=Hysteria 2 server (hy2-secure-install)
+Description=Hysteria 2 server (Veiltrium)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=120
@@ -3054,9 +3138,9 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
     fi
     install -d -m 750 -o root -g xray "${XRAY_DIR}"
     cat > /etc/systemd/system/xray.service <<EOF
-# hy2-secure-install: VLESS Reality (Xray) in a systemd sandbox
+# veiltrium: VLESS Reality (Xray) in a systemd sandbox
 [Unit]
-Description=Xray VLESS Reality (hy2-secure-install)
+Description=Xray VLESS Reality (Veiltrium)
 After=network-online.target nss-lookup.target
 Wants=network-online.target
 StartLimitIntervalSec=120
@@ -3088,9 +3172,9 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
     fi
     install -d -m 750 -o root -g trusttunnel "${TT_DIR}"
     cat > /etc/systemd/system/trusttunnel.service <<EOF
-# hy2-secure-install: TrustTunnel endpoint in a systemd sandbox
+# veiltrium: TrustTunnel endpoint in a systemd sandbox
 [Unit]
-Description=TrustTunnel endpoint (hy2-secure-install)
+Description=TrustTunnel endpoint (Veiltrium)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=120
@@ -3130,7 +3214,7 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
     load_reality_state
     PREV_SITE="${R_SITE}"
     if [[ -n "${R_UUID}" ]]; then
-        ok "Reality keys kept from the previous run (new ones: HY2_RECONFIGURE=1)"
+        ok "Reality keys kept from the previous run (new ones: VT_RECONFIGURE=1)"
     else
         PREV_SITE=""
         R_UUID="$("${XRAY_BIN}" uuid)"
@@ -3212,8 +3296,8 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
                 if [[ "${RP_STATUS}" == "ok" ]]; then REALITY_OK=1; REALITY_VPS="verified"; else REALITY_VPS="failed"; fi
                 warn "The VLESS Reality check failed; kept the previous settings (${R_SITE})."
             elif [[ -s "${XRAY_STATE}" && -s "${XRAY_DIR}/config.json" ]]; then
-                # HY2_RECONFIGURE=1 on a working node: the old node came back, keep it on
-                SAVED_RECONF="${HY2_RECONFIGURE}"; HY2_RECONFIGURE=0; load_reality_state; HY2_RECONFIGURE="${SAVED_RECONF}"
+                # VT_RECONFIGURE=1 on a working node: the old node came back, keep it on
+                SAVED_RECONF="${VT_RECONFIGURE}"; VT_RECONFIGURE=0; load_reality_state; VT_RECONFIGURE="${SAVED_RECONF}"
                 REALITY_VPS="failed"
                 warn "The new Reality settings did not work; the previous node (${R_SITE}, old keys) was restored."
             else
@@ -3284,7 +3368,7 @@ if [[ -n "${H_PASSWORD}" ]]; then
     if [[ "${H_SNI}" == "${HY2_SNI}" && \
           "$(openssl x509 -in "${HY2_CERT}" -noout -checkhost "${HY2_SNI}" 2>/dev/null || true)" == *"does match"* ]]; then
         NEW_CERT=0
-        ok "The node is already configured; password and certificate kept (new ones: HY2_RECONFIGURE=1)"
+        ok "The node is already configured; password and certificate kept (new ones: VT_RECONFIGURE=1)"
     else
         warn "Hysteria SNI changes: ${H_SNI} -> ${HY2_SNI}. Same password, new certificate: update the link on your clients."
         CHANGES+=("hysteria2: SNI ${H_SNI} -> ${HY2_SNI}, new certificate (password unchanged)")
@@ -3375,7 +3459,7 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
         T_PASS="$(openssl rand -hex 24)"
         T_SNI=""
     else
-        ok "TrustTunnel credentials kept from the previous run (new ones: HY2_RECONFIGURE=1)"
+        ok "TrustTunnel credentials kept from the previous run (new ones: VT_RECONFIGURE=1)"
     fi
     # TrustTunnel's TLS identity is its own too: kept between runs, never copied from
     # Reality; a new node (or TT_SNI=auto) gets a name of its own.
@@ -3419,7 +3503,7 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
     TT_SUM_BEFORE="$(cat "${TT_DIR}/vpn.toml" "${TT_DIR}/hosts.toml" "${TT_DIR}/credentials.toml" "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" 2>/dev/null | sha256sum || true)"
     install -m 640 -o root -g trusttunnel /dev/null "${TT_DIR}/vpn.toml.new"
     cat > "${TT_DIR}/vpn.toml.new" <<EOF
-# hy2-secure-install: TrustTunnel endpoint
+# veiltrium: TrustTunnel endpoint
 listen_address = "0.0.0.0:${TT_PORT}"
 ipv6_available = ${TT_IPV6}
 allow_private_network_connections = false
@@ -3463,7 +3547,7 @@ EOF
     mv -f "${TT_DIR}/vpn.toml.new" "${TT_DIR}/vpn.toml"
     install -m 640 -o root -g trusttunnel /dev/null "${TT_DIR}/hosts.toml.new"
     cat > "${TT_DIR}/hosts.toml.new" <<EOF
-# hy2-secure-install: TrustTunnel TLS host (self-signed, embedded in the client link)
+# veiltrium: TrustTunnel TLS host (self-signed, embedded in the client link)
 [[main_hosts]]
 hostname = "${T_SNI}"
 cert_chain_path = "${TT_DIR}/cert.pem"
@@ -3617,7 +3701,7 @@ fi
 # ---- Home-network probe profile ----------------------------------------------
 load_probe_env
 # a new key with new passwords: a leaked old profile can no longer sign results
-if [[ -z "${PROBE_KEY}" || "${HY2_RECONFIGURE}" == "1" ]]; then PROBE_KEY="$(openssl rand -hex 32)"; fi
+if [[ -z "${PROBE_KEY}" || "${VT_RECONFIGURE}" == "1" ]]; then PROBE_KEY="$(openssl rand -hex 32)"; fi
 PROBE_SERVER="${PUBLIC_IP}"
 install -m 600 /dev/null "${PROBE_ENV}.new"
 printf 'PROBE_KEY=%q\nPROBE_SERVER=%q\n' "${PROBE_KEY}" "${PROBE_SERVER}" > "${PROBE_ENV}.new"
@@ -3638,7 +3722,7 @@ if [[ "${PANEL_ENABLE}" != "1" ]]; then
         info "The web panel is off (PANEL_ENABLE=0)."
     fi
 elif [[ -z "${SCRIPT_PATH}" || ! -f "${SCRIPT_PATH}" ]]; then
-    warn "The web panel needs this script as a file (bash hy2-secure-install.sh); skipped."
+    warn "The web panel needs this script as a file (bash veiltrium.sh); skipped."
 else
     case "${ARCH}" in
         amd64) PANEL_SHA="${PANEL_SHA256_AMD64}" ;;
@@ -3668,14 +3752,14 @@ else
         fi
         # the helper runs the copy of this script that installed the node
         install -d -m 755 "${PANEL_LIB}"
-        if ! cmp -s "${SCRIPT_PATH}" "${PANEL_LIB}/hy2-secure-install.sh"; then
-            install -m 755 "${SCRIPT_PATH}" "${PANEL_LIB}/hy2-secure-install.sh.new"
-            mv -f "${PANEL_LIB}/hy2-secure-install.sh.new" "${PANEL_LIB}/hy2-secure-install.sh"
+        if ! cmp -s "${SCRIPT_PATH}" "${PANEL_LIB}/veiltrium.sh"; then
+            install -m 755 "${SCRIPT_PATH}" "${PANEL_LIB}/veiltrium.sh.new"
+            mv -f "${PANEL_LIB}/veiltrium.sh.new" "${PANEL_LIB}/veiltrium.sh"
         fi
         PANEL_UNITS_BEFORE="$(cat /etc/systemd/system/veiltrium-helper.socket /etc/systemd/system/veiltrium-helper@.service \
             /etc/systemd/system/veiltrium-panel.service 2>/dev/null | sha256sum || true)"
         cat > /etc/systemd/system/veiltrium-helper.socket <<EOF
-# hy2-secure-install: root helper of the Veiltrium web panel (one request per connection)
+# veiltrium: root helper of the Veiltrium web panel (one request per connection)
 [Unit]
 Description=Veiltrium panel helper socket
 
@@ -3692,19 +3776,19 @@ MaxConnections=8
 WantedBy=sockets.target
 EOF
         cat > /etc/systemd/system/veiltrium-helper@.service <<EOF
-# hy2-secure-install: root helper of the Veiltrium web panel: runs only the requests it knows
+# veiltrium: root helper of the Veiltrium web panel: runs only the requests it knows
 [Unit]
 Description=Veiltrium panel helper
 
 [Service]
-ExecStart=/bin/bash ${PANEL_LIB}/hy2-secure-install.sh --helper
+ExecStart=/bin/bash ${PANEL_LIB}/veiltrium.sh --helper
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
 TimeoutStopSec=6min
 EOF
         cat > /etc/systemd/system/veiltrium-panel.service <<EOF
-# hy2-secure-install: Veiltrium web panel; 127.0.0.1 only, reached through an SSH tunnel
+# veiltrium: Veiltrium web panel; 127.0.0.1 only, reached through an SSH tunnel
 [Unit]
 Description=Veiltrium web panel
 After=network.target veiltrium-helper.socket
@@ -3784,6 +3868,8 @@ EOF
     fi
 fi
 
+remove_old_names
+
 # ---- Report (no secrets) ------------------------------------------------------
 build_report > "${TMPD}/report.json"
 install -m 600 "${TMPD}/report.json" "${REPORT_FILE}"
@@ -3843,7 +3929,7 @@ if (( CHECK_FAIL != 0 )); then
     if [[ -n "${REBOOT_NOTE}" ]]; then info "Updates require a reboot: once this is sorted out, reboot the server (reboot)."; fi
     exit 2
 fi
-if [[ -n "${REBOOT_NOTE}" && "${HY2_AUTO_REBOOT}" == "1" && "${NODE_EXISTED}" == "0" ]]; then
+if [[ -n "${REBOOT_NOTE}" && "${VT_AUTO_REBOOT}" == "1" && "${NODE_EXISTED}" == "0" ]]; then
     shutdown -r +1 "Veiltrium: reboot after updates" >/dev/null 2>&1 || true
     printf '\n\033[33m! Updates require a reboot: the server will reboot in 1 minute, the services will start on their own.\033[0m\n'
     info "To cancel: shutdown -c   (then the reboot happens at night at ${AUTO_REBOOT_TIME})"
@@ -3852,4 +3938,4 @@ elif [[ -n "${REBOOT_NOTE}" ]]; then
     printf '\n\033[33m! Updates require a reboot: reboot the server (reboot) or it will do so at night at %s.\033[0m\n' "${AUTO_REBOOT_TIME}"
 fi
 exit 0
-# ==== HY2-SECURE-INSTALL END ====
+# ==== VEILTRIUM END ====

@@ -2,7 +2,7 @@
 # =============================================================================
 #  keenetic-vpn-probe.sh - Veiltrium home-network probe
 #  https://github.com/Vanilla-SilQ-HD/Veiltrium
-#  Checks Veiltrium servers (hy2-secure-install.sh) from a home network (e.g. MTS) on a Keenetic
+#  Checks Veiltrium servers (veiltrium.sh) from a home network (e.g. MTS) on a Keenetic
 #  router with Entware: VLESS Reality, Hysteria 2 and TrustTunnel with real
 #  clients, payload downloads, retries and timings. Prints a JSON result
 #  without secrets. The results are signed (HMAC-SHA256) with the server's probe
@@ -26,7 +26,7 @@
 #    sh keenetic-vpn-probe.sh --check-awg          does AWG Manager pin the Hysteria certificate?
 #    sh keenetic-vpn-probe.sh --help
 #
-#  Server profiles: /opt/etc/vpn-probe/*.env (the server's /root/hy2-probe.env,
+#  Server profiles: /opt/etc/vpn-probe/*.env (the server's /root/veiltrium/probe.env,
 #  one file per server, mode 600; they contain passwords).
 # =============================================================================
 set -u
@@ -563,7 +563,7 @@ load_profile() {   # $1 file -> P_* variables, returns 1 if invalid
 if [ -z "${PROFILES}" ]; then
     for f in "${PROFILE_DIR}"/*.env; do [ -f "${f}" ] && PROFILES="${PROFILES} ${f}"; done
 fi
-[ -n "${PROFILES# }" ] || die "no server profiles: copy each server's /root/hy2-probe.env to ${PROFILE_DIR}/NAME.env"
+[ -n "${PROFILES# }" ] || die "no server profiles: copy each server's /root/veiltrium/probe.env to ${PROFILE_DIR}/NAME.env"
 
 # ---- AWG Manager check: does the router pin the Hysteria certificate? -------
 awg_check() {   # $1 server ip, $2 expected key pin -> AWG_JSON fragment, one summary line
@@ -703,7 +703,7 @@ test_tt() {   # $1 = h2 | h3
 # ---- run ---------------------------------------------------------------------
 log "Veiltrium keenetic-vpn-probe ${PROBE_VERSION}: $(uname -m), sing-box ${SB_VERSION:-missing}, WAN ${WAN:-?} (${WAN_STATE}), evidence: tcpdump=${HAVE_TCPDUMP} conntrack=${HAVE_CT}"
 SEP_S=""
-printf '{"schema":"hy2-vpn-probe/1","generated_at":"%s","epoch":%s,' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${NOW}" > "${RESULTS}"
+printf '{"schema":"veiltrium-probe/1","generated_at":"%s","epoch":%s,' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${NOW}" > "${RESULTS}"
 printf '"probe":{"tool":"keenetic-vpn-probe","version":%s,"run_id":"%s","arch":"%s","singbox":"%s","tt_client":"%s","signed":"%s"},' \
     "${PROBE_VERSION}" "${RUN_ID}" "$(uname -m)" "$(json_str "${SB_VERSION}")" "$([ -n "${TT_CLIENT}" ] && echo present || echo none)" \
     "$([ "${HMAC_OK}" = 1 ] && echo hmac-sha256 || echo none)" >> "${RESULTS}"

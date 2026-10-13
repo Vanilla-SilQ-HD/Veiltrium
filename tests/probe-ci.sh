@@ -26,9 +26,9 @@ done
 BBPATH="$W/bb:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # The profile as the user copies it to the router; the CI server answers on 192.0.2.1.
-sudo sed -E 's/^P_SERVER=.*/P_SERVER=192.0.2.1/; s/^P_NAME=.*/P_NAME=ci/' /root/hy2-probe.env > "$W/ci.env"
+sudo sed -E 's/^P_SERVER=.*/P_SERVER=192.0.2.1/; s/^P_NAME=.*/P_NAME=ci/' /root/veiltrium/probe.env > "$W/ci.env"
 chmod 600 "$W/ci.env"
-sudo sed -i -E 's/^PROBE_SERVER=.*/PROBE_SERVER=192.0.2.1/' /etc/hy2-secure/probe.env
+sudo sed -i -E 's/^PROBE_SERVER=.*/PROBE_SERVER=192.0.2.1/' /etc/veiltrium/probe.env
 sudo ip netns exec ext ip route replace default via 192.0.2.1 dev veth-e
 
 probe() {   # extra args...; output JSON in $W/out.json
@@ -41,7 +41,7 @@ t() { sudo jq -r --arg t "$1" ".servers[0].tests[] | select(.test == \$t) | $2" 
 # 1) clean route: all protocols, route verified by tcpdump on the WAN
 probe --all --wan veth-e
 sudo jq . "$W/out.json"
-test "$(q .schema)" = "hy2-vpn-probe/1"
+test "$(q .schema)" = "veiltrium-probe/1"
 test "$(t reality .status)" = ok
 test "$(t reality .route)" = verified
 test "$(t hysteria2 .status)" = ok
@@ -231,7 +231,7 @@ sudo rm -rf /opt/etc/awg-manager
 # 10) import on the server. First everything that must be rejected (before the real run is
 #     imported: a run is taken only once), then the real run, then a replay of it.
 imp() {   # $1 = file; prints the output, sets IRC
-    IRC=0; sudo bash ./hy2-secure-install.sh --import-mts "$1" > "$W/imp.log" 2>&1 || IRC=$?
+    IRC=0; sudo bash ./veiltrium.sh --import-mts "$1" > "$W/imp.log" 2>&1 || IRC=$?
     cat "$W/imp.log"
 }
 SITE="$(sudo awk -F= '$1=="R_SITE"{print $2}' /usr/local/etc/xray/reality.env)"
@@ -248,20 +248,20 @@ imp "$W/t3.json"; test "$IRC" = 1
 jq '.servers[0].run.mac = "none"' "$W/good.json" > "$W/t4.json"
 imp "$W/t4.json"; test "$IRC" = 1; grep -F 'unsigned run(s)' "$W/imp.log" >/dev/null
 # signed with the right key but 40 days old (the HMAC here comes from OpenSSL: it must agree)
-KEY="$(sudo sed -n 's/^PROBE_KEY=//p' /etc/hy2-secure/probe.env)"
+KEY="$(sudo sed -n 's/^PROBE_KEY=//p' /etc/veiltrium/probe.env)"
 OLD_TS="$(( $(date +%s) - 40 * 86400 ))"
 REC="v2|${OLD_TS}|00000000000000aa|192.0.2.1|veth-e|reality|${SITE}|443|verified|ok|2/2|50|300000|"
 HDR="v2run|${OLD_TS}|00000000000000aa|192.0.2.1|veth-e|1|$(printf '%s\n' "$REC" | sha256sum | cut -c1-64)"
 hm() { printf '%s' "$1" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:${KEY}" | awk '{print $NF}'; }
 jq -n --arg r "$REC" --arg m "$(hm "$REC")" --arg h "$HDR" --arg hm "$(hm "$HDR")" \
-    '{schema:"hy2-vpn-probe/1",servers:[{run:{h:$h,mac:$hm},records:[{r:$r,mac:$m}]}]}' > "$W/t5.json"
+    '{schema:"veiltrium-probe/1",servers:[{run:{h:$h,mac:$hm},records:[{r:$r,mac:$m}]}]}' > "$W/t5.json"
 imp "$W/t5.json"; test "$IRC" = 1; grep -F 'older than' "$W/imp.log" >/dev/null
 # the same, fresh: accepted (proves the server and OpenSSL agree on HMAC-SHA256)
 NOW_TS="$(date +%s)"
 REC="v2|${NOW_TS}|00000000000000bb|192.0.2.1|veth-e|hysteria2|example.org|443|route_unverified|ok|2/2|50|300000|"
 HDR="v2run|${NOW_TS}|00000000000000bb|192.0.2.1|veth-e|1|$(printf '%s\n' "$REC" | sha256sum | cut -c1-64)"
 jq -n --arg r "$REC" --arg m "$(hm "$REC")" --arg h "$HDR" --arg hm "$(hm "$HDR")" \
-    '{schema:"hy2-vpn-probe/1",servers:[{run:{h:$h,mac:$hm},records:[{r:$r,mac:$m}]}]}' > "$W/t6.json"
+    '{schema:"veiltrium-probe/1",servers:[{run:{h:$h,mac:$hm},records:[{r:$r,mac:$m}]}]}' > "$W/t6.json"
 imp "$W/t6.json"; test "$IRC" = 0
 # not JSON at all
 printf 'not json' > "$W/junk.json"
@@ -269,14 +269,14 @@ imp "$W/junk.json"; test "$IRC" = 1
 # the real run from the probe: accepted
 imp "$W/good.json"; test "$IRC" = 0
 grep -F 'result lines accepted' "$W/imp.log" >/dev/null
-sudo grep -F "|reality|${SITE}|" /var/lib/hy2-secure/mts-records
-n1="$(sudo cat /var/lib/hy2-secure/mts-records | wc -l)"
+sudo grep -F "|reality|${SITE}|" /var/lib/veiltrium/mts-records
+n1="$(sudo cat /var/lib/veiltrium/mts-records | wc -l)"
 # replayed: ignored, nothing added
 imp "$W/good.json"; test "$IRC" = 0
 grep -F 'imported before: ignored (no replays)' "$W/imp.log" >/dev/null
-test "$(sudo cat /var/lib/hy2-secure/mts-records | wc -l)" = "$n1"
+test "$(sudo cat /var/lib/veiltrium/mts-records | wc -l)" = "$n1"
 # the server now reports the home-network status (no secrets in the report)
-sudo bash ./hy2-secure-install.sh --diagnose --json "$W/diag.json" | tee "$W/diag.log"
+sudo bash ./veiltrium.sh --diagnose --json "$W/diag.json" | tee "$W/diag.log"
 grep -F 'Home network (MTS) for this SNI: ok' "$W/diag.log" >/dev/null
 jq -e '.reality.mts_verified == true and .reality.vps_verified == true and .hysteria2.mts_verified == true' "$W/diag.json"
 jq -e '.trusttunnel.h2.mts_verified == true' "$W/diag.json"

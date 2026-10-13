@@ -46,7 +46,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  veiltrium-panel serve [--listen 127.0.0.1:2096] [--helper /run/veiltrium/helper.sock] [--auth /etc/veiltrium/panel-auth]
+  veiltrium-panel serve [--listen 127.0.0.1:2096] [--helper /run/veiltrium/helper.sock] [--auth /etc/veiltrium-panel/auth]
   veiltrium-panel hash-password   (reads the password from stdin, prints the hash line)
   veiltrium-panel version`)
 }
@@ -55,7 +55,7 @@ func serve(args []string) {
 	fl := flag.NewFlagSet("serve", flag.ExitOnError)
 	listen := fl.String("listen", "127.0.0.1:2096", "address to listen on (loopback only)")
 	socket := fl.String("helper", "/run/veiltrium/helper.sock", "root helper socket")
-	auth := fl.String("auth", "/etc/veiltrium/panel-auth", "file with the password hash")
+	auth := fl.String("auth", "/etc/veiltrium-panel/auth", "file with the password hash")
 	_ = fl.Parse(args)
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil || !(host == "127.0.0.1" || host == "::1" || host == "localhost") {

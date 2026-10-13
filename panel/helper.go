@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// The root helper is hy2-secure-install.sh --helper, started by systemd for each
+// The root helper is veiltrium.sh --helper, started by systemd for each
 // connection to its socket. Request: one line "<verb> [<client>]". Reply, line by line:
 //
 //	::step <id>     progress of a client change

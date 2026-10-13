@@ -9,7 +9,7 @@ on:
     inputs:
       upgrade_from:
         description: "Release the upgrade job starts from (a commit or tag of this repository)"
-        default: "v2026.10.13"
+        default: "v2026.10.13.1"
 
 permissions:
   contents: read
@@ -62,7 +62,7 @@ jobs:
         run: bash panel/build.sh /tmp/veiltrium-panel amd64 ci
 
       - name: Install (first run)
-        run: sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./hy2-secure-install.sh
+        run: sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./veiltrium.sh
 
       - name: Assertions
         run: |
@@ -70,18 +70,18 @@ jobs:
           systemctl is-active hysteria-server
           systemctl is-enabled hysteria-server nftables fail2ban
           sudo ss -Hulpn 'sport = :443' | grep '"hysteria"' >/dev/null
-          sudo nft list table inet hy2fw
+          sudo nft list table inet veiltrium
           sudo sshd -T | grep -x 'passwordauthentication yes' >/dev/null
           sudo sshd -T | grep -x 'permitrootlogin yes' >/dev/null
           sudo sshd -T | grep -x 'maxauthtries 6' >/dev/null
           sudo fail2ban-client status sshd
           test "$(sysctl -n net.core.rmem_max)" = 16777216
           test "$(sysctl -n net.ipv4.tcp_congestion_control)" = bbr
-          test "$(sudo stat -c '%a' /root/hy2-client.txt)" = 600
+          test "$(sudo stat -c '%a' /root/veiltrium/client.txt)" = 600
           test "$(sudo stat -c '%a' /etc/hysteria/node.env)" = 600
           test "$(sudo stat -c '%a %U %G' /etc/hysteria/config.yaml)" = "640 root hysteria"
           test "$(sudo stat -c '%a %U %G' /etc/hysteria/server.key)" = "640 root hysteria"
-          test "$(sudo stat -c '%a' /var/log/hy2-secure-install.log)" = 600
+          test "$(sudo stat -c '%a' /var/log/veiltrium-install.log)" = 600
           systemctl show hysteria-server -p User -p CapabilityBoundingSet -p AmbientCapabilities -p Environment | tee /tmp/unit.txt
           grep -F 'HYSTERIA_DISABLE_UPDATE_CHECK=true' /tmp/unit.txt >/dev/null
           grep -x 'User=hysteria' /tmp/unit.txt >/dev/null
@@ -108,15 +108,15 @@ jobs:
           sudo openssl x509 -in /etc/hysteria/server.crt -noout -checkhost "$H" | grep -F 'does match' >/dev/null
           sudo openssl x509 -in /etc/trusttunnel/cert.pem -noout -checkhost "$T" | grep -F 'does match' >/dev/null
           sudo grep -F "url: 'https://$H'" /etc/hysteria/config.yaml
-          sudo grep -m1 '^hysteria2://' /root/hy2-client.txt | grep -F "sni=$H&" >/dev/null
-          sudo grep -m1 '^vless://' /root/hy2-client.txt | grep -F "sni=${SITE}&" >/dev/null
+          sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt | grep -F "sni=$H&" >/dev/null
+          sudo grep -m1 '^vless://' /root/veiltrium/client.txt | grep -F "sni=${SITE}&" >/dev/null
           # crash safety and connection safety are in place
-          systemctl is-enabled hy2-secure-recover.service
-          sudo test -x /usr/local/sbin/hy2-secure-recover
-          test -z "$(sudo find /var/lib/hy2-secure/txn -name pending 2>/dev/null)"
-          test "$(systemctl is-active hy2-secure-watchdog.timer || true)" != active
-          sudo perl -e 'our %nrconf; do "/etc/needrestart/conf.d/50-hy2-secure.conf"; die $@ if $@; exit(scalar(keys %{$nrconf{override_rc}}) == 1 ? 0 : 1)'
-          sudo nft list chain inet hy2fw output | grep -F "meta skuid $(id -u xray) jump proxy_egress" >/dev/null
+          systemctl is-enabled veiltrium-recover.service
+          sudo test -x /usr/local/sbin/veiltrium-recover
+          test -z "$(sudo find /var/lib/veiltrium/txn -name pending 2>/dev/null)"
+          test "$(systemctl is-active veiltrium-watchdog.timer || true)" != active
+          sudo perl -e 'our %nrconf; do "/etc/needrestart/conf.d/50-veiltrium.conf"; die $@ if $@; exit(scalar(keys %{$nrconf{override_rc}}) == 1 ? 0 : 1)'
+          sudo nft list chain inet veiltrium output | grep -F "meta skuid $(id -u xray) jump proxy_egress" >/dev/null
           # TrustTunnel
           systemctl is-active trusttunnel
           systemctl is-enabled trusttunnel
@@ -127,40 +127,40 @@ jobs:
           test "$(sudo stat -c '%a %U %G' /etc/trusttunnel/key.pem)" = "640 root trusttunnel"
           systemctl show trusttunnel -p User | grep -x 'User=trusttunnel' >/dev/null
           sudo systemd-analyze security trusttunnel --no-pager | tail -1
-          sudo grep -m1 '^tt://' /root/hy2-client.txt >/dev/null
-          sudo nft list chain inet hy2fw output | grep -F "meta skuid $(id -u trusttunnel) jump proxy_egress" >/dev/null
+          sudo grep -m1 '^tt://' /root/veiltrium/client.txt >/dev/null
+          sudo nft list chain inet veiltrium output | grep -F "meta skuid $(id -u trusttunnel) jump proxy_egress" >/dev/null
           # scanner blocklist: loaded, saved, refreshed weekly
-          systemctl is-enabled hy2-scanner-block.timer
-          test "$(sudo stat -c '%a' /etc/hy2-secure/scanners.nft)" = 600
-          n4="$(sudo nft -j list set inet hy2fw scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')"
+          systemctl is-enabled veiltrium-scanner-block.timer
+          test "$(sudo stat -c '%a' /etc/veiltrium/scanners.nft)" = 600
+          n4="$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')"
           echo "scanner networks loaded: $n4"
           test "$n4" -gt 1000
           sudo grep -x 'H_MASQ=auto' /etc/hysteria/node.env
           # a new node: a password per client (user:password) and links named after the node
           sudo grep -x 'H_AUTH=userpass' /etc/hysteria/node.env
-          test "$(sudo stat -c '%a' /etc/hy2-secure/node.env)" = 600
-          sudo grep -m1 '^hysteria2://' /root/hy2-client.txt | grep -E '^hysteria2://main:[0-9a-f]{48}@.*#Veiltrium(-[A-Za-z0-9-]+)?$' >/dev/null
-          sudo grep -m1 '^vless://' /root/hy2-client.txt | grep -E '#Veiltrium(-[A-Za-z0-9-]+)?$' >/dev/null
-          sudo jq -e '(.node_name | test("^Veiltrium(-[A-Za-z0-9-]+)?$")) and .clients.added == 0 and .clients.hysteria_auth == "userpass"' /var/lib/hy2-secure/report.json
+          test "$(sudo stat -c '%a' /etc/veiltrium/node.env)" = 600
+          sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt | grep -E '^hysteria2://main:[0-9a-f]{48}@.*#Veiltrium(-[A-Za-z0-9-]+)?$' >/dev/null
+          sudo grep -m1 '^vless://' /root/veiltrium/client.txt | grep -E '#Veiltrium(-[A-Za-z0-9-]+)?$' >/dev/null
+          sudo jq -e '(.node_name | test("^Veiltrium(-[A-Za-z0-9-]+)?$")) and .clients.added == 0 and .clients.hysteria_auth == "userpass"' /var/lib/veiltrium/report.json
           # a clean run prints no error at all (an ERR trap firing inside $(...) once did)
-          if sudo grep -F 'ERROR:' /var/log/hy2-secure-install.log; then echo "an error was printed during the install"; exit 1; fi
-          if sudo grep -F 'sshd rejected the settings' /var/log/hy2-secure-install.log; then exit 1; fi
+          if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then echo "an error was printed during the install"; exit 1; fi
+          if sudo grep -F 'sshd rejected the settings' /var/log/veiltrium-install.log; then exit 1; fi
           # report without secrets; no secrets in the install log either
-          sudo jq -e '.reality.vps_verified == true and .hysteria2.vps_verified == true and .trusttunnel.h2.vps_verified == true' /var/lib/hy2-secure/report.json
-          sudo jq -e '.reality.selection.candidates | length == 10' /var/lib/hy2-secure/report.json
-          sudo jq -r '.reality.decision, (.reality.top3 | join(" ")), .trusttunnel.h3.vps' /var/lib/hy2-secure/report.json
+          sudo jq -e '.reality.vps_verified == true and .hysteria2.vps_verified == true and .trusttunnel.h2.vps_verified == true' /var/lib/veiltrium/report.json
+          sudo jq -e '.reality.selection.candidates | length == 10' /var/lib/veiltrium/report.json
+          sudo jq -r '.reality.decision, (.reality.top3 | join(" ")), .trusttunnel.h3.vps' /var/lib/veiltrium/report.json
           for f in /etc/hysteria/node.env /etc/trusttunnel/node.env /usr/local/etc/xray/reality.env; do
             for v in $(sudo sed -nE 's/^(H_PASSWORD|T_PASS|R_UUID|R_PRIV|R_SID)=//p' "$f"); do
-              if sudo grep -F "$v" /var/lib/hy2-secure/report.json /var/log/hy2-secure-install.log; then
+              if sudo grep -F "$v" /var/lib/veiltrium/report.json /var/log/veiltrium-install.log; then
                 echo "a secret leaked into the report or the log"; exit 1
               fi
             done
           done
-          test "$(sudo stat -c '%a' /root/hy2-probe.env)" = 600
-          test "$(sudo stat -c '%a' /etc/hy2-secure/probe.env)" = 600
-          sudo grep -E '^P_(SERVER|HY2_SNI|REALITY_SNI|TT_SNI)=' /root/hy2-probe.env
+          test "$(sudo stat -c '%a' /root/veiltrium/probe.env)" = 600
+          test "$(sudo stat -c '%a' /etc/veiltrium/probe.env)" = 600
+          sudo grep -E '^P_(SERVER|HY2_SNI|REALITY_SNI|TT_SNI)=' /root/veiltrium/probe.env
           # no temporary files left behind
-          test -z "$(sudo find /root /run -maxdepth 1 -name '.hy2-install.*')"
+          test -z "$(sudo find /root /run -maxdepth 1 -name '.veiltrium.*')"
 
       - name: Firewall seen from outside (separate network namespace)
         run: |
@@ -187,7 +187,7 @@ jobs:
             -verify_hostname "$SITE" -verify_return_error </dev/null 2>/dev/null | tee /tmp/probe.txt \
             | grep -E '^(subject|issuer)=' || true
           grep -F 'Verify return code: 0 (ok)' /tmp/probe.txt >/dev/null
-          URL="$(sudo grep -m1 '^hysteria2://' /root/hy2-client.txt)"
+          URL="$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt)"
           EXT_URL="$(printf '%s' "$URL" | sed -E 's#@[^:/]+:#@192.0.2.1:#')"
           printf 'server: "%s"\nsocks5:\n  listen: 127.0.0.1:18092\n' "$EXT_URL" > /tmp/ext.yaml
           sudo ip netns exec ext /usr/local/bin/hysteria client -c /tmp/ext.yaml > /tmp/ext.log 2>&1 &
@@ -206,7 +206,7 @@ jobs:
           sudo pkill -f 'hysteria client -c /tmp/ext.yaml' || true
           sudo pkill -f 'http.server 8080' || true
           # A scanner address: both proxy ports go silent, SSH stays reachable
-          sudo nft add element inet hy2fw scanners4 '{ 192.0.2.2 }'
+          sudo nft add element inet veiltrium scanners4 '{ 192.0.2.2 }'
           if sudo ip netns exec ext timeout 5 bash -c 'exec 3<>/dev/tcp/192.0.2.1/443'; then
             echo "TCP 443 answers a scanner address"; exit 1
           fi
@@ -223,7 +223,7 @@ jobs:
           sudo pkill -f 'hysteria client -c /tmp/ext.yaml' || true
           echo "hysteria from a scanner address -> $code"
           [ "$code" != 204 ]
-          sudo nft delete element inet hy2fw scanners4 '{ 192.0.2.2 }'
+          sudo nft delete element inet veiltrium scanners4 '{ 192.0.2.2 }'
           sudo ip netns exec ext timeout 5 bash -c 'exec 3<>/dev/tcp/192.0.2.1/443'   # open again once removed
           sudo ip netns exec ext timeout 5 bash -c 'exec 3<>/dev/tcp/192.0.2.1/8443'
 
@@ -295,18 +295,18 @@ jobs:
           tar -xzf /tmp/sb/*.tar.gz -C /tmp/sb
           SB="$(find /tmp/sb -type f -name sing-box | head -1)"
           "$SB" version | head -1
-          sudo awk '/^\{/{f=1} f{print} f&&/^\}/{exit}' /root/hy2-client.txt > /tmp/router.json
+          sudo awk '/^\{/{f=1} f{print} f&&/^\}/{exit}' /root/veiltrium/client.txt > /tmp/router.json
           jq -e '.type=="hysteria2" and .tls.insecure==false and (.tls.certificate_public_key_sha256|length)==1' /tmp/router.json
           jq '.server="127.0.0.1"' /tmp/router.json > /tmp/delivered.json
           PK="$(jq -r '.tls.certificate_public_key_sha256[0]' /tmp/router.json)"
           BAD="AAAA${PK:4}"
           # the second JSON in the file is the VLESS Reality outbound
-          sudo awk '/^\{/{n++} n==2{print} n==2&&/^\}/{exit}' /root/hy2-client.txt > /tmp/router-vless.json
+          sudo awk '/^\{/{n++} n==2{print} n==2&&/^\}/{exit}' /root/veiltrium/client.txt > /tmp/router-vless.json
           jq -e '.type=="vless" and .flow=="xtls-rprx-vision" and .tls.reality.enabled==true' /tmp/router-vless.json
           jq '.server="127.0.0.1"' /tmp/router-vless.json > /tmp/delivered-vless.json
           RPK="$(jq -r '.tls.reality.public_key' /tmp/router-vless.json)"
           # the vless:// link carries exactly the values of the outbound tested below
-          VURL="$(sudo grep -m1 '^vless://' /root/hy2-client.txt)"
+          VURL="$(sudo grep -m1 '^vless://' /root/veiltrium/client.txt)"
           Q="${VURL#*\?}"; Q="${Q%%#*}"
           qv() { printf '%s\n' "$Q" | tr '&' '\n' | awk -F= -v k="$1" '$1==k{print $2}'; }
           U="${VURL#vless://}"; U="${U%%@*}"
@@ -343,7 +343,7 @@ jobs:
           run_case "wrong pin + insecure=true"         ".tls.certificate_public_key_sha256=[\"$BAD\"] | .tls.insecure=true" fail || rc=1
           run_case "no pin"                            'del(.tls.certificate_public_key_sha256)'   fail || rc=1
           # section 6: the sing-box JSON for AWG Manager's server group keeps the key pinning
-          sudo awk '/^\[$/{f=1} f{print} f&&/^\]$/{exit}' /root/hy2-client.txt > /tmp/awg.json
+          sudo awk '/^\[$/{f=1} f{print} f&&/^\]$/{exit}' /root/veiltrium/client.txt > /tmp/awg.json
           jq -e --arg pk "$PK" 'length == 1 and .[0].type == "hysteria2" and .[0].tls.certificate_public_key_sha256 == [$pk] and (.[0].tls.insecure // false) == false' /tmp/awg.json
           jq '.[0] | .server="127.0.0.1"' /tmp/awg.json > /tmp/awg-ob.json
           run_case "AWG Manager group JSON (pinned)" '.' ok /tmp/awg-ob.json || rc=1
@@ -381,21 +381,21 @@ jobs:
         run: |
           set -euxo pipefail
           sudo systemctl stop nftables          # as after a reboot: no rules
-          test -z "$(sudo nft list table inet hy2fw 2>/dev/null || true)"
+          test -z "$(sudo nft list table inet veiltrium 2>/dev/null || true)"
           sudo systemctl start nftables
-          sudo nft list table inet hy2fw >/dev/null
+          sudo nft list table inet veiltrium >/dev/null
           # the scanner list comes back from the saved file at boot
-          test "$(sudo nft -j list set inet hy2fw scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
+          test "$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
           # a failed download keeps the current list
-          before="$(sudo sha256sum /etc/hy2-secure/scanners.nft)"
-          if sudo env SCANNER_URLS=https://example.invalid/x.list /usr/local/sbin/hy2-scanner-block; then
+          before="$(sudo sha256sum /etc/veiltrium/scanners.nft)"
+          if sudo env SCANNER_URLS=https://example.invalid/x.list /usr/local/sbin/veiltrium-scanner-block; then
             echo "update with a broken source must fail"; exit 1
           fi
-          test "$before" = "$(sudo sha256sum /etc/hy2-secure/scanners.nft)"
-          test "$(sudo nft -j list set inet hy2fw scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
+          test "$before" = "$(sudo sha256sum /etc/veiltrium/scanners.nft)"
+          test "$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
           # the timer's service unit works as installed
-          sudo systemctl start hy2-scanner-block.service
-          systemctl show hy2-scanner-block.service -p Result | grep -x 'Result=success' >/dev/null
+          sudo systemctl start veiltrium-scanner-block.service
+          systemctl show veiltrium-scanner-block.service -p Result | grep -x 'Result=success' >/dev/null
           sudo sysctl -q -w net.core.rmem_max=212992
           sudo systemctl restart systemd-sysctl
           test "$(sysctl -n net.core.rmem_max)" = 16777216
@@ -406,7 +406,7 @@ jobs:
       - name: Hysteria client with the share link (URI)
         run: |
           set -euo pipefail
-          URL="$(sudo grep -m1 '^hysteria2://' /root/hy2-client.txt)"
+          URL="$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt)"
           LOCAL_URL="$(printf '%s' "$URL" | sed -E 's#@[^:/]+:#@127.0.0.1:#')"
           printf 'server: "%s"\nsocks5:\n  listen: 127.0.0.1:18091\n' "$LOCAL_URL" > /tmp/hyc.yaml
           /usr/local/bin/hysteria client -c /tmp/hyc.yaml > /tmp/hyc.log 2>&1 &
@@ -428,11 +428,11 @@ jobs:
             /etc/trusttunnel/node.env /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/vpn.toml
             /etc/trusttunnel/hosts.toml /etc/trusttunnel/credentials.toml
             /etc/systemd/system/hysteria-server.service /etc/systemd/system/xray.service /etc/systemd/system/trusttunnel.service
-            /etc/systemd/system/hy2-scanner-block.service /etc/systemd/system/hy2-secure-recover.service
-            /etc/nftables.conf /etc/fail2ban/jail.d/hy2-sshd.local /etc/sysctl.d/99-zz-hy2-hardening.conf
-            /etc/ssh/sshd_config.d/00-hy2-hardening.conf /root/hy2-probe.env /etc/hy2-secure/probe.env"
+            /etc/systemd/system/veiltrium-scanner-block.service /etc/systemd/system/veiltrium-recover.service
+            /etc/nftables.conf /etc/fail2ban/jail.d/veiltrium-sshd.local /etc/sysctl.d/99-zz-veiltrium-hardening.conf
+            /etc/ssh/sshd_config.d/00-veiltrium-hardening.conf /root/veiltrium/probe.env /etc/veiltrium/probe.env"
           ids() { for s in hysteria-server xray trusttunnel fail2ban; do systemctl show "$s" -p InvocationID --value; done; }
-          links() { sudo grep -E '^(hysteria2|vless|tt)://' /root/hy2-client.txt; }
+          links() { sudo grep -E '^(hysteria2|vless|tt)://' /root/veiltrium/client.txt; }
           before="$(sudo sha256sum $KEEP)"; ids0="$(ids)"; links0="$(links)"
           # live connections through all three protocols, from outside
           bash tests/longconn.sh start
@@ -441,14 +441,14 @@ jobs:
           # as after an openssh-server upgrade with socket activation: no privilege separation dir
           sudo rm -rf /run/sshd
           # head closes the output after 5 lines, like a dropped SSH session without a terminal
-          sudo env NEEDRESTART_SUSPEND=1 bash -c 'set -o pipefail; bash ./hy2-secure-install.sh | head -n 5'
+          sudo env NEEDRESTART_SUSPEND=1 bash -c 'set -o pipefail; bash ./veiltrium.sh | head -n 5'
           bash tests/longconn.sh running
           sudo rm -f /run/reboot-required
-          sudo tail -n 120 /var/log/hy2-secure-install.log | grep -F '== DONE ==' >/dev/null
-          sudo grep -F 'or it will do so at night' /var/log/hy2-secure-install.log >/dev/null
-          if sudo grep -F 'sshd rejected the settings' /var/log/hy2-secure-install.log; then exit 1; fi
+          sudo tail -n 120 /var/log/veiltrium-install.log | grep -F '== DONE ==' >/dev/null
+          sudo grep -F 'or it will do so at night' /var/log/veiltrium-install.log >/dev/null
+          if sudo grep -F 'sshd rejected the settings' /var/log/veiltrium-install.log; then exit 1; fi
           sudo sshd -T | grep -x 'maxauthtries 6' >/dev/null
-          if sudo grep -F 'will reboot in 1 minute' /var/log/hy2-secure-install.log; then
+          if sudo grep -F 'will reboot in 1 minute' /var/log/veiltrium-install.log; then
             sudo shutdown -c || true; echo "a working node scheduled a reboot"; exit 1
           fi
           test "$before" = "$(sudo sha256sum $KEEP)"
@@ -462,33 +462,33 @@ jobs:
           set -euo pipefail
           H_FILES="/etc/hysteria/node.env /etc/hysteria/config.yaml /etc/hysteria/server.crt /etc/hysteria/server.key"
           T_FILES="/etc/trusttunnel/node.env /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/hosts.toml"
-          links0="$(sudo grep -E '^(hysteria2|tt)://' /root/hy2-client.txt)"
+          links0="$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
           # Hysteria will not start with the new settings (systemd refuses: ExecStartPre fails)
           h0="$(sudo sha256sum $H_FILES)"
           sudo mkdir -p /run/systemd/system/hysteria-server.service.d
           printf '[Service]\nExecStartPre=/bin/false\n' | sudo tee /run/systemd/system/hysteria-server.service.d/ci.conf >/dev/null
           sudo systemctl daemon-reload
-          rc=0; sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 HY2_SNI=www.example.org bash ./hy2-secure-install.sh > /tmp/hf.log 2>&1 || rc=$?
+          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=www.example.org bash ./veiltrium.sh > /tmp/hf.log 2>&1 || rc=$?
           sudo rm -rf /run/systemd/system/hysteria-server.service.d; sudo systemctl daemon-reload
           sudo systemctl reset-failed hysteria-server; sudo systemctl restart hysteria-server
           echo "rc=$rc"; test "$rc" = 1
           grep -F 'previous settings (password, certificate, link) were restored' /tmp/hf.log >/dev/null
           test "$h0" = "$(sudo sha256sum $H_FILES)"
-          test -z "$(sudo find /var/lib/hy2-secure/txn -name pending)"
+          test -z "$(sudo find /var/lib/veiltrium/txn -name pending)"
           # TrustTunnel likewise
           t0="$(sudo sha256sum $T_FILES)"
           sudo mkdir -p /run/systemd/system/trusttunnel.service.d
           printf '[Service]\nExecStartPre=/bin/false\n' | sudo tee /run/systemd/system/trusttunnel.service.d/ci.conf >/dev/null
           sudo systemctl daemon-reload
-          rc=0; sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 TT_SNI=www.example.org bash ./hy2-secure-install.sh > /tmp/tf.log 2>&1 || rc=$?
+          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.org bash ./veiltrium.sh > /tmp/tf.log 2>&1 || rc=$?
           sudo rm -rf /run/systemd/system/trusttunnel.service.d; sudo systemctl daemon-reload
           sudo systemctl reset-failed trusttunnel; sudo systemctl restart trusttunnel
           echo "rc=$rc"; test "$rc" = 2
           grep -F 'The new TrustTunnel settings did not work; the previous settings were restored' /tmp/tf.log >/dev/null
           test "$t0" = "$(sudo sha256sum $T_FILES)"
           # the next normal run is clean and the links are the same as before
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh > /tmp/after.log 2>&1
-          test "$links0" = "$(sudo grep -E '^(hysteria2|tt)://' /root/hy2-client.txt)"
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/after.log 2>&1
+          test "$links0" = "$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
           systemctl is-active hysteria-server trusttunnel
 
       - name: Hysteria and TrustTunnel names are their own saved settings, independent of Reality
@@ -499,18 +499,18 @@ jobs:
           pw="$(sudo awk -F= '$1=="H_PASSWORD"{print $2}' /etc/hysteria/node.env)"
           OTHER="/usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json /etc/trusttunnel/node.env /etc/trusttunnel/cert.pem"
           other_before="$(sudo sha256sum $OTHER)"
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 HY2_SNI=bing.com bash ./hy2-secure-install.sh > /tmp/mig1.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=bing.com bash ./veiltrium.sh > /tmp/mig1.log 2>&1
           sudo grep -x 'H_SNI=bing.com' /etc/hysteria/node.env
           sudo openssl x509 -in /etc/hysteria/server.crt -noout -checkhost bing.com | grep -F 'does match' >/dev/null
           grep -F "Hysteria SNI changes: ${H0} -> bing.com" /tmp/mig1.log >/dev/null
           test "$(sudo sha256sum $OTHER)" = "$other_before"      # Reality and TrustTunnel untouched
           crt="$(sudo sha256sum /etc/hysteria/server.crt)"
           # the setting is saved: a run without variables keeps it (no new certificate)
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh > /tmp/mig2.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/mig2.log 2>&1
           sudo grep -x 'H_SNI=bing.com' /etc/hysteria/node.env
           test "$(sudo sha256sum /etc/hysteria/server.crt)" = "$crt"
           # "auto": a name of its own again - never the Reality site; same password, new certificate
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 HY2_SNI=auto bash ./hy2-secure-install.sh > /tmp/mig3.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=auto bash ./veiltrium.sh > /tmp/mig3.log 2>&1
           H="$(sudo awk -F= '$1=="H_SNI"{print $2}' /etc/hysteria/node.env)"
           T="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
           echo "auto -> $H (reality $SITE, trusttunnel $T)"
@@ -520,14 +520,14 @@ jobs:
           test "$(sudo sha256sum $OTHER)" = "$other_before"
           # TrustTunnel hostname: its own setting as well, same credentials
           tt_pass="$(sudo awk -F= '$1=="T_PASS"{print $2}' /etc/trusttunnel/node.env)"
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 TT_SNI=www.example.com bash ./hy2-secure-install.sh > /tmp/mig4.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.com bash ./veiltrium.sh > /tmp/mig4.log 2>&1
           sudo grep -x 'T_SNI=www.example.com' /etc/trusttunnel/node.env
           sudo grep -x "H_SNI=${H}" /etc/hysteria/node.env
           test "$(sudo awk -F= '$1=="T_PASS"{print $2}' /etc/trusttunnel/node.env)" = "$tt_pass"
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 TT_SNI=auto bash ./hy2-secure-install.sh > /tmp/mig5.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=auto bash ./veiltrium.sh > /tmp/mig5.log 2>&1
           T="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
           test "$T" != "$SITE"; test "$T" != "$H"; test "$T" != www.example.com
-          URL="$(sudo grep -m1 '^hysteria2://' /root/hy2-client.txt)"
+          URL="$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt)"
           printf 'server: "%s"\nsocks5:\n  listen: 127.0.0.1:18093\n' "$(printf '%s' "$URL" | sed -E 's#@[^:/]+:#@127.0.0.1:#')" > /tmp/mig.yaml
           /usr/local/bin/hysteria client -c /tmp/mig.yaml > /tmp/mig-client.log 2>&1 &
           pid=$!
@@ -547,7 +547,7 @@ jobs:
           sudo nft add chain inet citest out '{ type filter hook output priority 10; policy accept; }'
           sudo nft add rule inet citest out meta skuid "$(id -u xray)" tcp dport 443 drop
           rc=0
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh > /tmp/fail.log 2>&1 || rc=$?
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/fail.log 2>&1 || rc=$?
           sudo nft delete table inet citest
           echo "rc=$rc"
           [ "$rc" = 2 ]
@@ -555,7 +555,7 @@ jobs:
           grep -F 'Isolation works: service xray' /tmp/fail.log >/dev/null
           systemctl is-active xray
           test "$before" = "$(sudo sha256sum $KEEP)"
-          sudo grep -m1 '^vless://' /root/hy2-client.txt >/dev/null
+          sudo grep -m1 '^vless://' /root/veiltrium/client.txt >/dev/null
 
       - name: Reality site selection, re-selection, rollback, interruption, lock, trial
         run: bash tests/reselect-ci.sh
@@ -566,27 +566,27 @@ jobs:
       - name: Non-default Reality and TrustTunnel ports survive a plain re-run
         run: |
           set -euo pipefail
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 REALITY_PORT=8444 TT_PORT=9443 bash ./hy2-secure-install.sh > /tmp/p1.log 2>&1             || { tail -40 /tmp/p1.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 REALITY_PORT=8444 TT_PORT=9443 bash ./veiltrium.sh > /tmp/p1.log 2>&1             || { tail -40 /tmp/p1.log; exit 1; }
           sudo ss -Htlpn 'sport = :8444' | grep '"xray"' >/dev/null
           sudo ss -Htulpn 'sport = :9443' | grep '"trusttunnel_end"' >/dev/null
           FILES="/usr/local/etc/xray/config.json /etc/trusttunnel/vpn.toml /etc/nftables.conf"
           ids() { for s in xray trusttunnel; do systemctl show "$s" -p InvocationID --value; done; }
-          links() { sudo grep -E '^(vless|tt)://' /root/hy2-client.txt; }
+          links() { sudo grep -E '^(vless|tt)://' /root/veiltrium/client.txt; }
           before="$(sudo sha256sum $FILES)"; ids0="$(ids)"; links0="$(links)"
           links | grep -F ':8444?' >/dev/null
           # a plain re-run: same ports, same files, same links, nothing restarted
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh > /tmp/p2.log 2>&1 || { tail -40 /tmp/p2.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/p2.log 2>&1 || { tail -40 /tmp/p2.log; exit 1; }
           test "$before" = "$(sudo sha256sum $FILES)"
           test "$ids0" = "$(ids)"
           test "$links0" = "$(links)"
           sudo ss -Htlpn 'sport = :8444' | grep '"xray"' >/dev/null
           # and --diagnose checks the real ports
-          sudo bash ./hy2-secure-install.sh --diagnose > /tmp/p3.log 2>&1 || { cat /tmp/p3.log; exit 1; }
+          sudo bash ./veiltrium.sh --diagnose > /tmp/p3.log 2>&1 || { cat /tmp/p3.log; exit 1; }
           if grep -F 'ERROR' /tmp/p3.log; then echo "--diagnose printed an error"; exit 1; fi
           grep -F 'clients main + 0 added' /tmp/p3.log >/dev/null
           grep -F 'port 8444' /tmp/p3.log >/dev/null
           # back to the defaults, explicitly
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 REALITY_PORT=443 TT_PORT=8443 bash ./hy2-secure-install.sh > /tmp/p4.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 REALITY_PORT=443 TT_PORT=8443 bash ./veiltrium.sh > /tmp/p4.log 2>&1
           sudo ss -Htlpn 'sport = :443' | grep '"xray"' >/dev/null
 
       - name: Added clients (real clients on every protocol, re-run, rollback, revoke)
@@ -602,15 +602,15 @@ jobs:
           sudo journalctl -u xray --no-pager -n 40 || true
           sudo journalctl -u trusttunnel --no-pager -n 30 || true
           sudo tail -n 30 /var/log/fail2ban.log || true
-          sudo tail -n 120 /var/log/hy2-secure-install.log | sed -E 's/[0-9a-f]{48}/<pw>/g' || true
-          sudo jq . /var/lib/hy2-secure/report.json || true
+          sudo tail -n 120 /var/log/veiltrium-install.log | sed -E 's/[0-9a-f]{48}/<pw>/g' || true
+          sudo jq . /var/lib/veiltrium/report.json || true
 
-  # The upgrade starts from the release in use (input upgrade_from). Upgrading it must change
-  # nothing it uses: no new certificates, keys or passwords, the same credentials in the
-  # links (only their display name becomes Veiltrium-<country>), the same configs, and no
-  # service restart. Its first added client moves Hysteria to a password per client.
+  # The upgrade starts from the release in use (input upgrade_from; v2026.10.13.1 is the last
+  # hy2-secure-install.sh). The first run of this version moves the node to the Veiltrium names:
+  # the same keys, passwords, certificates and links, the old files gone, the services
+  # restarted once (their config comments changed). A second run then changes nothing.
   upgrade:
-    name: upgrade from ${{ inputs.upgrade_from || 'v2026.10.13' }} (ubuntu-24.04)
+    name: upgrade from ${{ inputs.upgrade_from || 'v2026.10.13.1' }} (ubuntu-24.04)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
@@ -631,26 +631,20 @@ jobs:
 
       - name: Install the release in use
         env:
-          FROM: ${{ inputs.upgrade_from || 'v2026.10.13' }}
+          FROM: ${{ inputs.upgrade_from || 'v2026.10.13.1' }}
         run: |
           git cat-file -e "${FROM}^{commit}" || { echo "::error::upgrade_from ${FROM} is not in this repository"; exit 1; }
-          git show "${FROM}:hy2-secure-install.sh" > /tmp/old.sh
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash /tmp/old.sh
+          git show "${FROM}:veiltrium.sh" > /tmp/old.sh 2>/dev/null || git show "${FROM}:hy2-secure-install.sh" > /tmp/old.sh
+          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 VT_AUTO_REBOOT=0 bash /tmp/old.sh
+          # a client of the old version must survive the move too
+          sudo env NEEDRESTART_SUSPEND=1 bash /tmp/old.sh --add-client anna > /tmp/old-add.log 2>&1 || { cat /tmp/old-add.log; exit 1; }
 
-      - name: Upgrade to this version
+      - name: Upgrade to this version (moves the node to the Veiltrium names)
         run: |
           set -euo pipefail
-          SAME="/etc/hysteria/config.yaml /etc/hysteria/server.crt /etc/hysteria/server.key
-            /usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json
-            /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/vpn.toml /etc/trusttunnel/hosts.toml
-            /etc/trusttunnel/credentials.toml
-            /etc/systemd/system/hysteria-server.service /etc/systemd/system/xray.service /etc/systemd/system/trusttunnel.service
-            /etc/nftables.conf /etc/fail2ban/jail.d/hy2-sshd.local /etc/sysctl.d/99-zz-hy2-hardening.conf
-            /etc/ssh/sshd_config.d/00-hy2-hardening.conf"
-          ids() { for s in hysteria-server xray trusttunnel; do systemctl show "$s" -p InvocationID --value; done; }
           # the links without their display name: '#name' of hysteria2/vless, TLV field 0x0C of tt://
           creds() {
-            sudo grep -E '^(hysteria2|vless|tt)://' /root/hy2-client.txt | python3 -c '
+            sudo grep -hE '^(hysteria2|vless|tt)://' "$@" | python3 -c '
           import base64, sys
           for line in sys.stdin.read().split():
               if not line.startswith("tt://"):
@@ -667,24 +661,54 @@ jobs:
                   i += n
               print("tt", " ".join(out))'
           }
-          before="$(sudo sha256sum $SAME)"; ids0="$(ids)"; creds0="$(creds)"
-          h_env0="$(sudo cat /etc/hysteria/node.env)"; t_env0="$(sudo cat /etc/trusttunnel/node.env)"
+          KEYS="/etc/hysteria/server.crt /etc/hysteria/server.key /etc/hysteria/node.env
+            /usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json
+            /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/node.env /etc/trusttunnel/credentials.toml"
+          keys0="$(sudo sha256sum $KEYS)"
+          creds0="$(creds /root/hy2-client.txt /root/hy2-clients/anna.txt)"
+          state0="$(sudo cat /etc/hy2-secure/probe.env /etc/hy2-secure/node.env /etc/hy2-secure/clients/anna.env)"
           test -n "$creds0"
-          sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
-          test "$before" = "$(sudo sha256sum $SAME)"
+          sudo nft list table inet hy2fw >/dev/null
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
+          grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null
+          if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then exit 1; fi
+          # the same secrets and links
+          test "$keys0" = "$(sudo sha256sum $KEYS)"
+          test "$creds0" = "$(creds /root/veiltrium/client.txt /root/veiltrium/clients/anna.txt)"
+          test "$state0" = "$(sudo cat /etc/veiltrium/probe.env /etc/veiltrium/node.env /etc/veiltrium/clients/anna.env)"
+          # nothing of the old names is left
+          for f in /etc/hy2-secure /var/lib/hy2-secure /root/hy2-client.txt /root/hy2-probe.env /root/hy2-clients \
+                   /etc/systemd/system/hy2-scanner-block.timer /etc/systemd/system/hy2-secure-recover.service \
+                   /usr/local/sbin/hy2-scanner-block /usr/local/sbin/hy2-secure-recover /etc/sysctl.d/99-zz-hy2-hardening.conf \
+                   /etc/ssh/sshd_config.d/00-hy2-hardening.conf /etc/fail2ban/jail.d/hy2-sshd.local \
+                   /etc/needrestart/conf.d/50-hy2-secure.conf /etc/apt/apt.conf.d/52hy2-unattended-upgrades; do
+            if sudo test -e "$f"; then echo "left over: $f"; exit 1; fi
+          done
+          if sudo nft list table inet hy2fw >/dev/null 2>&1; then echo "the old firewall table is still loaded"; exit 1; fi
+          if sudo grep -rn 'hy2-secure\|hy2fw' /etc/nftables.conf /etc/systemd/system /etc/veiltrium; then echo "an old name in a new file"; exit 1; fi
+          test "$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
+          systemctl is-active hysteria-server xray trusttunnel fail2ban
+          systemctl is-enabled veiltrium-scanner-block.timer veiltrium-recover.service
+          sudo sshd -T | grep -x 'maxauthtries 6' >/dev/null
+          LABEL="$(sudo jq -r .node_name /var/lib/veiltrium/report.json)"
+          sudo grep -m1 '^vless://' /root/veiltrium/client.txt | grep -F "#${LABEL}" >/dev/null
+          # the maintenance modes work on the moved node
+          sudo bash ./veiltrium.sh --diagnose > /tmp/diag.log 2>&1 || { cat /tmp/diag.log; exit 1; }
+          sudo bash ./veiltrium.sh --list-clients --json - | jq -e '.clients | map(.name) == ["main", "anna"]'
+          # a second run changes nothing and restarts nothing
+          ALL="$KEYS /etc/hysteria/config.yaml /etc/trusttunnel/vpn.toml /etc/trusttunnel/hosts.toml
+            /etc/systemd/system/hysteria-server.service /etc/systemd/system/xray.service /etc/systemd/system/trusttunnel.service
+            /etc/nftables.conf /etc/fail2ban/jail.d/veiltrium-sshd.local /etc/sysctl.d/99-zz-veiltrium-hardening.conf
+            /etc/ssh/sshd_config.d/00-veiltrium-hardening.conf /etc/veiltrium/node.env /root/veiltrium/probe.env"
+          ids() { for s in hysteria-server xray trusttunnel fail2ban; do systemctl show "$s" -p InvocationID --value; done; }
+          all0="$(sudo sha256sum $ALL)"; ids0="$(ids)"
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up2.log 2>&1 || { tail -60 /tmp/up2.log; exit 1; }
+          test "$all0" = "$(sudo sha256sum $ALL)"
           test "$ids0" = "$(ids)"
-          test "$creds0" = "$(creds)"
-          # the state file only gains the new setting, with the value the old version used
-          test "$(sudo cat /etc/hysteria/node.env)" = "$(printf '%s\nH_AUTH=password' "$h_env0")"
-          test "$(sudo cat /etc/trusttunnel/node.env)" = "$t_env0"
-          grep -F 'Site www.' /tmp/up.log
-          LABEL="$(sudo jq -r .node_name /var/lib/hy2-secure/report.json)"
-          echo "node name: $LABEL"
-          sudo grep -m1 '^vless://' /root/hy2-client.txt | grep -F "#${LABEL}" >/dev/null
-          systemctl is-active hysteria-server xray trusttunnel
-          echo "upgrade kept everything"
+          if grep -F 'moving it to the Veiltrium names' /tmp/up2.log; then exit 1; fi
+          echo "the move kept every secret and link; the second run changed nothing"
 
-      - name: First added client on an upgraded node
+      - name: Links of the moved node work
         run: |
           set -euo pipefail
           hy() {   # $1 = hysteria2:// link -> HTTP code through a Hysteria client
@@ -695,19 +719,11 @@ jobs:
             curl -s -o /dev/null -w '%{http_code}' --max-time 12 --socks5-hostname 127.0.0.1:18111 https://www.gstatic.com/generate_204 || true
             kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
           }
-          OLD="$(sudo grep -m1 '^hysteria2://' /root/hy2-client.txt)"
-          other0="$(sudo grep -E '^(vless|tt)://' /root/hy2-client.txt | sed 's/#.*//')"
-          sudo env NEEDRESTART_SUSPEND=1 bash ./hy2-secure-install.sh --add-client anna > /tmp/add.log 2>&1 || { cat /tmp/add.log; exit 1; }
-          grep -F "The MAIN client's Hysteria link and JSON changed" /tmp/add.log >/dev/null
-          sudo grep -x 'H_AUTH=userpass' /etc/hysteria/node.env
-          NEW="$(sudo grep -m1 '^hysteria2://' /root/hy2-client.txt)"
-          [[ "$NEW" == hysteria2://main:* ]]
-          test "$other0" = "$(sudo grep -E '^(vless|tt)://' /root/hy2-client.txt | sed 's/#.*//')"
-          sudo grep -E '^P_HY2_PASSWORD=main:[0-9a-f]{48}$' /root/hy2-probe.env >/dev/null
-          c="$(hy "$NEW")"; echo "main, new link -> $c"; [ "$c" = 204 ]
-          c="$(hy "$OLD")"; echo "main, old link -> $c"; [ "$c" != 204 ]
-          c="$(hy "$(sudo grep -m1 '^hysteria2://' /root/hy2-clients/anna.txt)")"; echo "anna -> $c"; [ "$c" = 204 ]
+          c="$(hy "$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt)")"; echo "main -> $c"; [ "$c" = 204 ]
+          c="$(hy "$(sudo grep -m1 '^hysteria2://' /root/veiltrium/clients/anna.txt)")"; echo "anna -> $c"; [ "$c" = 204 ]
+          sudo env NEEDRESTART_SUSPEND=1 bash ./veiltrium.sh --remove-client anna > /tmp/rm.log 2>&1 || { cat /tmp/rm.log; exit 1; }
+          sudo test ! -e /root/veiltrium/clients/anna.txt
 
       - name: Diagnostics
         if: always()
-        run: sudo tail -n 80 /var/log/hy2-secure-install.log | sed -E 's/[0-9a-f]{48}/<pw>/g' || true
+        run: sudo tail -n 80 /var/log/veiltrium-install.log | sed -E 's/[0-9a-f]{48}/<pw>/g' || true

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Unit tests for the decision logic of hy2-secure-install.sh: scoring, choice,
+# Unit tests for the decision logic of veiltrium.sh: scoring, choice,
 # home-network records. No network and no root needed; jq is required.
 set -u
 cd "$(dirname "$0")/.."
-# shellcheck source=../hy2-secure-install.sh
-source ./hy2-secure-install.sh
+# shellcheck source=../veiltrium.sh
+source ./veiltrium.sh
 set +eE
 trap - ERR
 
@@ -166,7 +166,7 @@ check "$(jq -r '.inbounds[0].listen + " " + (.inbounds[0].streamSettings.reality
 # ---- ports of an existing node are kept unless given explicitly ------------------
 XRAY_DIR="${TMPD}/xray"; TT_DIR="${TMPD}/tt"; mkdir -p "${XRAY_DIR}" "${TT_DIR}"
 reality_server_json "${XRAY_DIR}/config.json" "" 8444 www.example.com
-printf '# hy2-secure-install: TrustTunnel endpoint
+printf '# veiltrium: TrustTunnel endpoint
 listen_address = "0.0.0.0:9443"
 ipv6_available = false
 ' > "${TT_DIR}/vpn.toml"
@@ -199,7 +199,7 @@ H_PASSWORD="$(printf 'c%.0s' {1..48})"; HY2_MASQ_URL="https://www.example.com"
 saved=("${CL_NAMES[@]}"); CL_NAMES=()
 H_AUTH=password; hy2_server_yaml "${TMPD}/h1.yaml"
 check "$(sha256sum < "${TMPD}/h1.yaml" | cut -c1-16)" "$(cat <<EOF | sha256sum | cut -c1-16
-# hy2-secure-install: Hysteria 2 server
+# veiltrium: Hysteria 2 server
 listen: :443
 tls:
   cert: /etc/hysteria/server.crt
@@ -238,11 +238,11 @@ check "$(hy2_link a-z pw)" "hysteria2://a-z:pw@192.0.2.1:443/?sni=www.example.or
     "hysteria2 link of a user: user:password, as the URI scheme defines it"
 old="$(cat "${CLIENTS_DIR}"/*.env | sha256sum)"
 renew_client_secrets
-check "${CL_NAMES[*]} ${CL_CREATED[*]}" "a-z a_y b-x 2026-10-13 2026-10-13 2026-10-13" "HY2_RECONFIGURE: the clients keep their names and dates"
+check "${CL_NAMES[*]} ${CL_CREATED[*]}" "a-z a_y b-x 2026-10-13 2026-10-13 2026-10-13" "VT_RECONFIGURE: the clients keep their names and dates"
 check "$([[ "${CL_HPASS[0]}" =~ ^[0-9a-f]{48}$ && "${CL_HPASS[0]}" != "$(printf 'a%.0s' {1..48})" && "${CL_UUID[0]}" != 11111111-2222-4333-8444-555555555553 ]] && echo new)" new \
-    "HY2_RECONFIGURE: the clients get new secrets"
+    "VT_RECONFIGURE: the clients get new secrets"
 check "$(stat -c '%a' "${CLIENTS_DIR}/a-z.env")" 600 "client files stay 0600"
-[[ "$(cat "${CLIENTS_DIR}"/*.env | sha256sum)" != "${old}" ]]; check $? 0 "HY2_RECONFIGURE rewrote the client files"
+[[ "$(cat "${CLIENTS_DIR}"/*.env | sha256sum)" != "${old}" ]]; check $? 0 "VT_RECONFIGURE rewrote the client files"
 mkclient b-x 1; mkclient a_y 2; mkclient a-z 3; load_clients
 mkclient bad 4; sed -i 's/^C_UUID=.*/C_UUID=$(id)/' "${CLIENTS_DIR}/bad.env"
 ( load_clients ) >/dev/null 2>&1; check $? 1 "a damaged client file stops the run"
@@ -305,6 +305,16 @@ JSON_OUT="${TMPD}/out.json"; printf '{"b":2}' | json_emit; JSON_OUT=""
 check "$(cat "${TMPD}/out.json")" '{"b":2}' "--json FILE: the document goes to the file"
 check "$(VEILTRIUM_PROGRESS=1 step_mark write 2>&1)" "::step write" "progress markers only when asked"
 check "$(step_mark write 2>&1)" "" "no progress markers by default"
+
+# ---- the move from the hy2-secure-install names: nothing is lost, the new copy wins -------
+mkdir -p "${TMPD}/old/clients" "${TMPD}/new"
+printf 'old\n' > "${TMPD}/old/probe.env"; printf 'a\n' > "${TMPD}/old/clients/a.env"; printf 'x\n' > "${TMPD}/old/.hidden"
+printf 'stale\n' > "${TMPD}/old/node.env"; printf 'current\n' > "${TMPD}/new/node.env"
+move_tree "${TMPD}/old" "${TMPD}/new"
+check "$(cat "${TMPD}/new/probe.env" "${TMPD}/new/clients/a.env" "${TMPD}/new/.hidden" "${TMPD}/new/node.env" | tr '\n' ' ')" \
+    "old a x current " "move_tree: files and subfolders move over; an existing new file is kept"
+check "$([[ -e "${TMPD}/old" ]] && echo left || echo gone)" gone "move_tree: the old directory is gone"
+check "$(move_tree "${TMPD}/nonexistent" "${TMPD}/new"; echo $?)" 0 "move_tree: nothing to move is fine"
 
 # ---- the panel's root helper: only known requests, a fixed reply format -----------------
 cat > "${TMPD}/stub.sh" <<'EOF'
