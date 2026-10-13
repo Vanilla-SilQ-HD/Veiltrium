@@ -5,8 +5,8 @@
 # BusyBox applets instead of GNU tools where the router has BusyBox.
 # This is a simulation: there is no Russian home network here.
 set -euxo pipefail
-FORK_VER="1.15.0-alpha.10-awgm.31"
-FORK_SHA="67fd803b7c100f32a3a26d6e57a2b3ff170a8a0639a1374d743b41af5d3337c6"
+FORK_VER="1.15.0-alpha.12-awgm.33"
+FORK_SHA="2cb65160e10ac40e83e9e14155b2ef317d795445ee5d0e459362601e2e6c4499"
 W=/tmp/probe
 mkdir -p "$W"
 sudo apt-get -q install -y busybox tcpdump conntrack >/dev/null
@@ -98,6 +98,39 @@ probe --reality --wan veth-e
 sudo kill "$NOISE" || true; sudo pkill -f "while :; do curl" || true
 sudo ip netns exec ext iptables -t nat -F OUTPUT
 test "$(t reality .route)" = route_unverified
+
+# 4c) as on Keenetic: iptables 1.4.21 rejects "-w 5", and OUTPUT jumps to the router's own
+#     chains. A jump alone is no mark: the static checks pass (no iptables_unreadable, no
+#     mark findings) although a fwmark rule sends marked packets to a VPN interface.
+mkdir -p "$W/ipt14"
+printf '#!/bin/sh
+if [ "$1" = -w ] && [ "$2" = 5 ]; then echo "Bad argument 5" >&2; exit 2; fi
+exec %s "$@"
+'     "$(command -v iptables)" > "$W/ipt14/iptables"
+chmod 755 "$W/ipt14/iptables"
+sudo ip netns exec ext ip route add default dev nwg0 table 101
+sudo ip netns exec ext ip rule add fwmark 0x101 lookup 101 pref 101
+sudo ip netns exec ext iptables -t mangle -N _NDM_OUTPUT_DELAY
+sudo ip netns exec ext iptables -t mangle -A OUTPUT -j _NDM_OUTPUT_DELAY
+sudo ip netns exec ext iptables -t mangle -A _NDM_OUTPUT_DELAY -p udp --dport 9 -j RETURN
+kprobe() {
+    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$W/ipt14:$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh         --profile "$W/ci.env" --runs 1 --payload-bytes 0 --singbox "$W/sing-box" --output "$W/out.json" --reality --wan veth-e
+}
+kprobe
+q '.servers[0].route_static'
+test "$(q '.servers[0].route_static.ok')" = true
+test "$(t reality .route)" = verified
+# a MARK inside such a chain is followed: the fwmark rule to the VPN interface is reported
+sudo ip netns exec ext iptables -t mangle -A _NDM_OUTPUT_DELAY -j MARK --set-mark 0x101
+kprobe || true      # the marked test packets may really go to the dummy VPN interface
+q '.servers[0].route_static'
+test "$(q '.servers[0].route_static.ok')" = false
+q '.servers[0].route_static.reasons' | grep -F 'mark_0x101_via_nwg0' >/dev/null
+q '.servers[0].route_static.reasons' | grep -vF 'iptables_unreadable' >/dev/null
+sudo ip netns exec ext iptables -t mangle -F OUTPUT
+sudo ip netns exec ext iptables -t mangle -F _NDM_OUTPUT_DELAY
+sudo ip netns exec ext iptables -t mangle -X _NDM_OUTPUT_DELAY
+sudo ip netns exec ext ip rule del pref 101
 
 # 5) WAN missing: the tests are skipped (they would take some other route)
 probe --reality --wan nosuchwan0 || true

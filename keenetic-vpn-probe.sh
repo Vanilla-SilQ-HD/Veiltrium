@@ -260,6 +260,38 @@ HAVE_TCPDUMP=0; command -v tcpdump >/dev/null 2>&1 && HAVE_TCPDUMP=1
 HAVE_CT=0
 if command -v conntrack >/dev/null 2>&1 || [ -r /proc/net/nf_conntrack ]; then HAVE_CT=1; fi
 
+# iptables -S with a lock wait: "-w N" (iptables 1.6+), a plain "-w" (1.4.21, as on
+# Keenetic, tried after no wait at all, with a time limit).
+ipt_s() {
+    iptables -w 5 "$@" 2>/dev/null && return 0
+    iptables "$@" 2>/dev/null && return 0
+    # 1.4.21 with the lock held: wait for it, but never forever
+    command -v timeout >/dev/null 2>&1 && timeout 10 iptables -w "$@" 2>/dev/null
+}
+
+# The rules of table $1 that router-originated packets pass: OUTPUT and the chains it
+# jumps to (4 levels; Keenetic jumps to its own _NDM_* chains). Returns 1 if OUTPUT
+# cannot be read.
+ipt_output_tree() {
+    it_chains="OUTPUT"; it_seen=""; it_depth=0
+    while [ -n "${it_chains}" ] && [ ${it_depth} -lt 4 ]; do
+        it_next=""
+        for it_c in ${it_chains}; do
+            case " ${it_seen} " in *" ${it_c} "*) continue ;; esac
+            it_seen="${it_seen} ${it_c}"
+            if ! it_rules="$(ipt_s -t "$1" -S "${it_c}")"; then
+                [ "${it_c}" = "OUTPUT" ] && return 1
+                continue
+            fi
+            printf '%s\n' "${it_rules}"
+            it_next="${it_next} $(printf '%s\n' "${it_rules}" | sed -n 's/.*-j \([A-Za-z0-9_-]*\).*/\1/p' \
+                | grep -Ev '^(ACCEPT|RETURN|DROP|REJECT|MASQUERADE|SNAT|DNAT|REDIRECT|LOG|MARK|CONNMARK|TPROXY|TCPMSS|CT|NOTRACK)$')"
+        done
+        it_chains="${it_next}"; it_depth=$((it_depth + 1))
+    done
+    return 0
+}
+
 # Static checks for one server address. Sets RS_OK (1/0) and RS_REASONS.
 route_static() {
     ip="$1"; RS_OK=1; RS_REASONS=""
@@ -267,36 +299,26 @@ route_static() {
     if [ "${WAN_STATE}" = "down" ] || [ -z "${WAN_IP}" ]; then RS_OK=0; RS_REASONS="wan_down"; return 0; fi
     dev="$(ip -4 route get "${ip}" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)"
     if [ "${dev}" != "${WAN}" ]; then RS_OK=0; RS_REASONS="${RS_REASONS} main_route_via_${dev:-none}"; fi
-    # Router-originated packets get a mark only from mangle OUTPUT rules; if there are any,
-    # every fwmark rule must still lead to the WAN.
-    mangle=""
-    if command -v iptables >/dev/null 2>&1 && ! mangle="$(iptables -w 5 -t mangle -S OUTPUT 2>/dev/null)"; then
-        RS_OK=0; RS_REASONS="${RS_REASONS} iptables_unreadable"      # fail closed, like the nat check
+    # Router-originated packets get a mark only from MARK/CONNMARK rules on their mangle
+    # path (OUTPUT and the chains it jumps to); if there are any, every fwmark rule must
+    # still lead to the WAN.
+    mangle=""; nat=""
+    if command -v iptables >/dev/null 2>&1; then
+        if ! mangle="$(ipt_output_tree mangle)"; then
+            RS_OK=0; RS_REASONS="${RS_REASONS} iptables_unreadable"      # fail closed
+        fi
+        # A REDIRECT/DNAT on router-originated traffic would send the test to a local proxy.
+        if ! nat="$(ipt_output_tree nat)"; then
+            RS_OK=0; RS_REASONS="${RS_REASONS} iptables_unreadable"
+        elif printf '%s\n' "${nat}" | grep -Eq -- '-j (REDIRECT|DNAT|TPROXY)'; then
+            RS_OK=0; RS_REASONS="${RS_REASONS} nat_output_redirect"
+        fi
     fi
-    if printf '%s
-' "${mangle}" | grep -Eq -- '-j (MARK|CONNMARK)|-j [A-Za-z0-9_-]+'; then
+    if printf '%s\n' "${mangle}" | grep -Eq -- '-j (MARK|CONNMARK)'; then
         for m in $(ip -4 rule show 2>/dev/null | sed -n 's/.*fwmark \(0x[0-9a-fA-F]*\).*/\1/p' | sort -u); do
             mdev="$(ip -4 route get "${ip}" mark "${m}" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)"
             if [ -z "${mdev}" ]; then RS_OK=0; RS_REASONS="${RS_REASONS} mark_${m}_lookup_failed"
             elif [ "${mdev}" != "${WAN}" ]; then RS_OK=0; RS_REASONS="${RS_REASONS} mark_${m}_via_${mdev}"; fi
-        done
-    fi
-    # A REDIRECT/DNAT on router-originated traffic would send the test to a local proxy.
-    if command -v iptables >/dev/null 2>&1; then
-        chains="OUTPUT"; seen=""; depth=0
-        while [ -n "${chains}" ] && [ ${depth} -lt 4 ]; do
-            next=""
-            for c in ${chains}; do
-                case " ${seen} " in *" ${c} "*) continue ;; esac
-                seen="${seen} ${c}"
-                if ! rules="$(iptables -w 5 -t nat -S "${c}" 2>/dev/null)"; then
-                    [ "${c}" = "OUTPUT" ] && { RS_OK=0; RS_REASONS="${RS_REASONS} iptables_unreadable"; }
-                    continue
-                fi
-                if printf '%s\n' "${rules}" | grep -Eq -- '-j (REDIRECT|DNAT|TPROXY)'; then RS_OK=0; RS_REASONS="${RS_REASONS} nat_${c}_redirect"; fi
-                next="${next} $(printf '%s\n' "${rules}" | sed -n 's/.*-j \([A-Za-z0-9_-]*\).*/\1/p' | grep -Ev '^(ACCEPT|RETURN|DROP|REJECT|MASQUERADE|SNAT|DNAT|REDIRECT|LOG|MARK|CONNMARK|TPROXY)$')"
-            done
-            chains="${next}"; depth=$((depth + 1))
         done
     fi
     if command -v nft >/dev/null 2>&1 && nft list ruleset 2>/dev/null | awk '/hook output/ { o = 1 } o && /(redirect|dnat|tproxy)/ { f = 1 } /^\t}/ { o = 0 } END { exit !f }'; then
