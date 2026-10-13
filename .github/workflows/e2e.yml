@@ -51,8 +51,18 @@ jobs:
           sudo sshd -T | grep -E '^(port|passwordauthentication|permitrootlogin|persourcepenalties) '
           test -n "$(ss -Htln 'sport = :22')"
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: panel/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build the web panel of this commit
+        run: bash panel/build.sh /tmp/veiltrium-panel amd64 ci
+
       - name: Install (first run)
-        run: sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 bash ./hy2-secure-install.sh
+        run: sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./hy2-secure-install.sh
 
       - name: Assertions
         run: |
@@ -581,6 +591,9 @@ jobs:
 
       - name: Added clients (real clients on every protocol, re-run, rollback, revoke)
         run: bash tests/clients-ci.sh
+
+      - name: Web panel (loopback only, helper, login and CSRF rules, a client change, new password)
+        run: bash tests/panel-ci.sh
 
       - name: Diagnostics
         if: always()

@@ -78,6 +78,12 @@ TT_VERSION="v1.1.0"
 TT_SHA256_AMD64="91c2ea3db7416a01b5258a4c047ec22890490bc55e1b194206031aa75144f0e7"
 TT_SHA256_ARM64="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b9686"
 
+# Veiltrium web panel: this repository's own release, SHA-256 pinned like the proxies.
+# Empty sums: no release pinned yet (the panel is skipped unless PANEL_BINARY is given).
+PANEL_VERSION="panel-v0.1.0"
+PANEL_SHA256_AMD64=""
+PANEL_SHA256_ARM64=""
+
 # ---- Settings (can be overridden with environment variables) ---------------
 HY2_PORT="${HY2_PORT:-443}"
 # Reality mask site candidates. All checked on 2026-10-07: reachable from
@@ -104,6 +110,9 @@ PUBLIC_IP="${PUBLIC_IP:-}"                     # empty: detected automatically
 # Node name in client apps: "Veiltrium-<NODE_NAME>". Saved; empty on a new node: the
 # server's country code (e.g. PL); "auto": detect again; "none": just "Veiltrium".
 NODE_NAME="${NODE_NAME:-}"
+PANEL_ENABLE="${PANEL_ENABLE:-1}"              # 0: no web panel
+PANEL_PORT="${PANEL_PORT:-2096}"               # the panel listens on 127.0.0.1 only (SSH tunnel)
+PANEL_BINARY="${PANEL_BINARY:-}"               # a local panel binary instead of the release (tests)
 SCANNER_BLOCK="${SCANNER_BLOCK:-1}"            # 1: proxy ports stay silent for known scanner networks
 HY2_RECONFIGURE="${HY2_RECONFIGURE:-0}"        # 1: new passwords, keys and certificates
 HY2_AUTO_REBOOT="${HY2_AUTO_REBOOT:-1}"        # 1: a NEW node reboots in a minute if updates require it
@@ -150,7 +159,13 @@ TRIAL_END="${RUN_DIR}/trial-end.sh"
 TRIAL_DROPIN_DIR="/run/systemd/system/xray.service.d"
 TRIAL_DROPIN="${TRIAL_DROPIN_DIR}/50-hy2-trial.conf"
 TRIAL_UNIT="hy2-reality-trial-end"
-TOTAL_STEPS=12
+TOTAL_STEPS=13
+PANEL_BIN="/usr/local/bin/veiltrium-panel"
+PANEL_LIB="/usr/local/lib/veiltrium"            # the copy of this script the panel helper runs
+PANEL_ETC="/etc/veiltrium"
+PANEL_AUTH="${PANEL_ETC}/panel-auth"
+PANEL_FILE="/root/hy2-panel.txt"
+HELPER_SOCK="/run/veiltrium/helper.sock"
 
 # ---- Output -----------------------------------------------------------------
 # Project identification for people (terminal and install log only; never written
@@ -1733,7 +1748,7 @@ clients_json() {
 
 # A fast overview of the node: no network tests, no secrets.
 status_json() {
-    local svc st="" vh vx vt os report n
+    local svc st="" vh vx vt os report n scan
     for svc in hysteria-server xray trusttunnel; do
         st+="${svc}=$(systemctl is-active "${svc}" 2>/dev/null || true)"$'\n'
     done
@@ -1744,7 +1759,12 @@ status_json() {
     report="$(jq -c '{generated_at, mode, reality: .reality.vps, hysteria2: .hysteria2.vps,
         trusttunnel_h2: .trusttunnel.h2.vps, trusttunnel_h3: .trusttunnel.h3.vps}' "${REPORT_FILE}" 2>/dev/null || true)"
     n="$(count_clients)"
+    scan="$(nft -j list set inet hy2fw scanners4 2>/dev/null \
+        | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add // 0' 2>/dev/null || echo 0)"
     jq -n --arg now "$(date -u +%FT%TZ)" --arg version "${SCRIPT_VERSION}" --arg label "${LABEL}" \
+        --arg ssh "${SSH_PORTS[*]}" --arg scan "${scan:-0}" \
+        --arg f2b "$(systemctl is-active fail2ban 2>/dev/null || true)" \
+        --arg fw "$(nft list table inet hy2fw >/dev/null 2>&1 && echo 1 || echo 0)" \
         --arg server "${PUBLIC_IP}" --arg os "${os}" --arg uptime "$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)" \
         --arg reboot "$([[ -f /run/reboot-required ]] && echo 1 || echo 0)" --arg st "${st}" \
         --arg vh "${vh}" --arg vx "${vx}" --arg vt "${vt:+v${vt}}" --arg n "${n}" --arg h_auth "${H_AUTH}" \
@@ -1761,6 +1781,8 @@ status_json() {
          hysteria2: {sni: $h_sni, port: ($h_port | tonumber), home_network: $h_mts},
          trusttunnel: (if $t_sni == "" then null else
            {hostname: $t_sni, port: ($t_port | tonumber), home_network_h2: $t2, home_network_h3: $t3} end),
+         protection: {firewall: ($fw == "1"), ssh_ports: ($ssh | split(" ") | map(select(length > 0) | tonumber)),
+           scanner_networks: ($scan | tonumber), fail2ban: $f2b},
          last_install_check: $report}'
 }
 
@@ -1930,6 +1952,78 @@ clients_change() {
     return 0
 }
 
+# ---- Web panel: root helper and password ----------------------------------------
+# The panel (an unprivileged service) sends one request per connection to a unix socket;
+# systemd starts this script with --helper for it. Only these requests exist, with checked
+# names; the reply is ::step / ::log lines, then ::json <document> and ::exit <code>.
+helper_relay() {
+    local l
+    while IFS= read -r l; do
+        l="$(printf '%s' "${l}" | sed 's/\x1b\[[0-9;]*m//g' || true)"
+        case "${l}" in
+            "::step "*) printf '%s\n' "${l}" 2>/dev/null || true ;;
+            *) printf '::log %s\n' "${l}" 2>/dev/null || true ;;
+        esac
+    done
+    return 0
+}
+
+helper_main() {
+    local line="" verb arg="" out rc=0
+    trap '' PIPE     # the panel going away must not cut a change short: it runs to the end
+    IFS= read -r -t 10 line || true
+    line="${line%$'\r'}"
+    verb="${line%% *}"
+    if [[ "${line}" == *" "* ]]; then arg="${line#* }"; fi
+    case "${verb}" in
+        status|list-clients) [[ -z "${arg}" ]] || verb="" ;;
+        show-client) [[ "${arg}" == "main" || "${arg}" =~ ${CLIENT_RE} ]] || verb="" ;;
+        add-client|remove-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
+        *) verb="" ;;
+    esac
+    if [[ -z "${verb}" ]]; then
+        printf '::log ERROR: request refused\n::exit 2\n'
+        return 0
+    fi
+    out="$(mktemp)"
+    # stdout (the JSON) to the file, stderr (human text, progress) through the relay
+    { env VEILTRIUM_PROGRESS=1 NEEDRESTART_SUSPEND=1 bash "${SCRIPT_PATH}" "--${verb}" ${arg:+"${arg}"} --json - \
+        2>&1 > "${out}" || printf '%s' "$?" > "${out}.rc"; } | helper_relay
+    rc="$(cat "${out}.rc" 2>/dev/null || echo 0)"
+    printf '::json %s\n' "$(jq -c . "${out}" 2>/dev/null || echo null)" 2>/dev/null || true
+    rm -f "${out}" "${out}.rc"
+    printf '::exit %s\n' "${rc}" 2>/dev/null || true
+    return 0
+}
+
+# A new panel password: stored as a PBKDF2 hash for the panel, in plain text for root.
+# Old sessions end (the panel restarts). $1 = server address for the instructions.
+panel_new_password() {
+    local pw
+    pw="$(openssl rand -base64 30 | tr -dc 'A-Za-z0-9' | cut -c1-24)"
+    [[ ${#pw} -eq 24 ]] || die "could not generate a panel password."
+    install -d -m 750 -o root -g veiltrium-panel "${PANEL_ETC}"
+    install -m 640 -o root -g veiltrium-panel /dev/null "${PANEL_AUTH}.new"
+    printf '%s\n' "${pw}" | "${PANEL_BIN}" hash-password > "${PANEL_AUTH}.new" || die "could not hash the panel password."
+    mv -f "${PANEL_AUTH}.new" "${PANEL_AUTH}"
+    install -m 600 /dev/null "${PANEL_FILE}.new"
+    cat > "${PANEL_FILE}.new" <<EOF
+Veiltrium web panel ($(date '+%Y-%m-%d %H:%M %Z'))
+Keep this secret.
+
+Password: ${pw}
+
+The panel listens on 127.0.0.1 only: nothing new is open on the internet.
+Open it through an SSH tunnel from your computer (PowerShell or a terminal):
+  ssh -N -L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@$1
+then in the browser:  http://localhost:${PANEL_PORT}/
+New password (signs everybody out):  bash hy2-secure-install.sh --panel-password
+EOF
+    mv -f "${PANEL_FILE}.new" "${PANEL_FILE}"
+    systemctl try-restart veiltrium-panel.service >/dev/null 2>&1 || true
+    return 0
+}
+
 usage() {
     banner
     printf '\n'
@@ -1942,6 +2036,8 @@ Settings (environment variables, saved where noted):
   HY2_SNI=name | auto               Hysteria SNI and certificate name (saved)
   HY2_MASQUERADE_URL=url | auto     Hysteria masquerade page (saved)
   TT_SNI=name | auto                TrustTunnel hostname and certificate name (saved)
+  PANEL_ENABLE=0                    no web panel (it listens on 127.0.0.1 only; SSH tunnel)
+  --panel-password                  a new web panel password (signs everybody out)
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
   --trial-minutes N                 trial length, 5..240 (default 30)
@@ -2005,6 +2101,8 @@ while (( $# )); do
             MODE="${1#--}"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "$1 needs a client name"; shift ;;
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
+        --panel-password) MODE="panel-password" ;;
+        --helper) MODE="helper" ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -2020,6 +2118,12 @@ SCRIPT_PATH="$(readlink -f -- "$0" 2>/dev/null || true)"
 if [[ -n "${SCRIPT_PATH}" && -f "${SCRIPT_PATH}" ]] && \
    ! grep -q '^# ==== HY2-SECURE-INSTALL END ====$' "${SCRIPT_PATH}"; then
     die "the script file is incomplete (truncated while pasting); paste the whole block again."
+fi
+# The panel's root helper: no lock here, the request it runs takes it.
+if [[ "${MODE}" == "helper" ]]; then
+    LIGHT=1
+    helper_main
+    exit 0
 fi
 
 exec 9>/run/hy2-secure-install.lock
@@ -2064,6 +2168,12 @@ if [[ "${MODE}" != "install" ]]; then
             exit 0 ;;
         trial)
             trial_start "${TRIAL_SITES}"
+            exit 0 ;;
+        panel-password)
+            [[ -x "${PANEL_BIN}" ]] && id -u veiltrium-panel >/dev/null 2>&1 \
+                || die "the web panel is not installed (run the installer; PANEL_ENABLE=0 turns it off)."
+            panel_new_password "${PUBLIC_IP:-SERVER_IP}"
+            cat "${PANEL_FILE}"
             exit 0 ;;
         status)
             command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."
@@ -3517,6 +3627,163 @@ write_probe_profile
 # ---- Connection details -----------------------------------------------------
 write_client_files
 
+# =============================================================================
+step 13 "Web panel"
+PANEL_UP=0
+if [[ "${PANEL_ENABLE}" != "1" ]]; then
+    if systemctl cat veiltrium-panel.service >/dev/null 2>&1; then
+        systemctl disable --now veiltrium-panel.service veiltrium-helper.socket >/dev/null 2>&1 || true
+        info "The web panel was turned off (PANEL_ENABLE=0)."
+    else
+        info "The web panel is off (PANEL_ENABLE=0)."
+    fi
+elif [[ -z "${SCRIPT_PATH}" || ! -f "${SCRIPT_PATH}" ]]; then
+    warn "The web panel needs this script as a file (bash hy2-secure-install.sh); skipped."
+else
+    case "${ARCH}" in
+        amd64) PANEL_SHA="${PANEL_SHA256_AMD64}" ;;
+        *) PANEL_SHA="${PANEL_SHA256_ARM64}" ;;
+    esac
+    PANEL_NEW=""
+    if [[ -n "${PANEL_BINARY}" ]]; then
+        [[ -f "${PANEL_BINARY}" ]] || die "PANEL_BINARY: no such file: ${PANEL_BINARY}"
+        PANEL_NEW="${PANEL_BINARY}"
+        warn "Web panel from a local file (PANEL_BINARY), not from a checksum-pinned release."
+    elif [[ "${PANEL_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
+        if [[ "$("${PANEL_BIN}" version 2>/dev/null || true)" != "${PANEL_VERSION#panel-v}" ]]; then
+            fetch "https://github.com/Vanilla-SilQ-HD/Veiltrium/releases/download/${PANEL_VERSION}/veiltrium-panel-linux-${ARCH}" \
+                "${TMPD}/veiltrium-panel"
+            sha_ok "${TMPD}/veiltrium-panel" "${PANEL_SHA}" || die "web panel checksum mismatch; installation stopped."
+            PANEL_NEW="${TMPD}/veiltrium-panel"
+        fi
+    fi
+    if [[ -n "${PANEL_NEW}" || -x "${PANEL_BIN}" ]]; then
+        if ! id -u veiltrium-panel >/dev/null 2>&1; then
+            useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin veiltrium-panel
+        fi
+        RESTART_PANEL=0
+        if [[ -n "${PANEL_NEW}" ]] && ! cmp -s "${PANEL_NEW}" "${PANEL_BIN}"; then
+            install -m 755 "${PANEL_NEW}" "${PANEL_BIN}.new" && sync && mv -f "${PANEL_BIN}.new" "${PANEL_BIN}"
+            RESTART_PANEL=1
+        fi
+        # the helper runs the copy of this script that installed the node
+        install -d -m 755 "${PANEL_LIB}"
+        if ! cmp -s "${SCRIPT_PATH}" "${PANEL_LIB}/hy2-secure-install.sh"; then
+            install -m 755 "${SCRIPT_PATH}" "${PANEL_LIB}/hy2-secure-install.sh.new"
+            mv -f "${PANEL_LIB}/hy2-secure-install.sh.new" "${PANEL_LIB}/hy2-secure-install.sh"
+        fi
+        PANEL_UNITS_BEFORE="$(cat /etc/systemd/system/veiltrium-helper.socket /etc/systemd/system/veiltrium-helper@.service \
+            /etc/systemd/system/veiltrium-panel.service 2>/dev/null | sha256sum || true)"
+        cat > /etc/systemd/system/veiltrium-helper.socket <<EOF
+# hy2-secure-install: root helper of the Veiltrium web panel (one request per connection)
+[Unit]
+Description=Veiltrium panel helper socket
+
+[Socket]
+ListenStream=${HELPER_SOCK}
+SocketUser=root
+SocketGroup=veiltrium-panel
+SocketMode=0660
+DirectoryMode=0755
+Accept=yes
+MaxConnections=8
+
+[Install]
+WantedBy=sockets.target
+EOF
+        cat > /etc/systemd/system/veiltrium-helper@.service <<EOF
+# hy2-secure-install: root helper of the Veiltrium web panel: runs only the requests it knows
+[Unit]
+Description=Veiltrium panel helper
+
+[Service]
+ExecStart=/bin/bash ${PANEL_LIB}/hy2-secure-install.sh --helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStopSec=6min
+EOF
+        cat > /etc/systemd/system/veiltrium-panel.service <<EOF
+# hy2-secure-install: Veiltrium web panel; 127.0.0.1 only, reached through an SSH tunnel
+[Unit]
+Description=Veiltrium web panel
+After=network.target veiltrium-helper.socket
+Wants=veiltrium-helper.socket
+
+[Service]
+User=veiltrium-panel
+Group=veiltrium-panel
+ExecStart=${PANEL_BIN} serve --listen 127.0.0.1:${PANEL_PORT} --helper ${HELPER_SOCK} --auth ${PANEL_AUTH}
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+LimitCORE=0
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        if [[ "$(cat /etc/systemd/system/veiltrium-helper.socket /etc/systemd/system/veiltrium-helper@.service \
+                /etc/systemd/system/veiltrium-panel.service | sha256sum)" != "${PANEL_UNITS_BEFORE}" ]]; then
+            systemctl daemon-reload
+            RESTART_PANEL=1
+        fi
+        if [[ ! -s "${PANEL_AUTH}" ]]; then
+            panel_new_password "${PUBLIC_IP}"
+            CHANGES+=("panel: installed; its password is in ${PANEL_FILE}")
+        fi
+        chown root:veiltrium-panel "${PANEL_ETC}" "${PANEL_AUTH}"
+        chmod 750 "${PANEL_ETC}"; chmod 640 "${PANEL_AUTH}"
+        systemctl enable --now veiltrium-helper.socket >/dev/null 2>&1 || true
+        systemctl enable veiltrium-panel.service >/dev/null 2>&1 || true
+        if (( RESTART_PANEL == 1 )) || ! systemctl is-active --quiet veiltrium-panel.service; then
+            systemctl restart veiltrium-helper.socket veiltrium-panel.service || true
+        fi
+        for _ in $(seq 1 20); do
+            if [[ -n "$(ss -Htln "sport = :${PANEL_PORT}" 2>/dev/null | grep -F '127.0.0.1' || true)" ]]; then PANEL_UP=1; break; fi
+            sleep 0.5
+        done
+        if (( PANEL_UP == 1 )) && [[ -S "${HELPER_SOCK}" ]]; then
+            ok "Web panel $("${PANEL_BIN}" version 2>/dev/null || echo '?') on 127.0.0.1:${PANEL_PORT} (not reachable from outside; SSH tunnel)"
+            SECURITY_SCORE="$(systemd-analyze security veiltrium-panel.service --no-pager 2>/dev/null | tail -1 | grep -oE '[0-9]+\.[0-9]+ [A-Z_]+' || true)"
+            if [[ -n "${SECURITY_SCORE}" ]]; then ok "systemd sandbox score for the panel: ${SECURITY_SCORE}"; fi
+        else
+            PANEL_UP=0
+            journalctl -u veiltrium-panel --no-pager -n 15 || true
+            warn "The web panel did not start; the VPN is not affected."
+        fi
+    else
+        info "No web panel release is pinned in this version yet; skipped."
+    fi
+fi
+
 # ---- Report (no secrets) ------------------------------------------------------
 build_report > "${TMPD}/report.json"
 install -m 600 "${TMPD}/report.json" "${REPORT_FILE}"
@@ -3530,6 +3797,11 @@ printf '\n\033[1;32m================== DONE ==================\033[0m\n'
 trap '' PIPE
 cat "${CLIENT_FILE}" >&7 2>/dev/null || true
 printf '\n(The connection details above are not in the log; they are in %s.)\n' "${CLIENT_FILE}"
+if (( PANEL_UP == 1 )) && [[ -s "${PANEL_FILE}" ]]; then
+    printf '\n----------------------------------------------------------------------\n' >&7 2>/dev/null || true
+    cat "${PANEL_FILE}" >&7 2>/dev/null || true
+    printf '(The panel password is not in the log; it is in %s.)\n' "${PANEL_FILE}"
+fi
 printf '\n\033[1mTLS identities and proof:\033[0m\n'
 if [[ -n "${R_SITE}" ]]; then
     info "VLESS Reality: SNI ${R_SITE}; server check: ${REALITY_VPS}; home network: $(mts_status reality "${R_SITE}")"

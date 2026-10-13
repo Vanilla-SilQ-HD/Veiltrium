@@ -306,5 +306,28 @@ check "$(cat "${TMPD}/out.json")" '{"b":2}' "--json FILE: the document goes to t
 check "$(VEILTRIUM_PROGRESS=1 step_mark write 2>&1)" "::step write" "progress markers only when asked"
 check "$(step_mark write 2>&1)" "" "no progress markers by default"
 
+# ---- the panel's root helper: only known requests, a fixed reply format -----------------
+cat > "${TMPD}/stub.sh" <<'EOF'
+printf 'args:%s\n' "$*" >&2
+printf '::step write\n' >&2
+printf '\033[32m✔\033[0m done\n' >&2
+printf '{"ok": true,\n "n": 1}\n'
+exit 3
+EOF
+SCRIPT_PATH="${TMPD}/stub.sh"
+helper_reply() { printf '%s\n' "$1" | helper_main 2>/dev/null; }
+r="$(helper_reply "add-client anna")"
+check "$(printf '%s\n' "${r}" | grep '^::log args:')" "::log args:--add-client anna --json -" "helper: runs the mode with --json -"
+check "$(printf '%s\n' "${r}" | grep -c '^::step write$')" 1 "helper: passes progress markers through"
+check "$(printf '%s\n' "${r}" | grep '^::log ✔')" "::log ✔ done" "helper: human lines become ::log, without colors"
+check "$(printf '%s\n' "${r}" | tail -n 2 | tr '\n' '|')" '::json {"ok":true,"n":1}|::exit 3|' "helper: one-line JSON, then the exit code"
+check "$(helper_reply "status" | grep '^::log args:')" "::log args:--status --json -" "helper: status takes no argument"
+check "$(helper_reply "show-client main" | grep '^::log args:')" "::log args:--show-client main --json -" "helper: show-client main"
+for bad in "status x" "reboot" "add-client main" "remove-client main" "add-client Anna" "show-client ../x" \
+           "add-client a;id" "add-client \$(id)" "show-client" "" "add-client anna extra"; do
+    check "$(helper_reply "${bad}" | tr '\n' '|')" "::log ERROR: request refused|::exit 2|" "helper refuses: '${bad}'"
+done
+SCRIPT_PATH=""
+
 if (( FAIL )); then echo "UNIT TESTS FAILED"; exit 1; fi
 echo "all unit tests passed"

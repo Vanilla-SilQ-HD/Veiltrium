@@ -21,6 +21,7 @@ The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol 
 - **Home-network diagnostics** from a Keenetic router (`keenetic-vpn-probe.sh`). Results are signed with HMAC-SHA256 and imported on the server.
 - **Several clients.** `--add-client NAME` gives one more person or device its own credentials for every protocol; `--remove-client NAME` revokes them at once. Each change is checked with real clients and rolled back if it fails.
 - Client apps show the node as `Veiltrium-<country>` (for example `Veiltrium-PL`).
+- **A small web panel** on every node: overview and clients (links, QR codes, add, revoke). It listens on `127.0.0.1` only and is reached through an SSH tunnel.
 - A JSON report without secrets (`/var/lib/hy2-secure/report.json`), plus `--diagnose` and `--dry-run` modes that change nothing.
 
 ## Protocols
@@ -102,6 +103,7 @@ Optional settings are environment variables:
 | `HY2_PORT` | `443` | Hysteria UDP port; an existing node keeps its port |
 | `REALITY_PORT`, `TT_PORT` | `443`, `8443` | Reality TCP port, TrustTunnel TCP+UDP port; an existing node keeps its ports unless they are given explicitly |
 | `PUBLIC_IP` | detected | server address for the links (behind NAT) |
+| `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` |
 | `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
 | `SCANNER_BLOCK` | `1` | `0` turns the scanner blocklist off |
 | `HY2_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
@@ -146,6 +148,21 @@ bash /root/hy2-secure-install.sh --remove-client anna
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
+
+## Web panel
+
+Every node gets a small web panel: an overview of the node and its protocols, and the clients with their links, QR codes and the AWG Manager JSON; clients can be added and revoked there.
+
+```bash
+ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to http://localhost:2096/
+```
+
+- The password is printed at the end of the install and kept in `/root/hy2-panel.txt` (root only). `bash /root/hy2-secure-install.sh --panel-password` sets a new one and signs everybody out.
+- **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only; the SSH tunnel is the way in. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
+- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts five requests (status, list, show, add, remove) with checked names and runs the same tested code as the command line.
+- Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` host names (no DNS rebinding), a strict Content Security Policy with no external resources, and a lockout after failed logins.
+- The binary comes from this repository's releases (`panel-v*`), SHA-256 pinned in the installer like the proxies. `PANEL_ENABLE=0` leaves it out.
+- The command line has the same machine interface: `--status`, `--list-clients`, `--show-client NAME`, `--add-client NAME` and `--remove-client NAME` take `--json -`.
 
 ## Managing the REALITY SNI
 
@@ -236,6 +253,7 @@ Two levels:
   - reboot simulation;
   - re-runs with live connections through all three protocols;
   - added clients: real clients on every protocol, a re-run with clients, rollback of a failed change, revocation;
+  - the web panel: loopback only, out of reach of the proxies, the helper's request rules, login and CSRF rules, a client change through the API, a new password, a re-run that changes nothing;
   - rollback: SIGINT, SIGTERM, SIGKILL with the watchdog, a simulated power loss, systemd start failures;
   - local test sites for Reality selection (invalid certificate, no HTTP/2, a dead CDN address, timeouts, NXDOMAIN);
   - the Keenetic probe under BusyBox with policy routing, redirects, NAT and a VPN given as the WAN;

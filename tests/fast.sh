@@ -44,6 +44,21 @@ hmac_router() {
 }
 if have busybox && have openssl; then run hmac_router; fi
 
+# the web panel: Go tests and a full build (web interface embedded), when the tools exist
+if have go && have npm; then
+    panel_check() {
+        local tmp
+        tmp="$(mktemp -d)"
+        bash panel/build.sh "${tmp}/veiltrium-panel" amd64 dev >/dev/null             && (cd panel && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)             && test "$("${tmp}/veiltrium-panel" version)" = dev
+        local rc=$?
+        rm -rf "${tmp}"
+        return "${rc}"
+    }
+    run panel_check
+else
+    SKIPPED+=("web panel (needs go and npm)")
+fi
+
 if have jq && have openssl; then
     run bash tests/unit.sh
 else

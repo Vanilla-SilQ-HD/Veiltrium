@@ -26,3 +26,25 @@ jobs:
           shellcheck --version | head -2; busybox | head -1; jq --version
       - name: Fast checks
         run: bash tests/fast.sh
+
+  panel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: panel/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build and test the web panel
+        run: |
+          set -euo pipefail
+          bash panel/build.sh /tmp/veiltrium-panel amd64 ci
+          cd panel
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          test "$(/tmp/veiltrium-panel version)" = ci

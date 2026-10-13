@@ -1,0 +1,68 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+/* Colors come from the theme (data-theme on <html>); utilities: bg-surface, text-muted, ... */
+@theme inline {
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-bg: var(--vt-bg);
+  --color-surface: var(--vt-surface);
+  --color-surface2: var(--vt-surface2);
+  --color-line: var(--vt-line);
+  --color-fg: var(--vt-fg);
+  --color-muted: var(--vt-muted);
+  --color-accent: var(--vt-accent);
+  --color-on-accent: var(--vt-on-accent);
+  --color-ok: var(--vt-ok);
+  --color-ok-soft: var(--vt-ok-soft);
+  --color-warn: var(--vt-warn);
+  --color-warn-soft: var(--vt-warn-soft);
+  --color-danger: var(--vt-danger);
+  --color-danger-line: var(--vt-danger-line);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --vt-bg: #0f1115;
+  --vt-surface: #161a21;
+  --vt-surface2: #1e242e;
+  --vt-line: #2a313c;
+  --vt-fg: #e6e8ec;
+  --vt-muted: #9aa3af;
+  --vt-accent: #6e9bff;
+  --vt-on-accent: #0b1020;
+  --vt-ok: #56d364;
+  --vt-ok-soft: rgb(86 211 100 / 0.12);
+  --vt-warn: #e3b341;
+  --vt-warn-soft: rgb(227 179 65 / 0.14);
+  --vt-danger: #f47067;
+  --vt-danger-line: #5a2a2a;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --vt-bg: #f5f6f8;
+  --vt-surface: #ffffff;
+  --vt-surface2: #eef1f5;
+  --vt-line: #dde1e7;
+  --vt-fg: #14171c;
+  --vt-muted: #56606e;
+  --vt-accent: #2f5bd3;
+  --vt-on-accent: #ffffff;
+  --vt-ok: #1a7f37;
+  --vt-ok-soft: rgb(26 127 55 / 0.1);
+  --vt-warn: #9a6700;
+  --vt-warn-soft: rgb(154 103 0 / 0.1);
+  --vt-danger: #c93c37;
+  --vt-danger-line: #f0c7c5;
+}
+
+html, body { margin: 0; }
+body { font-family: var(--font-sans); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--vt-accent); outline-offset: 2px; }

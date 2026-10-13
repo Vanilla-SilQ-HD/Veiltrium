@@ -1,0 +1,40 @@
+name: Veiltrium panel release
+# A tag panel-vX.Y.Z builds the web panel for amd64 and arm64 and publishes the binaries
+# with their SHA-256 sums. The installer pins the version and the sums (PANEL_VERSION,
+# PANEL_SHA256_*), like the proxies it installs.
+on:
+  push:
+    tags: ['panel-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: panel/go.mod
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test
+        run: cd panel && mkdir -p web/dist && touch web/dist/.gitkeep && go vet ./... && go test ./...
+      - name: Build
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#panel-v}"
+          for a in amd64 arm64; do bash panel/build.sh "dist/veiltrium-panel-linux-$a" "$a" "$v"; done
+          test "$(dist/veiltrium-panel-linux-amd64 version)" = "$v"
+          cd dist && sha256sum veiltrium-panel-linux-* | tee SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/veiltrium-panel-linux-amd64 dist/veiltrium-panel-linux-arm64 dist/SHA256SUMS \
+            --title "Veiltrium panel ${GITHUB_REF_NAME#panel-v}" \
+            --notes "Web panel binaries for hy2-secure-install.sh (loopback only, reached through an SSH tunnel). The installer downloads them itself and checks the SHA-256 sums below."
