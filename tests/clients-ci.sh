@@ -121,6 +121,9 @@ grep -E '^  anna +added ' "$W/list.txt" >/dev/null
 sudo bash ./hy2-secure-install.sh --show-client anna > "$W/show.txt"
 grep -m1 '^vless://' "$W/show.txt" >/dev/null
 A=/root/hy2-clients/anna.txt
+sudo bash ./hy2-secure-install.sh --diagnose > "$W/diag.log" 2>&1 || { cat "$W/diag.log"; exit 1; }
+if grep -F 'ERROR' "$W/diag.log"; then echo "--diagnose printed an error"; exit 1; fi
+grep -F 'clients main + 1 added' "$W/diag.log" >/dev/null
 A_UUID="$(sudo awk -F= '$1=="C_UUID"{print $2}' /etc/hy2-secure/clients/anna.env)"
 A_HP="$(sudo awk -F= '$1=="C_HY2_PASS"{print $2}' /etc/hy2-secure/clients/anna.env)"
 A_TP="$(sudo awk -F= '$1=="C_TT_PASS"{print $2}' /etc/hy2-secure/clients/anna.env)"

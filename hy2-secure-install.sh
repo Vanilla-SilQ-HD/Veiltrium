@@ -60,7 +60,7 @@ fi
 set -Eeuo pipefail
 umask 022
 
-SCRIPT_VERSION="2026-10-13"
+SCRIPT_VERSION="2026-10-13.1"
 
 # ---- Pinned versions (change only together with the checksums) -------------
 HY2_VERSION="v2.13.0"
@@ -429,6 +429,15 @@ renew_client_secrets() {
     done
     load_clients
     return 0
+}
+
+# Number of added clients without reading them (a damaged file must not stop --diagnose).
+count_clients() {
+    local f n=0
+    for f in "${CLIENTS_DIR}"/*.env; do
+        if [[ -f "${f}" ]]; then n=$((n + 1)); fi
+    done
+    printf '%s' "${n}"
 }
 
 client_index() {   # $1 = name -> prints the index in CL_NAMES, or nothing
@@ -2017,7 +2026,7 @@ if [[ "${MODE}" != "install" ]]; then
         if [[ "${state}" == "active" ]]; then ok "${svc}: active"; else warn "${svc}: ${state:-unknown}"; fi
     done
     info "Hysteria $("${HY2_BIN}" version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo '?'), Xray $("${XRAY_BIN}" version 2>/dev/null | awk 'NR==1{print "v"$2}' || echo '?'), TrustTunnel v$("${TT_BIN}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo '?')"
-    info "Node ${LABEL}: clients main + $(find "${CLIENTS_DIR}" -maxdepth 1 -name '*.env' 2>/dev/null | wc -l) added (see --list-clients); the checks below use the main client"
+    info "Node ${LABEL}: clients main + $(count_clients) added (see --list-clients); the checks below use the main client"
     if [[ -n "${R_SITE}" ]]; then
         printf '\n'; info "VLESS Reality: SNI ${R_SITE}, port ${REALITY_PORT}/TCP; candidates (${CAND_SOURCE}): ${CAND_LIST[*]}"
         prescreen_site "${R_SITE}"

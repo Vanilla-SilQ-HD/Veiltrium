@@ -572,6 +572,8 @@ jobs:
           sudo ss -Htlpn 'sport = :8444' | grep '"xray"' >/dev/null
           # and --diagnose checks the real ports
           sudo bash ./hy2-secure-install.sh --diagnose > /tmp/p3.log 2>&1 || { cat /tmp/p3.log; exit 1; }
+          if grep -F 'ERROR' /tmp/p3.log; then echo "--diagnose printed an error"; exit 1; fi
+          grep -F 'clients main + 0 added' /tmp/p3.log >/dev/null
           grep -F 'port 8444' /tmp/p3.log >/dev/null
           # back to the defaults, explicitly
           sudo env NEEDRESTART_SUSPEND=1 HY2_AUTO_REBOOT=0 REALITY_PORT=443 TT_PORT=8443 bash ./hy2-secure-install.sh > /tmp/p4.log 2>&1
