@@ -1704,8 +1704,10 @@ write_probe_profile() {
 # names. The first install run of veiltrium.sh moves it; the old system files (units,
 # sysctl, SSH, fail2ban, needrestart, apt drop-ins) are removed once their new copies are
 # written, at the end of the run. Keys, passwords, certificates and links stay as they are.
-old_layout_present() {
-    [[ -d /etc/hy2-secure || -d /var/lib/hy2-secure || -e /root/hy2-client.txt ]]
+old_layout_present() {   # also a move that has begun but not finished (old units still there)
+    [[ -d /etc/hy2-secure || -d /var/lib/hy2-secure || -e /root/hy2-client.txt || \
+       -e /usr/local/sbin/hy2-secure-recover || -e /etc/systemd/system/hy2-scanner-block.timer ]] \
+        || grep -qs 'inet hy2fw' /etc/nftables.conf
 }
 
 move_tree() {   # $1 = old directory, $2 = new one: what the new one lacks moves over, then the old one goes
@@ -1723,15 +1725,21 @@ move_tree() {   # $1 = old directory, $2 = new one: what the new one lacks moves
 migrate_old_layout() {
     local f
     old_layout_present || return 0
+    # an old hy2-secure-install.sh still running (e.g. after a dropped SSH session) owns the node
+    exec 6>/run/hy2-secure-install.lock
+    flock -n 6 || die "hy2-secure-install.sh is still running on this server; wait for it to finish, then run veiltrium.sh again."
     info "This node was installed by hy2-secure-install.sh: moving it to the Veiltrium names"
     info "(keys, passwords, certificates and links stay; the old files are removed at the end)."
     # an interrupted change of the old version comes back first, by its own recover script
-    if compgen -G "/var/lib/hy2-secure/txn/*/pending" >/dev/null && [[ -x /usr/local/sbin/hy2-secure-recover ]]; then
+    if compgen -G "/var/lib/hy2-secure/txn/*/pending" >/dev/null; then
+        [[ -x /usr/local/sbin/hy2-secure-recover ]] \
+            || die "an interrupted change of the old version is pending and its recover script is missing; nothing was moved."
         /usr/local/sbin/hy2-secure-recover --now || true
         if compgen -G "/var/lib/hy2-secure/txn/*/pending" >/dev/null; then
             die "an interrupted change of the old version could not be restored yet; nothing was moved. Try again in a minute."
         fi
     fi
+    rm -rf /root/.hy2-install.* 2>/dev/null || true    # temp folders of killed old runs (they may hold keys)
     systemctl stop hy2-secure-watchdog.timer hy2-reality-trial-end.timer >/dev/null 2>&1 || true
     # the old weekly refresh would write to the old directory; its replacement comes in step 6
     systemctl disable --now hy2-scanner-block.timer >/dev/null 2>&1 || true
@@ -1739,11 +1747,27 @@ migrate_old_layout() {
         rm -f /run/systemd/system/xray.service.d/50-hy2-trial.conf
         rm -rf /run/hy2-secure
         systemctl daemon-reload
-        RESTART_XRAY=1
+        systemctl restart xray.service >/dev/null 2>&1 || true    # back to the production config
     fi
     move_tree /etc/hy2-secure "${SCANNER_DIR}"
     move_tree /var/lib/hy2-secure "${STATE_DIR}"
-    if [[ -f "${SCANNER_FILE}" ]]; then sed -i 's/inet hy2fw /inet veiltrium /g' "${SCANNER_FILE}"; fi
+    if [[ -f "${SCANNER_FILE}" ]]; then
+        sed -i 's/inet hy2fw /inet veiltrium /g; s/^# hy2-scanner-block:/# veiltrium-scanner-block:/' "${SCANNER_FILE}"
+    fi
+    # The firewall file on disk must stay loadable at every moment (a reboot before step 6
+    # rewrites it must not boot an open server): same rules, new table name and list path.
+    if grep -qs 'inet hy2fw\|/etc/hy2-secure/' /etc/nftables.conf; then
+        sed -e 's#/etc/hy2-secure/#/etc/veiltrium/#g' -e 's/inet hy2fw/inet veiltrium/g' \
+            -e 's/^# hy2-secure-install:/# veiltrium:/' /etc/nftables.conf > /etc/nftables.conf.vt-new
+        nft -c -f /etc/nftables.conf.vt-new >/dev/null 2>&1 \
+            || { rm -f /etc/nftables.conf.vt-new; die "the renamed firewall file did not pass nft -c; nothing else was changed."; }
+        chmod 700 /etc/nftables.conf.vt-new
+        sync
+        mv -f /etc/nftables.conf.vt-new /etc/nftables.conf
+    fi
+    if [[ -f /etc/nftables.conf.orig-hy2 && ! -e /etc/nftables.conf.orig-veiltrium ]]; then
+        mv -f /etc/nftables.conf.orig-hy2 /etc/nftables.conf.orig-veiltrium
+    fi
     install -d -m 700 "${VT_ROOT_DIR}"
     for f in client.txt probe.env; do
         if [[ -e "/root/hy2-${f}" && ! -e "${VT_ROOT_DIR}/${f}" ]]; then mv -f "/root/hy2-${f}" "${VT_ROOT_DIR}/${f}"; fi
@@ -1751,6 +1775,7 @@ migrate_old_layout() {
     done
     if [[ -d /root/hy2-clients ]]; then move_tree /root/hy2-clients "${CLIENT_FILES_DIR}"; fi
     CHANGES+=("moved from the hy2-secure-install names to Veiltrium (root's files are now in ${VT_ROOT_DIR})")
+    exec 6>&-    # nothing of the old version is left to protect; children must not inherit the lock
     return 0
 }
 
@@ -1762,7 +1787,10 @@ remove_old_names() {
         /etc/sysctl.d/99-zz-hy2-hardening.conf /etc/modules-load.d/hy2-bbr.conf /etc/needrestart/conf.d/50-hy2-secure.conf
         /etc/systemd/journald.conf.d/50-hy2.conf /etc/ssh/sshd_config.d/00-hy2-hardening.conf
         /etc/fail2ban/jail.d/hy2-sshd.local /etc/apt/apt.conf.d/52hy2-unattended-upgrades
-        /var/log/hy2-secure-install.log /var/log/hy2-secure-install.log.1)
+        /var/log/hy2-secure-install.log /var/log/hy2-secure-install.log.1 /etc/nftables.conf.orig-hy2
+        /etc/nftables.conf.hy2-new /etc/systemd/journald.conf.d/50-hy2.conf.new
+        /etc/systemd/system/hy2-secure-recover.service.new /etc/fail2ban/jail.d/hy2-sshd.local.new
+        /run/hy2-secure-install.lock)
     for u in "${files[@]}"; do if [[ -e "${u}" ]]; then old=1; fi; done
     (( old == 1 )) || return 0
     for u in hy2-scanner-block.timer hy2-scanner-block.service hy2-secure-recover.service; do

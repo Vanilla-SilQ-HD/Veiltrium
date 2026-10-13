@@ -667,8 +667,25 @@ jobs:
           keys0="$(sudo sha256sum $KEYS)"
           creds0="$(creds /root/hy2-client.txt /root/hy2-clients/anna.txt)"
           state0="$(sudo cat /etc/hy2-secure/probe.env /etc/hy2-secure/node.env /etc/hy2-secure/clients/anna.env)"
-          test -n "$creds0"
+          test "$(printf '%s\n' "$creds0" | grep -c .)" = 6      # three links each for main and anna
           sudo nft list table inet hy2fw >/dev/null
+          # 1) a move cut off early (apt fails in step 2): the firewall file on disk must still load
+          mkdir -p /tmp/failapt
+          printf '#!/bin/sh\necho "apt-get: simulated failure" >&2\nexit 100\n' > /tmp/failapt/apt-get
+          chmod 755 /tmp/failapt/apt-get
+          rc=0
+          sudo env PATH="/tmp/failapt:$PATH" NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/cut.log 2>&1 || rc=$?
+          echo "cut-off move: rc=$rc"; test "$rc" = 1
+          grep -F 'could not update package lists' /tmp/cut.log >/dev/null
+          sudo nft -c -f /etc/nftables.conf
+          sudo systemctl restart nftables        # as after a reboot: only what is on disk
+          sudo nft list table inet veiltrium >/dev/null
+          test "$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
+          sudo systemctl restart fail2ban
+          # a half-moved node: the maintenance modes refuse, the installer finishes the move
+          if sudo bash ./veiltrium.sh --diagnose > /tmp/half.log 2>&1; then echo "diagnose ran on a half-moved node"; exit 1; fi
+          grep -F 'run the installer once' /tmp/half.log >/dev/null
+          # 2) the move run to the end
           sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
           grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null
           if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then exit 1; fi
@@ -685,6 +702,8 @@ jobs:
             if sudo test -e "$f"; then echo "left over: $f"; exit 1; fi
           done
           if sudo nft list table inet hy2fw >/dev/null 2>&1; then echo "the old firewall table is still loaded"; exit 1; fi
+          left="$(sudo find /etc /root /var/lib /var/log /usr/local /run -name '*hy2*' 2>/dev/null || true)"
+          if [ -n "$left" ]; then echo "old names left: $left"; exit 1; fi
           if sudo grep -rn 'hy2-secure\|hy2fw' /etc/nftables.conf /etc/systemd/system /etc/veiltrium; then echo "an old name in a new file"; exit 1; fi
           test "$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
           systemctl is-active hysteria-server xray trusttunnel fail2ban
