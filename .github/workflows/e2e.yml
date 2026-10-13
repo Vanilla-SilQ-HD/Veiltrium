@@ -697,13 +697,20 @@ jobs:
           chmod 755 /tmp/failapt/apt-get
           rc=0
           sudo env PATH="/tmp/failapt:$PATH" NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/cut.log 2>&1 || rc=$?
-          echo "cut-off move: rc=$rc"
+          echo "cut-off move: rc=$rc"; ls -la /tmp/cut.log; grep -n -E 'ERROR|\[[0-9]+/13\]' /tmp/cut.log || true
           [ "$rc" = 1 ] && grep -F 'could not update package lists' /tmp/cut.log >/dev/null || { tail -40 /tmp/cut.log; exit 1; }
+          set -x
+          sudo grep -n 'include\|^table\|delete table' /etc/nftables.conf
+          sudo head -c 300 /etc/veiltrium/scanners.nft; echo
           sudo nft -c -f /etc/nftables.conf
           sudo systemctl restart nftables        # as after a reboot: only what is on disk
+          sudo nft list tables
           sudo nft list table inet veiltrium >/dev/null
-          test "$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')" -gt 1000
+          n4="$(sudo nft -j list set inet veiltrium scanners4 | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add')"
+          echo "scanner networks after the restart: $n4"
+          test "$n4" -gt 1000
           sudo systemctl restart fail2ban
+          set +x
           # a half-moved node: the maintenance modes refuse, the installer finishes the move
           if sudo bash ./veiltrium.sh --diagnose > /tmp/half.log 2>&1; then echo "diagnose ran on a half-moved node"; exit 1; fi
           grep -F 'run the installer once' /tmp/half.log >/dev/null || { cat /tmp/half.log; exit 1; }
