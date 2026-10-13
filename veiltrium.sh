@@ -1925,7 +1925,7 @@ remove_old_names() {
         /var/log/hy2-secure-install.log /var/log/hy2-secure-install.log.1 /etc/nftables.conf.orig-hy2
         /etc/nftables.conf.hy2-new /etc/systemd/journald.conf.d/50-hy2.conf.new
         /etc/systemd/system/hy2-secure-recover.service.new /etc/fail2ban/jail.d/hy2-sshd.local.new
-        /run/hy2-secure-install.lock)
+        /run/hy2-secure-install.lock /var/lib/systemd/timers/stamp-hy2-scanner-block.timer)
     for u in "${files[@]}"; do if [[ -e "${u}" ]]; then old=1; fi; done
     (( old == 1 )) || return 0
     for u in hy2-scanner-block.timer hy2-scanner-block.service hy2-secure-recover.service; do
