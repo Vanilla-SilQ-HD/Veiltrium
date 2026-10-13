@@ -66,10 +66,11 @@ func serve(args []string) {
 		log.Fatal(err)
 	}
 	srv := &http.Server{
-		Addr:              *listen,
-		Handler:           NewServer(&Helper{Socket: *socket}, *auth, static).Handler(),
+		Addr:    *listen,
+		Handler: NewServer(&Helper{Socket: *socket}, *auth, static).Handler(),
+		// no ReadTimeout: it would cancel a request's context while a long helper call
+		// (check-russia, a client change) is still running; bodies are limited in the handlers
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    32 << 10,
 	}

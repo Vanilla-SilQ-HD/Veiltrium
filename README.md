@@ -103,7 +103,7 @@ Optional settings are environment variables:
 | `HY2_PORT` | `443` | Hysteria UDP port; an existing node keeps its port |
 | `REALITY_PORT`, `TT_PORT` | `443`, `8443` | Reality TCP port, TrustTunnel TCP+UDP port; an existing node keeps its ports unless they are given explicitly |
 | `PUBLIC_IP` | detected | server address for the links (behind NAT) |
-| `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` |
+| `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` (saved) |
 | `GLOBALPING` | `1` | `0` turns off the check from Russian networks (it sends the server's address to Globalping); saved |
 | `RU_BLOCKLISTS` | itdoginfo `Categories/block.lst` | URLs of RKN block lists (domains, one per line) |
 | `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
@@ -140,6 +140,7 @@ Maintenance modes. Each takes the same lock as the installer; the first three ch
 bash /root/veiltrium.sh --diagnose            # check the node, change nothing
 bash /root/veiltrium.sh --diagnose --json /root/diag.json
 bash /root/veiltrium.sh --dry-run             # what --reselect-reality would choose, change nothing
+bash /root/veiltrium.sh --check-russia        # do Russian networks reach this server? (Globalping)
 bash /root/veiltrium.sh --help
 ```
 
@@ -154,7 +155,7 @@ bash /root/veiltrium.sh --show-client anna
 bash /root/veiltrium.sh --remove-client anna
 ```
 
-- Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`.
+- Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `main` is the first client.
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
@@ -169,10 +170,10 @@ ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to 
 
 - The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt` (root only). `bash /root/veiltrium.sh --panel-password` sets a new one and signs everybody out.
 - **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only; the SSH tunnel is the way in. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
-- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts five requests (status, list, show, add, remove) with checked names and runs the same tested code as the command line.
+- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts six requests (status, list, show, add, remove, check-russia) with checked names and runs the same tested code as the command line.
 - Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` host names (no DNS rebinding), a strict Content Security Policy with no external resources, and a lockout after failed logins.
 - The binary comes from this repository's releases (`panel-v*`), SHA-256 pinned in the installer like the proxies. `PANEL_ENABLE=0` leaves it out.
-- The command line has the same machine interface: `--status`, `--list-clients`, `--show-client NAME`, `--add-client NAME` and `--remove-client NAME` take `--json -`.
+- The command line has the same machine interface: `--status`, `--list-clients`, `--show-client NAME`, `--add-client NAME`, `--remove-client NAME`, `--check-russia`, `--diagnose` and `--dry-run` take `--json -`.
 
 ## Managing the REALITY SNI
 
@@ -225,7 +226,8 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 
    ```bash
    ssh root@SERVER_IP "cat /root/veiltrium/probe.env" | ssh -p 222 root@ROUTER "mkdir -p /opt/etc/vpn-probe && cat > /opt/etc/vpn-probe/server1.env && chmod 600 /opt/etc/vpn-probe/server1.env"
-   scp -O -P 222 tools/keenetic-vpn-probe.sh root@ROUTER:/opt/bin/
+   curl -fsSLO https://raw.githubusercontent.com/Vanilla-SilQ-HD/Veiltrium/main/tools/keenetic-vpn-probe.sh
+   scp -O -P 222 keenetic-vpn-probe.sh root@ROUTER:/opt/bin/
    ```
 
 2. On the router, install the tools and run the probe. Pass your physical WAN interface; PPPoE is usually `ppp0`.
@@ -236,7 +238,7 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
    sh /opt/bin/keenetic-vpn-probe.sh --all --check-awg --wan ppp0 --output /opt/tmp/vpn-probe.json
    ```
 
-   Options: `--reality`, `--hysteria`, `--trusttunnel`, `--trial-sni a,b`, `--runs N`, `--payload-bytes N`, `--profile FILE`, `--singbox PATH`, `--tt-client PATH`, `--help`.
+   Options: `--reality`, `--hysteria`, `--trusttunnel`, `--trial-sni a,b`, `--runs N`, `--payload-bytes N`, `--payload-url URL`, `--profile FILE`, `--profile-dir DIR`, `--singbox PATH`, `--tt-client PATH`, `--help`.
 
 3. Import the result on each server:
 

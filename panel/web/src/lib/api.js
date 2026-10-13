@@ -11,7 +11,7 @@ async function call(method, path, body) {
     credentials: 'same-origin',
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (r.status === 401) throw new AuthError('sign in');
+  if (r.status === 401 && path !== '/login') throw new AuthError('sign in');
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data;
@@ -37,7 +37,7 @@ async function stream(method, path, body, onStep) {
     credentials: 'same-origin',
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (r.status === 401) throw new AuthError('sign in');
+  if (r.status === 401 && path !== '/login') throw new AuthError('sign in');
   if (!r.ok || !r.body) {
     const data = await r.json().catch(() => ({}));
     throw new Error(data.error || r.statusText);

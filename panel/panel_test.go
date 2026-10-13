@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -84,20 +85,64 @@ func fakeHelper(t *testing.T, reply func(req string) string) (string, *[]string)
 	}
 	t.Cleanup(func() { ln.Close() })
 	var reqs []string
+	var mu sync.Mutex
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			line, _ := bufio.NewReader(c).ReadString('\n')
-			req := strings.TrimSpace(line)
-			reqs = append(reqs, req)
-			_, _ = io.WriteString(c, reply(req))
-			c.Close()
+			go func() {
+				line, _ := bufio.NewReader(c).ReadString('\n')
+				req := strings.TrimSpace(line)
+				mu.Lock()
+				reqs = append(reqs, req)
+				mu.Unlock()
+				_, _ = io.WriteString(c, reply(req))
+				c.Close()
+			}()
 		}
 	}()
 	return sock, &reqs
+}
+
+// TestCallsAreSerial: page loads fire status and clients at once; the helper runs the
+// installer, which takes a lock, so the panel must send one request at a time.
+func TestCallsAreSerial(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, maxInFlight := 0, 0
+	sock, _ := fakeHelper(t, func(req string) string {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(150 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return "::json {\"ok\":true}\n::exit 0\n"
+	})
+	ts, c := newTestServer(t, sock)
+	ck, _ := login(t, ts, c, "correct horse battery")
+	cookie := map[string]string{"Cookie": sessionCookie + "=" + ck.Value}
+	var wg sync.WaitGroup
+	for _, p := range []string{"/api/status", "/api/clients", "/api/clients/main"} {
+		wg.Add(1)
+		go func(p string) {
+			defer wg.Done()
+			r := do(t, c, "GET", ts.URL+p, "", cookie)
+			r.Body.Close()
+			if r.StatusCode != 200 {
+				t.Errorf("%s: %d", p, r.StatusCode)
+			}
+		}(p)
+	}
+	wg.Wait()
+	if maxInFlight != 1 {
+		t.Fatalf("%d helper calls ran at once", maxInFlight)
+	}
 }
 
 func newTestServer(t *testing.T, sock string) (*httptest.Server, *http.Client) {

@@ -36,6 +36,12 @@ type Server struct {
 	sessions map[string]*session
 	failures []time.Time // failed logins, for the rate limit
 	busy     bool        // a client change is running
+
+	// one helper call at a time: each one runs the installer, which takes a lock on the
+	// server; concurrent page loads (status + clients) would otherwise collide on it
+	callMu sync.Mutex
+	// one password check at a time: the failure count is read and updated as a whole
+	loginMu sync.Mutex
 }
 
 func NewServer(helper *Helper, authFile string, static fs.FS) *Server {
@@ -117,6 +123,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad request")
 		return
 	}
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
 	now := time.Now()
 	s.mu.Lock()
 	recent := s.failures[:0]
@@ -215,9 +223,18 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, verb, arg string) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.mu.Lock()
+	busy := s.busy
+	s.mu.Unlock()
+	if busy {
+		writeError(w, http.StatusConflict, "a client change is running; try again when it finishes")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
+	s.callMu.Lock()
 	res, err := s.helper.Call(ctx, verb, arg, nil)
+	s.callMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -276,14 +293,16 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request, verb, name strin
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
 	defer cancel()
+	s.callMu.Lock()
 	res, err := s.helper.Call(ctx, verb, name, func(ev HelperEvent) {
 		if ev.Kind == "step" {
 			emit(map[string]string{"step": ev.Text})
 		}
 	})
+	s.callMu.Unlock()
 	switch {
 	case err != nil:
-		emit(map[string]string{"error": err.Error()})
+		emit(map[string]string{"error": err.Error() + "; the change may still finish on the server: check the list"})
 	case res.Code != 0 || res.JSON == nil:
 		emit(map[string]string{"error": res.ErrorText()})
 	default:

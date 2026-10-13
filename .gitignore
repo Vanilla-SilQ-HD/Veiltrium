@@ -1,0 +1,8 @@
+# local notes and exports, never published
+CLAUDE.md
+exports/
+# web panel build products
+panel/web/node_modules/
+panel/web/dist/*
+!panel/web/dist/.gitkeep
+panel/veiltrium-panel*

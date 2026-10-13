@@ -44,12 +44,14 @@
 #    bash veiltrium.sh --import-mts FILE   import results of tools/keenetic-vpn-probe.sh (optional)
 #    bash veiltrium.sh --trial-reality SITE[,SITE]   temporary extra Reality
 #                                                   names for a probe from home; auto-revert
+#    bash veiltrium.sh --trial-stop        end a Reality trial now
 #    bash veiltrium.sh --add-client NAME   a new client: own credentials for all protocols
 #    bash veiltrium.sh --remove-client NAME   revoke a client
 #    bash veiltrium.sh --list-clients      the clients of this node
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
 #    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
+#    bash veiltrium.sh --panel-password    a new web panel password (signs everybody out)
 #    bash veiltrium.sh --help
 #
 #  To regenerate everything:  VT_RECONFIGURE=1 bash veiltrium.sh
@@ -117,6 +119,7 @@ GLOBALPING="${GLOBALPING:-}"                   # 1 (default, saved): check from 
 # a blocked name is never chosen as the Reality site or a server name.
 RU_BLOCKLISTS="${RU_BLOCKLISTS:-https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/block.lst}"
 PANEL_ENABLE="${PANEL_ENABLE:-1}"              # 0: no web panel
+PANEL_PORT_GIVEN="${PANEL_PORT:+1}"             # given explicitly: change the port; else keep the node's
 PANEL_PORT="${PANEL_PORT:-2096}"               # the panel listens on 127.0.0.1 only (SSH tunnel)
 PANEL_BINARY="${PANEL_BINARY:-}"               # a local panel binary instead of the release (tests)
 SCANNER_BLOCK="${SCANNER_BLOCK:-1}"            # 1: proxy ports stay silent for known scanner networks
@@ -391,7 +394,8 @@ load_node_name() {
     if [[ -s "${NODE_ENV}" ]]; then
         # shellcheck disable=SC1090
         source "${NODE_ENV}"
-        N_SAVED=1
+        # a failed country lookup saves no name: it is tried again on the next run
+        if grep -q '^N_NAME=' "${NODE_ENV}"; then N_SAVED=1; fi
     fi
     [[ -z "${N_NAME}" || "${N_NAME}" =~ ${NAME_RE} ]] || N_NAME=""
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
@@ -411,11 +415,14 @@ detect_country() {
     return 0
 }
 
-save_node_name() {
+save_node_name() {   # $1 = 1: the name is a choice (explicit, detected or "none"); 0: lookup failed, keep trying
     install -d -m 700 "${SCANNER_DIR}"
     install -m 600 /dev/null "${NODE_ENV}.new"
-    printf '# veiltrium: node name in client apps (Veiltrium-<N_NAME>); checks from Russia (Globalping)\nN_NAME=%q\nN_GLOBALPING=%q\n' \
-        "${N_NAME}" "${GLOBALPING}" > "${NODE_ENV}.new"
+    {
+        printf '# veiltrium: node name in client apps (Veiltrium-<N_NAME>); checks from Russia (Globalping)\n'
+        if [[ "${1:-1}" == "1" ]]; then printf 'N_NAME=%q\n' "${N_NAME}"; fi
+        printf 'N_GLOBALPING=%q\n' "${GLOBALPING}"
+    } > "${NODE_ENV}.new"
     mv -f "${NODE_ENV}.new" "${NODE_ENV}"
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
 }
@@ -556,6 +563,10 @@ load_ports() {
     if [[ -z "${TT_PORT_GIVEN}" && -s "${TT_DIR}/vpn.toml" ]]; then
         p="$(sed -n 's/^listen_address = "0\.0\.0\.0:\([0-9]\{1,5\}\)"$/\1/p' "${TT_DIR}/vpn.toml" | head -n 1 || true)"
         if [[ -n "${p}" ]]; then TT_PORT="${p}"; fi
+    fi
+    if [[ -z "${PANEL_PORT_GIVEN}" && -s /etc/systemd/system/veiltrium-panel.service ]]; then
+        p="$(sed -n 's/^ExecStart=.* --listen 127\.0\.0\.1:\([0-9]\{1,5\}\) .*$/\1/p' /etc/systemd/system/veiltrium-panel.service | head -n 1 || true)"
+        if [[ -n "${p}" ]]; then PANEL_PORT="${p}"; fi
     fi
     return 0
 }
@@ -1454,16 +1465,16 @@ gp_start() {   # $1 = ICMP|TCP, $2 = port (TCP) -> prints the measurement id, no
     body="$(jq -nc --arg ip "${PUBLIC_IP}" --argjson loc "${GP_LOCATIONS}" --arg proto "$1" --arg port "${2:-0}" \
         '{type: "ping", target: $ip, locations: $loc,
           measurementOptions: ({packets: 3} + (if $proto == "TCP" then {protocol: "TCP", port: ($port | tonumber)} else {} end))}')"
-    curl -fsS --proto '=https' --max-time 20 -X POST -H 'Content-Type: application/json' -d "${body}" "${GLOBALPING_API}" 2>/dev/null \
+    curl -fsS --proto '=https' --connect-timeout 10 --max-time 20 -X POST -H 'Content-Type: application/json' -d "${body}" "${GLOBALPING_API}" 2>/dev/null \
         | jq -r '.id // empty' 2>/dev/null || true
     return 0
 }
 
+GP_DEADLINE=0   # SECONDS value by which all the waits of one check must be over
 gp_wait() {   # $1 = id, $2 = file for the finished measurement (left absent if it never finishes)
-    local _
     [[ "$1" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || return 0
-    for _ in $(seq 1 25); do
-        if curl -fsS --proto '=https' --max-time 15 "${GLOBALPING_API}/$1" -o "$2.tmp" 2>/dev/null \
+    while (( SECONDS < GP_DEADLINE )); do
+        if curl -fsS --proto '=https' --connect-timeout 10 --max-time 15 "${GLOBALPING_API}/$1" -o "$2.tmp" 2>/dev/null \
             && jq -e '.status == "finished"' "$2.tmp" >/dev/null 2>&1; then
             mv -f "$2.tmp" "$2"
             return 0
@@ -1507,6 +1518,7 @@ russia_check() {
         return 0
     fi
     rm -f "${TMPD}"/gp-*.json
+    GP_DEADLINE=$(( SECONDS + 120 ))   # the probes answer within seconds; a stalled API does not hold the install
     id_i="$(gp_start ICMP)"
     if [[ -n "${R_SITE:-}" ]]; then rport="${REALITY_PORT}"; id_r="$(gp_start TCP "${rport}")"; fi
     if [[ -n "${T_SNI:-}" && "${TT_ENABLE}" == "1" ]]; then tport="${TT_PORT}"; id_t="$(gp_start TCP "${tport}")"; fi
@@ -1517,7 +1529,10 @@ russia_check() {
         > "${TMPD}/russia.json" || true
     RU_VERDICT="$(jq -r '.verdict // "unchecked"' "${TMPD}/russia.json" 2>/dev/null || echo unchecked)"
     install -d -m 700 "${STATE_DIR}"
-    if [[ -s "${TMPD}/russia.json" ]]; then install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"; fi
+    # A check that got no answer from the API (down, rate limit) does not replace the last real result.
+    if [[ -s "${TMPD}/russia.json" ]] && { [[ "${RU_VERDICT}" != "unchecked" ]] || [[ ! -s "${RUSSIA_FILE}" ]]; }; then
+        install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"
+    fi
     line="$(jq -r '"ping \(.icmp.ok)/\(.icmp.total)"
         + (if .tcp_reality then ", TCP \(.tcp_reality.port) \(.tcp_reality.ok)/\(.tcp_reality.total)" else "" end)
         + (if .tcp_trusttunnel then ", TCP \(.tcp_trusttunnel.port) \(.tcp_trusttunnel.ok)/\(.tcp_trusttunnel.total)" else "" end)
@@ -2192,7 +2207,8 @@ clients_change() {
     if [[ "${old_auth}" != "userpass" ]]; then
         warn "Hysteria now has a password per client. The MAIN client's Hysteria link and JSON changed"
         warn "(password -> main:<password>): update them on its devices (on the router: section 6 of"
-        warn "${CLIENT_FILE}). VLESS Reality and TrustTunnel links of the main client stay the same."
+        warn "${CLIENT_FILE}; a copy of ${PROBE_PROFILE} on the router too). VLESS Reality and TrustTunnel"
+        warn "links of the main client stay the same."
     fi
     return 0
 }
@@ -2232,8 +2248,9 @@ helper_main() {
     fi
     out="$(mktemp)"
     # stdout (the JSON) to the file, stderr (human text, progress) through the relay
+    # stdin is the socket: the child must never wait on it
     { env VEILTRIUM_PROGRESS=1 NEEDRESTART_SUSPEND=1 bash "${SCRIPT_PATH}" "--${verb}" ${arg:+"${arg}"} --json - \
-        2>&1 > "${out}" || printf '%s' "$?" > "${out}.rc"; } | helper_relay
+        2>&1 > "${out}" </dev/null || printf '%s' "$?" > "${out}.rc"; } | helper_relay
     rc="$(cat "${out}.rc" 2>/dev/null || echo 0)"
     printf '::json %s\n' "$(jq -c . "${out}" 2>/dev/null || echo null)" 2>/dev/null || true
     rm -f "${out}" "${out}.rc"
@@ -2283,11 +2300,14 @@ Settings (environment variables, saved where noted):
   HY2_MASQUERADE_URL=url | auto     Hysteria masquerade page (saved)
   TT_SNI=name | auto                TrustTunnel hostname and certificate name (saved)
   PANEL_ENABLE=0                    no web panel (it listens on 127.0.0.1 only; SSH tunnel)
+  PANEL_PORT=2096                   the panel's port on 127.0.0.1 (saved)
   GLOBALPING=0                      no check from Russian networks (it sends the server's address
                                     to Globalping probes; saved; default 1)
-  --panel-password                  a new web panel password (signs everybody out)
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
+  The full list (ports, TT_ENABLE, SCANNER_BLOCK, RU_BLOCKLISTS, PUBLIC_IP, ...) is in README.md.
+
+Options:
   --trial-minutes N                 trial length, 5..240 (default 30)
   --json FILE | -                   with --diagnose, --dry-run, --status and the client modes:
                                     write a JSON document there ("-": stdout, human text to stderr)
@@ -2376,7 +2396,12 @@ if [[ "${MODE}" == "helper" ]]; then
 fi
 
 exec 9>/run/veiltrium.lock
-flock -n 9 || die "the script is already running (perhaps a previous run is still going after a dropped connection); wait a couple of minutes and run it again."
+if [[ "${MODE}" == "install" ]]; then
+    flock -n 9 || die "the script is already running (perhaps a previous run is still going after a dropped connection); wait a couple of minutes and run it again."
+else
+    # Maintenance modes are short: wait for a panel request or another command instead of failing.
+    flock -w 90 9 || die "the script is already running (an install, or a client change from the panel); wait for it to finish and try again."
+fi
 # Temp dirs of a run that was killed (they may hold client configs with keys): with the
 # lock held, no other run is using them.
 rm -rf /root/.veiltrium.* 2>/dev/null || true
@@ -2777,6 +2802,8 @@ load_ports
 [[ "${TT_ENABLE}" == "0" || "${TT_ENABLE}" == "1" ]] || die "TT_ENABLE must be 0 or 1."
 [[ "${TT_PORT}" =~ ^[0-9]{1,5}$ ]] && (( TT_PORT >= 1 && TT_PORT <= 65535 )) \
     || die "TT_PORT must be a number from 1 to 65535."
+[[ "${PANEL_PORT}" =~ ^[0-9]{1,5}$ ]] && (( PANEL_PORT >= 1 && PANEL_PORT <= 65535 )) \
+    || die "PANEL_PORT must be a number from 1 to 65535."
 if [[ "${TT_ENABLE}" == "1" ]] && (( TT_PORT == HY2_PORT || TT_PORT == REALITY_PORT )); then
     die "TT_PORT must differ from HY2_PORT and REALITY_PORT (TrustTunnel uses both TCP and UDP)."
 fi
@@ -3540,15 +3567,19 @@ if [[ -z "${PUBLIC_IP}" ]]; then
 fi
 # The node name in client apps (Veiltrium-<name>): explicit setting, else the saved one,
 # else the server's country code (detected once, then saved).
+N_KNOWN=1
 if [[ "${NODE_NAME}" == "auto" || ( -z "${NODE_NAME}" && "${N_SAVED}" == "0" ) ]]; then
     N_NAME="$(detect_country)"
-    if [[ -z "${N_NAME}" ]]; then info "Could not detect the server's country; a node name can be set with NODE_NAME=XX."; fi
+    if [[ -z "${N_NAME}" ]]; then
+        N_KNOWN=0
+        info "Could not detect the server's country (tried again on the next run); a node name can be set with NODE_NAME=XX."
+    fi
 elif [[ "${NODE_NAME}" == "none" ]]; then
     N_NAME=""
 elif [[ -n "${NODE_NAME}" ]]; then
     N_NAME="${NODE_NAME}"
 fi
-save_node_name
+save_node_name "${N_KNOWN}"
 ok "Node name in client apps: ${LABEL}"
 install -d -m 750 -o root -g hysteria "${HY2_DIR}"
 # A node that exists on disk is changed as a transaction: if the new settings do not
@@ -3911,6 +3942,7 @@ write_client_files
 # =============================================================================
 step 13 "Web panel"
 PANEL_UP=0
+PANEL_SKIPPED=0
 if [[ "${PANEL_ENABLE}" != "1" ]]; then
     if systemctl cat veiltrium-panel.service >/dev/null 2>&1; then
         systemctl disable --now veiltrium-panel.service veiltrium-helper.socket >/dev/null 2>&1 || true
@@ -3932,10 +3964,16 @@ else
         warn "Web panel from a local file (PANEL_BINARY), not from a checksum-pinned release."
     elif [[ "${PANEL_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
         if [[ "$("${PANEL_BIN}" version 2>/dev/null || true)" != "${PANEL_VERSION#panel-v}" ]]; then
-            fetch "https://github.com/Vanilla-SilQ-HD/Veiltrium/releases/download/${PANEL_VERSION}/veiltrium-panel-linux-${ARCH}" \
-                "${TMPD}/veiltrium-panel"
-            sha_ok "${TMPD}/veiltrium-panel" "${PANEL_SHA}" || die "web panel checksum mismatch; installation stopped."
-            PANEL_NEW="${TMPD}/veiltrium-panel"
+            # The VPN is complete at this point: a failed download skips the panel, it does not fail the run.
+            if fetch "https://github.com/Vanilla-SilQ-HD/Veiltrium/releases/download/${PANEL_VERSION}/veiltrium-panel-linux-${ARCH}" \
+                "${TMPD}/veiltrium-panel"; then
+                sha_ok "${TMPD}/veiltrium-panel" "${PANEL_SHA}" || die "web panel checksum mismatch; installation stopped."
+                PANEL_NEW="${TMPD}/veiltrium-panel"
+            else
+                warn "Could not download the web panel (${PANEL_VERSION}) from GitHub: the VPN is not affected;"
+                warn "run the script again later to install the panel."
+                PANEL_SKIPPED=1
+            fi
         fi
     fi
     if [[ -n "${PANEL_NEW}" || -x "${PANEL_BIN}" ]]; then
@@ -4060,7 +4098,7 @@ EOF
             journalctl -u veiltrium-panel --no-pager -n 15 || true
             warn "The web panel did not start; the VPN is not affected."
         fi
-    else
+    elif (( PANEL_SKIPPED == 0 )); then
         info "No web panel release is pinned in this version yet; skipped."
     fi
 fi
