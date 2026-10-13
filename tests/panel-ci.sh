@@ -78,6 +78,9 @@ test "$(code -b "$J" "$U/api/status")" = 200
 jq -e '.schema == "veiltrium-status/1" and .protection.firewall == true' "$W/body"
 test "$(code -b "$J" "$U/api/clients")" = 200
 jq -e '.clients[0].name == "main"' "$W/body"
+test "$(code -b "$J" -X POST "$U/api/russia-check")" = 403                     # no CSRF header
+test "$(code -b "$J" -X POST "$U/api/russia-check" "${h[@]}")" = 200
+jq -e '.schema == "veiltrium-russia/1"' "$W/body"
 
 # ---- a client change through the panel ------------------------------------------------
 test "$(code -b "$J" -X POST "$U/api/clients" -H 'Content-Type: application/json' -d '{"name":"web1"}')" = 403   # no CSRF header

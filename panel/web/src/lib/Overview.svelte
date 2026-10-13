@@ -31,14 +31,30 @@
   const good = (v) => v === 'ok' || v === 'verified';
 
   let services = $derived(st ? Object.values(st.services) : []);
-  let homes = $derived(st ? [st.reality?.home_network, st.hysteria2?.home_network, st.trusttunnel?.home_network_h2]
-    .filter(Boolean) : []);
-  let home = $derived.by(() => {
-    if (!homes.length || homes.every((h) => h === 'untested' || h === 'stale')) return ['ov.homeUntested', 'muted'];
-    if (homes.some((h) => h === 'fail' || h === 'degraded')) return ['ov.homeFailed', 'warn'];
-    if (homes.every(good)) return ['ov.homeVerified', 'ok'];
-    return ['ov.homePartly', 'muted'];
+  // the last check from Russian networks (Globalping): reachable | partly | blocked | unchecked
+  let ru = $derived(st?.russia ?? null);
+  let ruState = $derived(!st ? '' : !st.globalping && !ru ? 'off' : (ru?.verdict ?? 'unchecked'));
+  let ruTally = $derived.by(() => {
+    if (!ru) return null;
+    const parts = [ru.icmp, ru.tcp_reality, ru.tcp_trusttunnel].filter(Boolean);
+    return { ok: parts.reduce((n, x) => n + x.ok, 0), total: parts.reduce((n, x) => n + x.total, 0) };
   });
+  const ruLabel = { reachable: 'ov.ruReachable', partly: 'ov.ruPartly', blocked: 'ov.ruBlocked', unchecked: 'ov.ruUnchecked', off: 'ov.ruOff' };
+  const ruColor = { reachable: 'text-ok', partly: 'text-warn', blocked: 'text-danger' };
+  let checking = $state(false);
+  async function checkRussia() {
+    checking = true;
+    try {
+      await api.russiaCheck();
+      await load();
+    } catch (err) {
+      if (err instanceof AuthError) return onAuthLost();
+      error = err.message;
+    } finally {
+      checking = false;
+    }
+  }
+  const day = (iso) => new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   let ports = $derived.by(() => {
     if (!st) return '';
     const p = st.protection.ssh_ports.map((x) => `SSH ${x}/TCP`);
@@ -50,14 +66,16 @@
   let protocols = $derived(st ? [
     st.reality && { name: 'VLESS Reality', svc: st.services.xray, port: `${st.reality.port}/TCP`, sni: st.reality.sni,
       tls: t('ov.tlsReality'), version: `Xray ${st.versions.xray}`, check: st.last_install_check?.reality,
-      home: t('ov.homeCheck', { state: st.reality.home_network }), homeOk: good(st.reality.home_network) },
+      home: t('ov.homeCheck', { state: st.reality.home_network }), homeOk: good(st.reality.home_network),
+      homeKnown: st.reality.home_network !== 'untested' },
     { name: 'Hysteria 2', svc: st.services['hysteria-server'], port: `${st.hysteria2.port}/UDP`, sni: st.hysteria2.sni,
       tls: t('ov.tlsPinned'), version: st.versions.hysteria, check: st.last_install_check?.hysteria2,
-      home: t('ov.homeCheck', { state: st.hysteria2.home_network }), homeOk: good(st.hysteria2.home_network) },
+      home: t('ov.homeCheck', { state: st.hysteria2.home_network }), homeOk: good(st.hysteria2.home_network),
+      homeKnown: st.hysteria2.home_network !== 'untested' },
     st.trusttunnel && { name: 'TrustTunnel', svc: st.services.trusttunnel, port: `${st.trusttunnel.port}/TCP+UDP`,
       sni: st.trusttunnel.hostname, tls: t('ov.tlsLink'), version: st.versions.trusttunnel, check: st.last_install_check?.trusttunnel_h2,
       home: t('ov.homeCheckTT', { h2: st.trusttunnel.home_network_h2, h3: st.trusttunnel.home_network_h3 }),
-      homeOk: good(st.trusttunnel.home_network_h2) },
+      homeOk: good(st.trusttunnel.home_network_h2), homeKnown: st.trusttunnel.home_network_h2 !== 'untested' },
   ].filter(Boolean) : []);
 </script>
 
@@ -90,9 +108,21 @@
         <span class="text-xs text-muted">{t('ov.clientsNote', { n: st.clients.added })}</span>
       </div>
       <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
-        <span class="text-xs text-muted">{t('ov.home')}</span>
-        <span class="text-xl font-semibold {home[1] === 'ok' ? 'text-ok' : home[1] === 'warn' ? 'text-warn' : ''}">{t(home[0])}</span>
-        <span class="text-xs text-muted">{t('ov.homeNote')}</span>
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs text-muted">{t('ov.russia')}</span>
+          {#if ruState !== 'off'}
+            <button type="button" onclick={checkRussia} disabled={checking}
+              class="rounded-md border border-line px-2 py-0.5 text-[11px] text-fg disabled:opacity-60">
+              {checking ? t('ov.ruChecking') : t('ov.ruCheck')}</button>
+          {/if}
+        </div>
+        <span class="text-xl font-semibold {ruColor[ruState] ?? ''}">{t(ruLabel[ruState] ?? 'ov.ruUnchecked')}</span>
+        <span class="text-xs {ruState === 'blocked' ? 'text-danger' : 'text-muted'}" title={ru ? t('ov.ruNetworks', { networks: ru.networks.join(', ') }) : ''}>
+          {#if ruState === 'blocked'}{t('ov.ruBlockedNote')}
+          {:else if ruState === 'off'}{t('ov.ruOffNote')}
+          {:else if ruTally && ruTally.total}{t('ov.ruNote', { ok: ruTally.ok, total: ruTally.total, when: day(ru.checked_at) })}
+          {:else}{t('ov.ruNoteNone')}{/if}
+        </span>
       </div>
       <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
         <span class="text-xs text-muted">{t('ov.system')}</span>
@@ -122,7 +152,9 @@
               <span class="rounded-full px-2.5 py-0.5 text-xs {good(p.check) ? 'bg-ok-soft text-ok' : 'bg-warn-soft text-warn'}">
                 {t('ov.serverCheck', { state: p.check })}</span>
             {/if}
-            <span class="rounded-full px-2.5 py-0.5 text-xs {p.homeOk ? 'bg-ok-soft text-ok' : 'bg-surface2 text-muted'}">{p.home}</span>
+            {#if p.homeKnown}
+              <span class="rounded-full px-2.5 py-0.5 text-xs {p.homeOk ? 'bg-ok-soft text-ok' : 'bg-surface2 text-muted'}">{p.home}</span>
+            {/if}
           </div>
         </div>
       {/each}

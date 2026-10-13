@@ -32,7 +32,7 @@ sudo sed -i -E 's/^PROBE_SERVER=.*/PROBE_SERVER=192.0.2.1/' /etc/veiltrium/probe
 sudo ip netns exec ext ip route replace default via 192.0.2.1 dev veth-e
 
 probe() {   # extra args...; output JSON in $W/out.json
-    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh \
+    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh \
         --profile "$W/ci.env" --runs 2 --payload-bytes 300000 --singbox "$W/sing-box" --output "$W/out.json" "$@"
 }
 q() { sudo jq -r "$1" "$W/out.json"; }
@@ -72,7 +72,7 @@ sudo ip netns exec ext ip rule add from all lookup 100 pref 100
 # a PATH without tcpdump (conntrack stays: its evidence needs clean static checks)
 mkdir -p "$W/nodump"
 for x in curl ip iptables nft conntrack jq; do ln -sf "$(command -v "$x")" "$W/nodump/$x"; done
-sudo ip netns exec ext env PATH="$W/bb:$W/nodump" "$BB" sh ./keenetic-vpn-probe.sh \
+sudo ip netns exec ext env PATH="$W/bb:$W/nodump" "$BB" sh ./tools/keenetic-vpn-probe.sh \
     --profile "$W/ci.env" --runs 1 --payload-bytes 0 --singbox "$W/sing-box" --output "$W/out.json" --reality --wan veth-e || true
 q '.servers[0].tests'
 test "$(t reality .route)" = route_unverified
@@ -114,7 +114,7 @@ sudo ip netns exec ext iptables -t mangle -N _NDM_OUTPUT_DELAY
 sudo ip netns exec ext iptables -t mangle -A OUTPUT -j _NDM_OUTPUT_DELAY
 sudo ip netns exec ext iptables -t mangle -A _NDM_OUTPUT_DELAY -p udp --dport 9 -j RETURN
 kprobe() {
-    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$W/ipt14:$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh         --profile "$W/ci.env" --runs 1 --payload-bytes 0 --singbox "$W/sing-box" --output "$W/out.json" --reality --wan veth-e
+    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$W/ipt14:$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh         --profile "$W/ci.env" --runs 1 --payload-bytes 0 --singbox "$W/sing-box" --output "$W/out.json" --reality --wan veth-e
 }
 kprobe
 q '.servers[0].route_static'
@@ -140,7 +140,7 @@ test "$(t reality .error)" = wan_missing
 test "$(t reality .route)" = route_unverified
 
 # 6) no sing-box binary: skipped with a reason, not a fake success
-sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh \
+sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh \
     --profile "$W/ci.env" --runs 1 --payload-bytes 0 --singbox /nonexistent --output "$W/out.json" --reality --hysteria --wan veth-e
 test "$(t reality .status)" = skipped
 test "$(t reality .error)" = missing_singbox
@@ -149,7 +149,7 @@ test "$(t hysteria2 .status)" = skipped
 # 7) invalid profile: refused
 sed 's/^P_SERVER=.*/P_SERVER=192.0.2.1;id/' "$W/ci.env" > "$W/bad.env"
 rc=0
-sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh \
+sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh \
     --profile "$W/bad.env" --singbox "$W/sing-box" --output "$W/out.json" --reality --wan veth-e || rc=$?
 test "$rc" = 3
 
@@ -157,7 +157,7 @@ test "$rc" = 3
 TTC="$(find /tmp/ttc -type f -name trusttunnel_client | head -1)"
 if [ -n "$TTC" ]; then
     SB_UP="$(find /tmp/sb -type f -name sing-box | head -1)"
-    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh \
+    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh \
         --profile "$W/ci.env" --runs 2 --payload-bytes 300000 --singbox "$SB_UP" --tt-client "$TTC" \
         --output "$W/out.json" --trusttunnel --wan veth-e || true
     sudo jq '.servers[0].tests' "$W/out.json"
@@ -167,7 +167,7 @@ if [ -n "$TTC" ]; then
 fi
 
 # 8b) the router's own HMAC (BusyBox sh + sha256sum + printf) against OpenSSL, random keys
-sed -n '/^hex_to_octal() {/,/^mac_of() {/p' keenetic-vpn-probe.sh | sed '$d' > "$W/hmac.sh"
+sed -n '/^hex_to_octal() {/,/^mac_of() {/p' tools/keenetic-vpn-probe.sh | sed '$d' > "$W/hmac.sh"
 for i in 1 2 3 4 5 6; do
     k="$(openssl rand -hex 32)"; m="v2|$(date +%s)|$(openssl rand -hex 8)|192.0.2.1|ppp0|tt_h3|a.com|8443|verified|ok|3/3|$i|1|"
     want="$(printf '%s' "$m" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$k" | awk '{print $NF}')"
@@ -194,7 +194,7 @@ test "$(t reality .route)" = verified
 # 8e) HTTP/3 that silently falls back to HTTP/2 is a failure, not a success
 if [ -n "$TTC" ]; then
     sudo ip netns exec ext iptables -A OUTPUT -p udp --dport 8443 -j DROP
-    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh \
+    sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh \
         --profile "$W/ci.env" --runs 1 --payload-bytes 0 --singbox "$SB_UP" --tt-client "$TTC" \
         --output "$W/out.json" --trusttunnel --wan veth-e || true
     sudo ip netns exec ext iptables -D OUTPUT -p udp --dport 8443 -j DROP
@@ -203,7 +203,7 @@ if [ -n "$TTC" ]; then
 fi
 
 # 8f) a probe killed with SIGKILL leaves nothing that blocks or keeps running
-sudo ip netns exec ext env PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh \
+sudo ip netns exec ext env PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh \
     --profile "$W/ci.env" --runs 3 --payload-bytes 2000000 --singbox "$W/sing-box" --output "$W/k.json" --all --wan veth-e &
 for i in $(seq 1 60); do pgrep -f probe-sing-box >/dev/null && break; sleep 0.5; done
 sudo pkill -9 -f 'keenetic-vpn-probe.sh --profile' || true
@@ -219,11 +219,11 @@ PK="$(sed -n 's/^P_HY2_PIN_SPKI=//p' "$W/ci.env")"
 sudo mkdir -p /opt/etc/awg-manager/singbox/config.d
 printf '{"outbounds":[{"type":"hysteria2","tag":"a","server":"192.0.2.1","server_port":443,"password":"x","tls":{"enabled":true,"server_name":"s","insecure":true}}]}' \
     | sudo tee /opt/etc/awg-manager/singbox/config.d/10-tunnels.json >/dev/null
-sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh --profile "$W/ci.env" --check-awg --output "$W/out.json"
+sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh --profile "$W/ci.env" --check-awg --output "$W/out.json"
 test "$(q '.servers[0].awg_manager.insecure_without_pin')" = 1
 printf '{"outbounds":[{"type":"hysteria2","tag":"a","server":"192.0.2.1","server_port":443,"password":"x","tls":{"enabled":true,"server_name":"s","certificate_public_key_sha256":["%s"]}}]}' "$PK" \
     | sudo tee /opt/etc/awg-manager/singbox/config.d/10-tunnels.json >/dev/null
-sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./keenetic-vpn-probe.sh --profile "$W/ci.env" --check-awg --output "$W/out.json"
+sudo ip netns exec ext env PROBE_DEBUG=1 PATH="$BBPATH" "$BB" sh ./tools/keenetic-vpn-probe.sh --profile "$W/ci.env" --check-awg --output "$W/out.json"
 test "$(q '.servers[0].awg_manager.pinned_with_this_key')" = 1
 test "$(q '.servers[0].awg_manager.insecure_without_pin')" = 0
 sudo rm -rf /opt/etc/awg-manager

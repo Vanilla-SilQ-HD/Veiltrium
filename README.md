@@ -18,7 +18,7 @@ The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol 
 - **Measured VLESS Reality site selection.** Candidate sites are checked directly and with a real Reality client on an isolated loopback instance. The choice comes from a reproducible score, with no random picks and no rotation on re-runs.
 - **Transactional changes with automatic rollback.** Every change to a working node is checked with a real client before it is kept. If a run fails, is interrupted, is killed or the server loses power, the previous settings come back without any manual step.
 - **Safe re-runs.** A plain re-run keeps passwords, keys, certificates, links and service configs byte for byte. It restarts no service, drops no client connection and does not reboot a working node.
-- **Home-network diagnostics** from a Keenetic router (`keenetic-vpn-probe.sh`). Results are signed with HMAC-SHA256 and imported on the server.
+- **What Russia sees, checked from the server.** A site on the RKN block list is never chosen as a server name, and Globalping probes in Russian networks (MTS, Rostelecom and others) check that the server's address answers, so a blocked IP shows at install time, not as a dead tunnel later.
 - **Several clients.** `--add-client NAME` gives one more person or device its own credentials for every protocol; `--remove-client NAME` revokes them at once. Each change is checked with real clients and rolled back if it fails.
 - Client apps show the node as `Veiltrium-<country>` (for example `Veiltrium-PL`).
 - **A small web panel** on every node: overview and clients (links, QR codes, add, revoke). It listens on `127.0.0.1` only and is reached through an SSH tunnel.
@@ -104,6 +104,8 @@ Optional settings are environment variables:
 | `REALITY_PORT`, `TT_PORT` | `443`, `8443` | Reality TCP port, TrustTunnel TCP+UDP port; an existing node keeps its ports unless they are given explicitly |
 | `PUBLIC_IP` | detected | server address for the links (behind NAT) |
 | `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` |
+| `GLOBALPING` | `1` | `0` turns off the check from Russian networks (it sends the server's address to Globalping); saved |
+| `RU_BLOCKLISTS` | itdoginfo `Categories/block.lst` | URLs of RKN block lists (domains, one per line) |
 | `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
 | `SCANNER_BLOCK` | `1` | `0` turns the scanner blocklist off |
 | `VT_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
@@ -202,7 +204,18 @@ bash /root/veiltrium.sh --trial-reality www.example.com --trial-minutes 30
 bash /root/veiltrium.sh --trial-stop
 ```
 
-## Diagnostics from a Keenetic router (Entware)
+## What Russia sees
+
+A check from a European server says nothing about a home provider in Russia. Two things the installer checks by itself:
+
+- **Server names on the RKN block list.** The list is downloaded at every site choice (`RU_BLOCKLISTS`, by default itdoginfo's curated `Categories/block.lst`: RKN blocks only, without the sites that geoblock Russians themselves, which do not matter for Reality). A candidate on it is never chosen as the Reality site or as a Hysteria / TrustTunnel name; `--diagnose` warns if a name in use is on it.
+- **Is the server's address reachable from Russia?** At the end of every install, in `--diagnose`, with `--check-russia` and with the panel's *Check now*, [Globalping](https://globalping.io) probes in Russian networks (two at MTS, two at Rostelecom, four more anywhere in Russia) ping the address and connect to the Reality and TrustTunnel TCP ports. No answer from any of them means the address is blocked: ask the hoster for another one. The result is kept in `/var/lib/veiltrium/russia.json` and shown in the panel.
+- The server's address goes to Globalping's public measurement service. `GLOBALPING=0` (saved) turns the automatic check off; `--check-russia` still runs on request.
+- Neither check sees whether DPI lets a protocol through: that shows only in a real client (for example, the tunnel's status in AWG Manager).
+
+### Optional: a probe from a Keenetic router
+
+`tools/keenetic-vpn-probe.sh` tests every protocol with real clients from the home network itself, through the router's physical WAN, and signs the results for the server (`--import-mts`), where a verified success counts in the Reality site score. It is not needed for a working setup.
 
 A result measured from a European VPS says nothing about reachability from a home provider. `keenetic-vpn-probe.sh` runs on the router (POSIX sh, BusyBox) and tests each server through the physical WAN. It uses temporary clients with a local SOCKS port only: no TUN, no routes, no firewall changes, and AWG Manager keeps running.
 
@@ -212,7 +225,7 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 
    ```bash
    ssh root@SERVER_IP "cat /root/veiltrium/probe.env" | ssh -p 222 root@ROUTER "mkdir -p /opt/etc/vpn-probe && cat > /opt/etc/vpn-probe/server1.env && chmod 600 /opt/etc/vpn-probe/server1.env"
-   scp -O -P 222 keenetic-vpn-probe.sh root@ROUTER:/opt/bin/
+   scp -O -P 222 tools/keenetic-vpn-probe.sh root@ROUTER:/opt/bin/
    ```
 
 2. On the router, install the tools and run the probe. Pass your physical WAN interface; PPPoE is usually `ppp0`.

@@ -306,6 +306,36 @@ check "$(cat "${TMPD}/out.json")" '{"b":2}' "--json FILE: the document goes to t
 check "$(VEILTRIUM_PROGRESS=1 step_mark write 2>&1)" "::step write" "progress markers only when asked"
 check "$(step_mark write 2>&1)" "" "no progress markers by default"
 
+# ---- what Russia sees: the RKN list and the Globalping summary -----------------------------
+printf 'instagram.com\nwww.blocked.example\nab.example\n' > "${TMPD}/ru-blocked"
+for d in instagram.com www.instagram.com cdn.www.blocked.example www.blocked.example; do
+    if ru_blocked "${d}"; then r=1; else r=0; fi; check "${r}" 1 "RKN list: ${d} is blocked (the name or a parent)"
+done
+for d in www.lenovo.com blocked.example notinstagram.com xab.example; do
+    if ru_blocked "${d}"; then r=1; else r=0; fi; check "${r}" 0 "RKN list: ${d} is not blocked"
+done
+: > "${TMPD}/ru-blocked"
+if ru_blocked instagram.com; then r=1; else r=0; fi; check "${r}" 0 "RKN list not loaded: nothing counts as blocked"
+gp() {   # results: "network:rcv" ...
+    local x out="" sep=""
+    for x in "$@"; do
+        out+="${sep}{\"probe\":{\"network\":\"${x%%:*}\",\"asn\":1,\"city\":\"Moscow\"},\"result\":{\"status\":\"finished\",\"stats\":{\"total\":3,\"rcv\":${x##*:}}}}"
+        sep=","
+    done
+    printf '{"status":"finished","results":[%s]}' "${out}"
+}
+PUBLIC_IP=192.0.2.1
+gp MTS:3 Rostelecom:2 Timeweb:3 > "${TMPD}/g1"; gp MTS:3 Rostelecom:3 Timeweb:1 > "${TMPD}/g2"
+check "$(russia_summary "${TMPD}/g1" "${TMPD}/g2" "${TMPD}/none" 443 8443 | jq -c '[.verdict, .icmp.ok, .icmp.total, .tcp_reality.port, .tcp_trusttunnel, .networks]')" \
+    '["reachable",3,3,443,null,["MTS","Rostelecom","Timeweb"]]' "Globalping: every probe answered -> reachable"
+gp MTS:0 Rostelecom:0 Timeweb:0 > "${TMPD}/g1"; gp MTS:0 Rostelecom:0 Timeweb:0 > "${TMPD}/g2"
+check "$(russia_summary "${TMPD}/g1" "${TMPD}/g2" "" 443 | jq -r .verdict)" blocked "Globalping: no probe answered -> blocked"
+gp MTS:3 Rostelecom:0 > "${TMPD}/g1"
+check "$(russia_summary "${TMPD}/g1" "" "" | jq -r '.verdict + " " + (.tcp_reality | tostring)')" "partly null" "Globalping: some probes failing -> partly"
+check "$(russia_summary "" "" "" | jq -r .verdict)" unchecked "Globalping did not answer -> unchecked"
+printf '{"status":"finished","results":[]}' > "${TMPD}/g1"
+check "$(russia_summary "${TMPD}/g1" "" "" | jq -r .verdict)" unchecked "no Russian probes -> unchecked"
+
 # ---- the move from the hy2-secure-install names: nothing is lost, the new copy wins -------
 mkdir -p "${TMPD}/old/clients" "${TMPD}/new"
 printf 'old\n' > "${TMPD}/old/probe.env"; printf 'a\n' > "${TMPD}/old/clients/a.env"; printf 'x\n' > "${TMPD}/old/.hidden"

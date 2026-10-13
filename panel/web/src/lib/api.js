@@ -22,6 +22,7 @@ export const api = {
   login: (password) => call('POST', '/login', { password }),
   logout: () => call('POST', '/logout'),
   status: () => call('GET', '/status'),
+  russiaCheck: () => call('POST', '/russia-check'),
   clients: () => call('GET', '/clients'),
   client: (name) => call('GET', '/clients/' + encodeURIComponent(name)),
   addClient: (name, onStep) => stream('POST', '/clients', { name }, onStep),

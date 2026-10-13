@@ -16,13 +16,13 @@ run() {
 for f in veiltrium.sh tests/*.sh; do run bash -n "${f}"; done
 if have shellcheck && [[ "${SKIP_SHELLCHECK:-0}" != 1 ]]; then
     run shellcheck -S warning veiltrium.sh
-    run shellcheck -s sh -S warning keenetic-vpn-probe.sh
+    run shellcheck -s sh -S warning tools/keenetic-vpn-probe.sh
 else
     SKIPPED+=(shellcheck)
 fi
-if have dash; then run dash -n keenetic-vpn-probe.sh; fi
+if have dash; then run dash -n tools/keenetic-vpn-probe.sh; fi
 if have busybox; then
-    run busybox sh -n keenetic-vpn-probe.sh
+    run busybox sh -n tools/keenetic-vpn-probe.sh
 else
     SKIPPED+=("busybox (POSIX syntax and router HMAC)")
 fi
@@ -31,7 +31,7 @@ fi
 hmac_router() {
     local tmp k m want got i
     tmp="$(mktemp)"
-    sed -n '/^hex_to_octal() {/,/^mac_of() {/p' keenetic-vpn-probe.sh | sed '$d' > "${tmp}"
+    sed -n '/^hex_to_octal() {/,/^mac_of() {/p' tools/keenetic-vpn-probe.sh | sed '$d' > "${tmp}"
     busybox sh -c ". ${tmp}; SHA=sha256sum; hmac_selftest" || { echo "router HMAC self-test failed"; rm -f "${tmp}"; return 1; }
     for i in 1 2 3 4 5 6 7 8; do
         k="$(openssl rand -hex 32)"

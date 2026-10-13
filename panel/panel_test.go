@@ -43,7 +43,7 @@ func TestHashVerify(t *testing.T) {
 }
 
 func TestValidRequest(t *testing.T) {
-	ok := [][2]string{{"status", ""}, {"list-clients", ""}, {"show-client", "main"}, {"show-client", "anna"},
+	ok := [][2]string{{"status", ""}, {"list-clients", ""}, {"check-russia", ""}, {"show-client", "main"}, {"show-client", "anna"},
 		{"add-client", "a_b-1"}, {"remove-client", "x"}}
 	for _, c := range ok {
 		if err := ValidRequest(c[0], c[1]); err != nil {
@@ -52,7 +52,7 @@ func TestValidRequest(t *testing.T) {
 	}
 	bad := [][2]string{{"reboot", ""}, {"status", "x"}, {"show-client", ""}, {"show-client", "../x"},
 		{"add-client", "Anna"}, {"add-client", "main"}, {"remove-client", "main"}, {"add-client", "a b"},
-		{"add-client", "a;id"}, {"add-client", strings.Repeat("a", 33)}, {"show-client", "anna\nstatus"}}
+		{"add-client", "a;id"}, {"add-client", strings.Repeat("a", 33)}, {"show-client", "anna\nstatus"}, {"check-russia", "x"}}
 	for _, c := range bad {
 		if err := ValidRequest(c[0], c[1]); err == nil {
 			t.Errorf("%q accepted", c)

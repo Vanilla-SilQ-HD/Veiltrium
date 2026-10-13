@@ -51,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 	}))
 	mux.HandleFunc("GET /api/status", s.authed(s.simple("status")))
 	mux.HandleFunc("GET /api/clients", s.authed(s.simple("list-clients")))
+	mux.HandleFunc("POST /api/russia-check", s.authed(s.simple("check-russia")))
 	mux.HandleFunc("GET /api/clients/{name}", s.authed(s.showClient))
 	mux.HandleFunc("POST /api/clients", s.authed(s.addClient))
 	mux.HandleFunc("DELETE /api/clients/{name}", s.authed(s.removeClient))

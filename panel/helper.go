@@ -21,7 +21,7 @@ import (
 //	::json <doc>    the result document (one line)
 //	::exit <code>   the installer's exit code, always last
 var (
-	helperVerbs = map[string]bool{"status": false, "list-clients": false,
+	helperVerbs = map[string]bool{"status": false, "list-clients": false, "check-russia": false,
 		"show-client": true, "add-client": true, "remove-client": true}
 	clientNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 	stepRE       = regexp.MustCompile(`^[a-z-]{1,32}$`)

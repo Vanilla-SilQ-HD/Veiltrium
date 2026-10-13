@@ -62,7 +62,9 @@ jobs:
         run: bash panel/build.sh /tmp/veiltrium-panel amd64 ci
 
       - name: Install (first run)
-        run: sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./veiltrium.sh
+        # GLOBALPING=0 (saved): the many re-runs below would exceed Globalping's anonymous limit;
+        # the check itself runs once in its own step and in the upgrade job
+        run: sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 GLOBALPING=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./veiltrium.sh
 
       - name: Assertions
         run: |
@@ -161,6 +163,21 @@ jobs:
           sudo grep -E '^P_(SERVER|HY2_SNI|REALITY_SNI|TT_SNI)=' /root/veiltrium/probe.env
           # no temporary files left behind
           test -z "$(sudo find /root /run -maxdepth 1 -name '.veiltrium.*')"
+
+      - name: What Russia sees (RKN block list, Globalping probes)
+        run: |
+          set -euo pipefail
+          sudo grep -E 'RKN block list: [0-9]+ domains' /var/log/veiltrium-install.log
+          sudo grep -F 'Reachability from Russia: not checked (GLOBALPING=0)' /var/log/veiltrium-install.log >/dev/null
+          sudo grep -x 'N_GLOBALPING=0' /etc/veiltrium/node.env
+          # an explicit check runs even when the automatic one is off; the runner's address is not
+          # reachable from outside, so any verdict is fine here: the format is what is checked
+          sudo bash ./veiltrium.sh --check-russia --json - > /tmp/ru.json 2> /tmp/ru.log || { cat /tmp/ru.log; exit 1; }
+          cat /tmp/ru.log
+          jq -e '.schema == "veiltrium-russia/1" and (.verdict | IN("reachable", "partly", "blocked", "unchecked"))
+                 and (.icmp.total | type) == "number"' /tmp/ru.json
+          sudo jq -e '.verdict' /var/lib/veiltrium/russia.json
+          sudo bash ./veiltrium.sh --status --json - | jq -e '.russia.verdict != null and .globalping == false'
 
       - name: Firewall seen from outside (separate network namespace)
         run: |

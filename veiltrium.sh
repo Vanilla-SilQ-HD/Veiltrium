@@ -41,7 +41,7 @@
 #                                                   (only the VLESS sni changes)
 #    bash veiltrium.sh --dry-run           what --reselect-reality would do; no changes
 #    bash veiltrium.sh --diagnose          check the node; no changes
-#    bash veiltrium.sh --import-mts FILE   import keenetic-vpn-probe.sh results
+#    bash veiltrium.sh --import-mts FILE   import results of tools/keenetic-vpn-probe.sh (optional)
 #    bash veiltrium.sh --trial-reality SITE[,SITE]   temporary extra Reality
 #                                                   names for a probe from home; auto-revert
 #    bash veiltrium.sh --add-client NAME   a new client: own credentials for all protocols
@@ -49,6 +49,7 @@
 #    bash veiltrium.sh --list-clients      the clients of this node
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
+#    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
 #    bash veiltrium.sh --help
 #
 #  To regenerate everything:  VT_RECONFIGURE=1 bash veiltrium.sh
@@ -110,6 +111,11 @@ PUBLIC_IP="${PUBLIC_IP:-}"                     # empty: detected automatically
 # Node name in client apps: "Veiltrium-<NODE_NAME>". Saved; empty on a new node: the
 # server's country code (e.g. PL); "auto": detect again; "none": just "Veiltrium".
 NODE_NAME="${NODE_NAME:-}"
+GLOBALPING="${GLOBALPING:-}"                   # 1 (default, saved): check from Russian networks that the server's
+                                               # address answers (Globalping probes; the address is sent to them); 0: off
+# Domains blocked in Russia by the RKN (curated, without sites that only geoblock Russians):
+# a blocked name is never chosen as the Reality site or a server name.
+RU_BLOCKLISTS="${RU_BLOCKLISTS:-https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Categories/block.lst}"
 PANEL_ENABLE="${PANEL_ENABLE:-1}"              # 0: no web panel
 PANEL_PORT="${PANEL_PORT:-2096}"               # the panel listens on 127.0.0.1 only (SSH tunnel)
 PANEL_BINARY="${PANEL_BINARY:-}"               # a local panel binary instead of the release (tests)
@@ -150,6 +156,7 @@ SELECTION_FILE="${STATE_DIR}/reality-selection.json"
 MTS_RECORDS="${STATE_DIR}/mts-records"
 MTS_LAST_IMPORT="${STATE_DIR}/mts-last-import.json"
 MTS_RUNS="${STATE_DIR}/mts-runs"
+RUSSIA_FILE="${STATE_DIR}/russia.json"         # the last check from Russian networks (Globalping)
 TXN_DIR="${STATE_DIR}/txn"                     # backups of changes in progress (see txn_begin)
 RECOVER_BIN="/usr/local/sbin/veiltrium-recover"
 WATCHDOG_UNIT="veiltrium-watchdog"
@@ -380,7 +387,7 @@ CLIENT_RE='^[a-z0-9][a-z0-9_-]{0,31}$'
 
 # The saved node name. Sets N_NAME (may be empty), N_SAVED (1: a choice was saved) and LABEL.
 load_node_name() {
-    N_NAME=""; N_SAVED=0
+    N_NAME=""; N_SAVED=0; N_GLOBALPING=""
     if [[ -s "${NODE_ENV}" ]]; then
         # shellcheck disable=SC1090
         source "${NODE_ENV}"
@@ -388,6 +395,9 @@ load_node_name() {
     fi
     [[ -z "${N_NAME}" || "${N_NAME}" =~ ${NAME_RE} ]] || N_NAME=""
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
+    # GLOBALPING: explicit setting, else the saved one, else on
+    if [[ -z "${GLOBALPING}" ]]; then GLOBALPING="${N_GLOBALPING:-1}"; fi
+    [[ "${GLOBALPING}" == "0" || "${GLOBALPING}" == "1" ]] || GLOBALPING=1
     return 0
 }
 
@@ -404,7 +414,8 @@ detect_country() {
 save_node_name() {
     install -d -m 700 "${SCANNER_DIR}"
     install -m 600 /dev/null "${NODE_ENV}.new"
-    printf '# veiltrium: node name in client apps (Veiltrium-<N_NAME>)\nN_NAME=%q\n' "${N_NAME}" > "${NODE_ENV}.new"
+    printf '# veiltrium: node name in client apps (Veiltrium-<N_NAME>); checks from Russia (Globalping)\nN_NAME=%q\nN_GLOBALPING=%q\n' \
+        "${N_NAME}" "${GLOBALPING}" > "${NODE_ENV}.new"
     mv -f "${NODE_ENV}.new" "${NODE_ENV}"
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
 }
@@ -844,6 +855,9 @@ reality_evaluate() {
     for site in "$@"; do
         order=$((order + 1))
         prescreen_site "${site}"
+        if [[ "${PS_GATE}" == "pass" ]] && ru_blocked "${site}"; then
+            PS_GATE="fail"; PS_REASON="blocked in Russia (RKN block list)"
+        fi
         RT_STATUS="untested"; RT_MED=0; RT_FAIL=0; RT_FALLBACK="untested"; RT_REASON=""
         if [[ "${PS_GATE}" == "pass" && -n "${R_PRIV}" && -x "${XRAY_BIN}" ]]; then reality_isolated_test "${site}"; fi
         mts="$(mts_status reality "${site}")"
@@ -1378,11 +1392,13 @@ pick_independent_sni() {
     if [[ -s "${TMPD}/selection.tsv" ]]; then
         mapfile -t order < <(awk -F'\t' '$7 > 0 { print $2, $1 }' "${TMPD}/selection.tsv" | sort -n -k1,1 | awk '{ print $2 }')
         for s in "${order[@]+"${order[@]}"}"; do
+            if ru_blocked "${s}"; then continue; fi
             [[ " $* " == *" ${s} "* ]] || { printf '%s' "${s}"; return 0; }
         done
     fi
     for s in "${CAND_LIST[@]}"; do
         [[ " $* " == *" ${s} "* ]] && continue
+        if ru_blocked "${s}"; then continue; fi
         prescreen_site "${s}"
         if [[ "${PS_GATE}" == "pass" ]]; then printf '%s' "${s}"; return 0; fi
     done
@@ -1394,6 +1410,126 @@ pick_independent_sni() {
     done
     # a one-site list: nothing else to choose (reported in step 10/11)
     printf '%s' "${CAND_LIST[0]}"
+    return 0
+}
+
+# ---- What Russia sees ----------------------------------------------------------
+# Domains blocked by the RKN (public curated lists). Sets RU_BL_STATE (ok|unchecked);
+# ${TMPD}/ru-blocked holds one lower-case domain per line.
+load_ru_blocklist() {
+    local u
+    RU_BL_STATE="unchecked"
+    : > "${TMPD}/ru-blocked"
+    for u in ${RU_BLOCKLISTS}; do
+        if curl -fsSL --proto '=https' --max-time 30 --max-filesize 20000000 "${u}" -o "${TMPD}/ru-list" 2>/dev/null; then
+            tr 'A-Z' 'a-z' < "${TMPD}/ru-list" | sed 's/\r$//; s/^\.//; s/^[[:space:]]*//; s/[[:space:]]*$//' \
+                | grep -E '^[a-z0-9.-]+$' >> "${TMPD}/ru-blocked" || true
+        fi
+    done
+    rm -f "${TMPD}/ru-list"
+    if [[ "$(wc -l < "${TMPD}/ru-blocked")" -ge 50 ]]; then RU_BL_STATE="ok"; else : > "${TMPD}/ru-blocked"; fi
+    return 0
+}
+
+# $1 = domain: true if it or a parent domain is on the list (call it in an if).
+ru_blocked() {
+    local d="${1,,}"
+    [[ -s "${TMPD}/ru-blocked" ]] || return 1
+    while :; do
+        if grep -qxF "${d}" "${TMPD}/ru-blocked"; then return 0; fi
+        [[ "${d}" == *.* ]] || return 1
+        d="${d#*.}"
+    done
+}
+
+# Globalping (https://globalping.io): probes in Russian networks ping the server's address
+# (ICMP) and connect to its TCP ports. Two probes at MTS, two at Rostelecom (home providers),
+# four anywhere in Russia. A ban of the address shows as no answer at all. It says nothing
+# about the protocols themselves (DPI): that shows only in a real client.
+GLOBALPING_API="https://api.globalping.io/v1/measurements"
+GP_LOCATIONS='[{"asn":8359,"limit":2},{"asn":12389,"limit":2},{"country":"RU","limit":4}]'
+
+gp_start() {   # $1 = ICMP|TCP, $2 = port (TCP) -> prints the measurement id, nothing on failure
+    local body
+    body="$(jq -nc --arg ip "${PUBLIC_IP}" --argjson loc "${GP_LOCATIONS}" --arg proto "$1" --arg port "${2:-0}" \
+        '{type: "ping", target: $ip, locations: $loc,
+          measurementOptions: ({packets: 3} + (if $proto == "TCP" then {protocol: "TCP", port: ($port | tonumber)} else {} end))}')"
+    curl -fsS --proto '=https' --max-time 20 -X POST -H 'Content-Type: application/json' -d "${body}" "${GLOBALPING_API}" 2>/dev/null \
+        | jq -r '.id // empty' 2>/dev/null || true
+    return 0
+}
+
+gp_wait() {   # $1 = id, $2 = file for the finished measurement (left absent if it never finishes)
+    local _
+    [[ "$1" =~ ^[A-Za-z0-9_-]{8,64}$ ]] || return 0
+    for _ in $(seq 1 25); do
+        if curl -fsS --proto '=https' --max-time 15 "${GLOBALPING_API}/$1" -o "$2.tmp" 2>/dev/null \
+            && jq -e '.status == "finished"' "$2.tmp" >/dev/null 2>&1; then
+            mv -f "$2.tmp" "$2"
+            return 0
+        fi
+        sleep 2
+    done
+    rm -f "$2.tmp"
+    return 0
+}
+
+# The summary of the finished measurements (files; absent = not run) as JSON on stdout.
+# $1 = ICMP, $2 = TCP to the Reality port, $3 = TCP to the TrustTunnel port, $4 / $5 = those ports.
+russia_summary() {
+    jq -n --arg now "$(date -u +%FT%TZ)" --arg server "${PUBLIC_IP}" --arg rport "${4:-0}" --arg tport "${5:-0}" \
+        --argjson icmp "$(cat "$1" 2>/dev/null || echo null)" \
+        --argjson tr "$(cat "$2" 2>/dev/null || echo null)" \
+        --argjson tt "$(cat "$3" 2>/dev/null || echo null)" '
+        def probes($m): if $m == null then [] else
+            [$m.results[]? | {network: (.probe.network // "?"), asn: .probe.asn, city: (.probe.city // ""),
+                              ok: ((.result.stats.rcv // 0) > 0)}] end;
+        def tally($m): probes($m) | {ok: (map(select(.ok)) | length), total: length, probes: .};
+        {schema: "veiltrium-russia/1", checked_at: $now, server: $server, source: "Globalping (globalping.io)",
+         icmp: tally($icmp),
+         tcp_reality: (if $tr == null then null else tally($tr) + {port: ($rport | tonumber)} end),
+         tcp_trusttunnel: (if $tt == null then null else tally($tt) + {port: ($tport | tonumber)} end)}
+        | ([.icmp, .tcp_reality, .tcp_trusttunnel] | map(select(. != null))) as $all
+        | . + {networks: ([$all[].probes[].network] | unique),
+               verdict: (if ($all | map(.total) | add // 0) == 0 then "unchecked"
+                         elif ($all | map(.ok) | add) == 0 then "blocked"
+                         elif ($all | all(.ok == .total)) then "reachable"
+                         else "partly" end)}'
+}
+
+# Runs the check (GLOBALPING=1 or $1 = force), saves ${RUSSIA_FILE}, prints one line.
+# Sets RU_VERDICT (reachable|partly|blocked|unchecked|off).
+russia_check() {
+    local id_i id_r="" id_t="" rport="" tport="" line
+    RU_VERDICT="off"
+    if [[ "${GLOBALPING}" != "1" && "${1:-}" != "force" ]]; then
+        info "Reachability from Russia: not checked (GLOBALPING=0)"
+        return 0
+    fi
+    rm -f "${TMPD}"/gp-*.json
+    id_i="$(gp_start ICMP)"
+    if [[ -n "${R_SITE:-}" ]]; then rport="${REALITY_PORT}"; id_r="$(gp_start TCP "${rport}")"; fi
+    if [[ -n "${T_SNI:-}" && "${TT_ENABLE}" == "1" ]]; then tport="${TT_PORT}"; id_t="$(gp_start TCP "${tport}")"; fi
+    gp_wait "${id_i}" "${TMPD}/gp-icmp.json"
+    if [[ -n "${id_r}" ]]; then gp_wait "${id_r}" "${TMPD}/gp-tcp-r.json"; fi
+    if [[ -n "${id_t}" ]]; then gp_wait "${id_t}" "${TMPD}/gp-tcp-t.json"; fi
+    russia_summary "${TMPD}/gp-icmp.json" "${TMPD}/gp-tcp-r.json" "${TMPD}/gp-tcp-t.json" "${rport}" "${tport}" \
+        > "${TMPD}/russia.json" || true
+    RU_VERDICT="$(jq -r '.verdict // "unchecked"' "${TMPD}/russia.json" 2>/dev/null || echo unchecked)"
+    install -d -m 700 "${STATE_DIR}"
+    if [[ -s "${TMPD}/russia.json" ]]; then install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"; fi
+    line="$(jq -r '"ping \(.icmp.ok)/\(.icmp.total)"
+        + (if .tcp_reality then ", TCP \(.tcp_reality.port) \(.tcp_reality.ok)/\(.tcp_reality.total)" else "" end)
+        + (if .tcp_trusttunnel then ", TCP \(.tcp_trusttunnel.port) \(.tcp_trusttunnel.ok)/\(.tcp_trusttunnel.total)" else "" end)
+        + " (" + (.networks | join(", ")) + ")"' "${TMPD}/russia.json" 2>/dev/null || true)"
+    case "${RU_VERDICT}" in
+        reachable) ok "Reachable from Russia (Globalping probes): ${line}" ;;
+        partly) ok "Reachable from Russia, with some probes failing: ${line}" ;;
+        blocked)
+            warn "NOT reachable from any Russian network (Globalping): ${line}"
+            warn "The server's address looks blocked in Russia: ask the hoster for another IP address." ;;
+        *) info "Reachability from Russia: not checked (Globalping did not answer; try later: bash $0 --check-russia)" ;;
+    esac
     return 0
 }
 
@@ -1420,7 +1556,7 @@ build_report() {
         --arg changes "$(printf '%s\n' "${CHANGES[@]+"${CHANGES[@]}"}")" \
         --arg links "$(printf '%s\n' "${LINKS_CHANGED[@]+"${LINKS_CHANGED[@]}"}")" \
         --arg rollbacks "$(printf '%s\n' "${ROLLBACKS[@]+"${ROLLBACKS[@]}"}")" \
-        --argjson selection "${sel}" '
+        --argjson selection "${sel}"         --argjson russia "$(jq -c '{verdict, checked_at, networks}' "${RUSSIA_FILE}" 2>/dev/null || echo null)" '
         def lines: split("\n") | map(select(length > 0));
         def proof($vps; $mts): {vps_verified: ($vps == "verified" or $vps == "ok"), vps: $vps,
             mts_verified: ($mts == "ok"), mts: $mts};
@@ -1445,6 +1581,7 @@ build_report() {
               certificate_sha256: $t_cert_sha,
               h2: proof($t_h2; $t_mts_h2), h3: proof($t_h3; $t_mts_h3)
             } else {enabled: false} end),
+          reachable_from_russia: $russia,
           changes: ($changes | lines), links_to_update: ($links | lines), rollbacks: ($rollbacks | lines)
         }'
 }
@@ -1582,7 +1719,6 @@ On the server:
   bash veiltrium.sh --add-client NAME   credentials for one more person or device
   Re-run the script to update or repair the server; the links stay the same.
   VT_RECONFIGURE=1 issues new passwords, keys and certificates (clients must be updated).
-Home-network test from the router: ${PROBE_PROFILE} (secret) + keenetic-vpn-probe.sh
 EOF
 )"
     else
@@ -1639,7 +1775,6 @@ ${tt_text}
     }
   }
 ]
-   Then check on the router: sh keenetic-vpn-probe.sh --check-awg
 
 ----------------------------------------------------------------------
 Copy links without any chat app or Markdown in between (it breaks & and _):
@@ -1854,7 +1989,7 @@ clients_json() {
 
 # A fast overview of the node: no network tests, no secrets.
 status_json() {
-    local svc st="" vh vx vt os report n scan
+    local svc st="" vh vx vt os report n scan ru
     for svc in hysteria-server xray trusttunnel; do
         st+="${svc}=$(systemctl is-active "${svc}" 2>/dev/null || true)"$'\n'
     done
@@ -1865,6 +2000,9 @@ status_json() {
     report="$(jq -c '{generated_at, mode, reality: .reality.vps, hysteria2: .hysteria2.vps,
         trusttunnel_h2: .trusttunnel.h2.vps, trusttunnel_h3: .trusttunnel.h3.vps}' "${REPORT_FILE}" 2>/dev/null || true)"
     n="$(count_clients)"
+    ru="$(jq -c '{verdict, checked_at, networks, icmp: (.icmp | {ok, total}),
+        tcp_reality: (.tcp_reality | if . then {ok, total, port} else null end),
+        tcp_trusttunnel: (.tcp_trusttunnel | if . then {ok, total, port} else null end)}' "${RUSSIA_FILE}" 2>/dev/null || true)"
     scan="$(nft -j list set inet veiltrium scanners4 2>/dev/null \
         | jq '[.nftables[] | select(.set) | (.set.elem // []) | length] | add // 0' 2>/dev/null || echo 0)"
     jq -n --arg now "$(date -u +%FT%TZ)" --arg version "${SCRIPT_VERSION}" --arg label "${LABEL}" \
@@ -1877,7 +2015,8 @@ status_json() {
         --arg r_site "${R_SITE}" --arg r_port "${REALITY_PORT}" --arg r_mts "$(mts_status reality "${R_SITE:-none}")" \
         --arg h_sni "${H_SNI}" --arg h_port "${HY2_PORT}" --arg h_mts "$(mts_status hysteria2 "${H_SNI:-none}")" \
         --arg t_sni "${T_SNI}" --arg t_port "${TT_PORT}" --arg t2 "$(mts_status tt_h2 "${T_SNI:-none}")" \
-        --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" '
+        --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" --argjson ru "${ru:-null}" \
+        --arg globalping "${GLOBALPING}" '
         {schema: "veiltrium-status/1", generated_at: $now, script_version: $version, node_name: $label,
          server: $server, os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
          services: ($st | split("\n") | map(select(length > 0) | split("=") | {key: .[0], value: .[1]}) | from_entries),
@@ -1889,7 +2028,7 @@ status_json() {
            {hostname: $t_sni, port: ($t_port | tonumber), home_network_h2: $t2, home_network_h3: $t3} end),
          protection: {firewall: ($fw == "1"), ssh_ports: ($ssh | split(" ") | map(select(length > 0) | tonumber)),
            scanner_networks: ($scan | tonumber), fail2ban: $f2b},
-         last_install_check: $report}'
+         last_install_check: $report, russia: $ru, globalping: ($globalping == "1")}'
 }
 
 # ---- Adding and removing clients ---------------------------------------------
@@ -2082,7 +2221,7 @@ helper_main() {
     verb="${line%% *}"
     if [[ "${line}" == *" "* ]]; then arg="${line#* }"; fi
     case "${verb}" in
-        status|list-clients) [[ -z "${arg}" ]] || verb="" ;;
+        status|list-clients|check-russia) [[ -z "${arg}" ]] || verb="" ;;
         show-client) [[ "${arg}" == "main" || "${arg}" =~ ${CLIENT_RE} ]] || verb="" ;;
         add-client|remove-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
         *) verb="" ;;
@@ -2144,6 +2283,8 @@ Settings (environment variables, saved where noted):
   HY2_MASQUERADE_URL=url | auto     Hysteria masquerade page (saved)
   TT_SNI=name | auto                TrustTunnel hostname and certificate name (saved)
   PANEL_ENABLE=0                    no web panel (it listens on 127.0.0.1 only; SSH tunnel)
+  GLOBALPING=0                      no check from Russian networks (it sends the server's address
+                                    to Globalping probes; saved; default 1)
   --panel-password                  a new web panel password (signs everybody out)
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
@@ -2208,6 +2349,7 @@ while (( $# )); do
             MODE="${1#--}"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "$1 needs a client name"; shift ;;
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
+        --check-russia) MODE="check-russia" ;;
         --panel-password) MODE="panel-password" ;;
         --helper) MODE="helper" ;;
         -h|--help) usage; exit 0 ;;
@@ -2285,6 +2427,14 @@ if [[ "${MODE}" != "install" ]]; then
             panel_new_password "${PUBLIC_IP:-SERVER_IP}"
             cat "${PANEL_FILE}"
             exit 0 ;;
+        check-russia)
+            command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."
+            [[ -n "${H_PASSWORD}" && -n "${PUBLIC_IP}" ]] || die "this server has no installed node yet: run the installer once (bash $0) first."
+            russia_check force
+            if [[ -n "${JSON_OUT}" ]]; then
+                if [[ -s "${TMPD}/russia.json" ]]; then json_emit < "${TMPD}/russia.json"; else echo null | json_emit; fi
+            fi
+            exit 0 ;;
         status)
             command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."
             [[ -n "${H_PASSWORD}" ]] || die "this server has no installed node yet: run the installer once (bash $0) first."
@@ -2357,6 +2507,7 @@ if [[ "${MODE}" != "install" ]]; then
         source "${TRIAL_ENV}" 2>/dev/null || true
         warn "A Reality trial is running (${TRIAL_SITES:-?}); end: bash $0 --trial-stop"
     fi
+    load_ru_blocklist
     if [[ "${MODE}" == "dry-run" ]]; then
         [[ -n "${R_PRIV}" ]] || warn "No Reality keys on this server yet: only the direct checks run."
         info "Candidates (${CAND_SOURCE}): ${CAND_LIST[*]}"
@@ -2424,6 +2575,15 @@ if [[ "${MODE}" != "install" ]]; then
         esac
         info "Home network (MTS): HTTP/2 $(mts_status tt_h2 "${T_SNI}"), HTTP/3 $(mts_status tt_h3 "${T_SNI}")"
     fi
+    printf '\n'
+    for s in "${R_SITE}" "${H_SNI}" "${T_SNI}"; do
+        if [[ -n "${s}" ]] && ru_blocked "${s}"; then
+            warn "${s} is on the RKN block list: choose another name (--reselect-reality, HY2_SNI=auto, TT_SNI=auto)"; DIAG_FAIL=1
+        fi
+    done
+    if [[ "${RU_BL_STATE}" == "ok" ]]; then ok "No server name of this node is on the RKN block list"; fi
+    russia_check
+    if [[ "${RU_VERDICT}" == "blocked" ]]; then DIAG_FAIL=1; fi
     if [[ -n "${JSON_OUT}" ]]; then
         build_report | json_emit
         if [[ "${JSON_OUT}" != "-" ]]; then printf '\n'; ok "JSON report: ${JSON_OUT}"; fi
@@ -2629,6 +2789,7 @@ load_candidates
     || die "HY2_MASQUERADE_URL must start with http:// or https:// (or be auto)."
 [[ -z "${PUBLIC_IP}" ]] || is_public_ipv4 "${PUBLIC_IP}" || die "PUBLIC_IP must be a public IPv4 address."
 [[ "${AUTO_REBOOT_TIME}" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "AUTO_REBOOT_TIME must be in HH:MM format."
+[[ -z "${GLOBALPING}" || "${GLOBALPING}" == "0" || "${GLOBALPING}" == "1" ]] || die "GLOBALPING must be 0 or 1."
 [[ -z "${NODE_NAME}" || "${NODE_NAME}" == "auto" || "${NODE_NAME}" == "none" || "${NODE_NAME}" =~ ${NAME_RE} ]] \
     || die "NODE_NAME must be 1-16 letters, digits or - (e.g. PL), auto or none."
 
@@ -3238,6 +3399,12 @@ REALITY_SSH_BANNER=""
 RP_FALLBACK="untested"
 install -d -m 700 "${STATE_DIR}"
 save_candidates
+load_ru_blocklist
+if [[ "${RU_BL_STATE}" == "ok" ]]; then
+    info "RKN block list: $(wc -l < "${TMPD}/ru-blocked") domains; a site on it is never chosen"
+else
+    warn "The RKN block list could not be downloaded; the site choice runs without it."
+fi
 if [[ "${REALITY_ENABLE}" == "1" ]]; then
     load_reality_state
     PREV_SITE="${R_SITE}"
@@ -3725,6 +3892,8 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
         warn "TrustTunnel does not work (see step 11)"; CHECK_FAIL=1
     fi
 fi
+
+russia_check
 
 # ---- Home-network probe profile ----------------------------------------------
 load_probe_env
