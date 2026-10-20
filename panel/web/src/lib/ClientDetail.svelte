@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte';
   import QR from './QR.svelte';
   import CopyField from './CopyField.svelte';
-  import { t } from './i18n.js';
+  import { t } from './i18n.svelte.js';
   import { flash } from './toast.svelte.js';
   import { bytes, ago } from './format.js';
 

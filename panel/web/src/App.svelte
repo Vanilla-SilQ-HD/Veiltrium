@@ -1,6 +1,6 @@
 <script>
   import { api } from './lib/api.js';
-  import { t } from './lib/i18n.js';
+  import { t, lang, setLanguage } from './lib/i18n.svelte.js';
   import { toast } from './lib/toast.svelte.js';
   import Icon from './lib/Icon.svelte';
   import Logo from './lib/Logo.svelte';
@@ -67,6 +67,8 @@
       <div class="flex items-center gap-2">
         <button type="button" onclick={() => (theme = theme === 'dark' ? 'light' : 'dark')} aria-label={t('top.theme')}
           class="flex h-10 w-10 items-center justify-center rounded-lg border border-line text-fg"><Icon name="sun" /></button>
+        <button type="button" onclick={() => setLanguage(lang() === 'ru' ? 'en' : 'ru')} aria-label={t('top.lang')}
+          class="flex h-10 w-10 items-center justify-center rounded-lg border border-line text-xs font-semibold text-fg">{lang() === 'ru' ? 'EN' : 'RU'}</button>
         <button type="button" onclick={signOut} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3.5 text-fg">
           <Icon name="logout" size={16} /><span>{t('top.signout')}</span>
         </button>

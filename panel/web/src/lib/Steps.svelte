@@ -1,5 +1,5 @@
 <script>
-  import { t } from './i18n.js';
+  import { t } from './i18n.svelte.js';
   import Icon from './Icon.svelte';
 
   // Progress of a client change as the installer reports it (::step lines).

@@ -1,6 +1,6 @@
 <script>
   import { api } from './api.js';
-  import { t } from './i18n.js';
+  import { t } from './i18n.svelte.js';
   import Logo from './Logo.svelte';
 
   let { onSignedIn } = $props();

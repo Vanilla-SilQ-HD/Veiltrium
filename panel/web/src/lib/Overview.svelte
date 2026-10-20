@@ -1,6 +1,6 @@
 <script>
   import { api, AuthError } from './api.js';
-  import { t } from './i18n.js';
+  import { t, locale } from './i18n.svelte.js';
   import Icon from './Icon.svelte';
   import { bytes, mib } from './format.js';
 
@@ -30,9 +30,9 @@
 
   const uptime = (s) => {
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
-    return d > 0 ? `${d}d ${h}h` : `${h}h ${Math.floor((s % 3600) / 60)}m`;
+    return d > 0 ? `${d}${t("unit.d")} ${h}${t("unit.h")}` : `${h}${t("unit.h")} ${Math.floor((s % 3600) / 60)}${t("unit.m")}`;
   };
-  const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = (iso) => new Date(iso).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' });
   // home-network results: ok | fail | degraded | route_unverified | stale | untested
   const homeText = (v) => (v === 'stalled' ? t('ov.homeStalled') : v);
   const good =(v) => v === 'ok' || v === 'verified';
@@ -67,7 +67,7 @@
       checking = false;
     }
   }
-  const day = (iso) => new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const day = (iso) => new Date(iso).toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   let ports = $derived.by(() => {
     if (!st) return '';
     const p = st.protection.ssh_ports.map((x) => `SSH ${x}/TCP`);

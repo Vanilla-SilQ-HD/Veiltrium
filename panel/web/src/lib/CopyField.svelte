@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { t } from './i18n.js';
+  import { t } from './i18n.svelte.js';
   import { flash } from './toast.svelte.js';
 
   let { title, hint, value, shown, multiline = false } = $props();

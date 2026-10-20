@@ -1,6 +1,6 @@
 <script>
   import qrcode from 'qrcode-generator';
-  import { t } from './i18n.js';
+  import { t } from './i18n.svelte.js';
 
   // An SVG QR code drawn in the browser: the secret never leaves the page.
   let { text, label } = $props();

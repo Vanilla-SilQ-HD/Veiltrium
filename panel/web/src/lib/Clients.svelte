@@ -1,6 +1,6 @@
 <script>
   import { api, AuthError } from './api.js';
-  import { t } from './i18n.js';
+  import { t } from './i18n.svelte.js';
   import { flash } from './toast.svelte.js';
   import Icon from './Icon.svelte';
   import Dialog from './Dialog.svelte';

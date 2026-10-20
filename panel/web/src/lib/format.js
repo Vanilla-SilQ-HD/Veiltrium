@@ -1,5 +1,5 @@
 // Small display helpers shared by the pages.
-import { t } from './i18n.js';
+import { t, locale } from './i18n.svelte.js';
 
 // bytes -> "1.5 GB"
 export function bytes(n) {
@@ -7,7 +7,7 @@ export function bytes(n) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return `${i === 0 || n >= 100 ? Math.round(n) : n.toFixed(1)} ${u[i]}`;
+  return `${i === 0 || n >= 100 ? Math.round(n) : n.toLocaleString(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${t('unit.' + u[i])}`;
 }
 
 // MiB -> "1.5 GB"

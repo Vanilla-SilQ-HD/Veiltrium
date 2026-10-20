@@ -5,6 +5,7 @@
   "nav.later": "Later: traffic per client, expiry and limits, logs, Reality site, updates.",
   "nav.sections": "Sections",
   "top.theme": "Switch light or dark theme",
+  "top.lang": "Switch language",
   "top.signout": "Sign out",
 
   "login.title": "Panel password",
@@ -129,9 +130,17 @@
 
   "tr.never": "never",
   "tr.justNow": "just now",
-  "tr.minAgo": "{n} min ago",
-  "tr.hourAgo": "{n} h ago",
-  "tr.dayAgo": "{n} d ago",
+  "tr.minAgo.other": "{n} min ago",
+  "tr.hourAgo.other": "{n} h ago",
+  "tr.dayAgo.other": "{n} d ago",
+  "unit.B": "B",
+  "unit.KB": "KB",
+  "unit.MB": "MB",
+  "unit.GB": "GB",
+  "unit.TB": "TB",
+  "unit.d": "d",
+  "unit.h": "h",
+  "unit.m": "m",
 
   "add.title": "Add client",
   "add.name": "Name",
