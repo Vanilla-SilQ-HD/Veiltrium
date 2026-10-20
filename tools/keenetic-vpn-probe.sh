@@ -134,7 +134,9 @@ for d in /proc/[0-9]*; do
         *"${TMPBASE}/vpn-probe."*/sb.json*|*"${TMPBASE}/vpn-probe."*/tt.toml*) kill "${d#/proc/}" 2>/dev/null ;;
     esac
 done
-rm -rf "${TMPBASE}"/vpn-probe.* 2>/dev/null
+for d in "${TMPBASE}"/vpn-probe.??????; do
+    if [ -d "${d}" ]; then rm -rf "${d}"; fi
+done
 T="$(mktemp -d "${TMPBASE}/vpn-probe.XXXXXX")" || { rm -rf "${LOCK}"; die "mktemp failed"; }
 chmod 700 "${T}"
 PIDS=""

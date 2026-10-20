@@ -514,7 +514,7 @@ load_reality_state() {
     if [[ ! "${R_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ || \
           ! "${R_PRIV}" =~ ^[A-Za-z0-9_-]{43}$ || ! "${R_PUB}" =~ ^[A-Za-z0-9_-]{43}$ || \
           ! "${R_SID}" =~ ^[0-9a-f]{16}$ ]]; then
-        if [[ "${VT_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" && -e "${CLIENT_FILE}" ]]; then
+        if [[ "${VT_RECONFIGURE}" != "1" && -e "${XRAY_STATE}" && -e "${CLIENT_FILE}" ]]; then
             die "${XRAY_STATE} is damaged; nothing was changed. New keys (clients must be updated): VT_RECONFIGURE=1 bash $0"
         fi
         R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""
@@ -3680,6 +3680,8 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
             "${TT_DIR}/hosts.toml" "${TT_DIR}/credentials.toml" "${TT_STATE}"
         TT_TXN=1
     fi
+    # State before any change (the certificate below may be regenerated for the same name).
+    TT_SUM_BEFORE="$(cat "${TT_DIR}/vpn.toml" "${TT_DIR}/hosts.toml" "${TT_DIR}/credentials.toml" "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" 2>/dev/null | sha256sum || true)"
     if [[ -z "${T_USER}" || -z "${T_PASS}" ]]; then
         T_USER="u$(openssl rand -hex 4)"
         T_PASS="$(openssl rand -hex 24)"
@@ -3726,7 +3728,6 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
         if ip -6 route get 2001:4860:4860::8888 >/dev/null 2>&1; then TT_IPV6=true; fi
     fi
 
-    TT_SUM_BEFORE="$(cat "${TT_DIR}/vpn.toml" "${TT_DIR}/hosts.toml" "${TT_DIR}/credentials.toml" "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" 2>/dev/null | sha256sum || true)"
     install -m 640 -o root -g trusttunnel /dev/null "${TT_DIR}/vpn.toml.new"
     cat > "${TT_DIR}/vpn.toml.new" <<EOF
 # veiltrium: TrustTunnel endpoint
