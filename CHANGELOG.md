@@ -30,8 +30,9 @@ Web panel: 0.1.5
 
 ### Fixed
 - Traffic counters, and therefore traffic limits, did not work in 2026-10-20.3 and 2026-10-20.4:
-  the proxy services could not reach their own loopback statistics endpoints behind the egress
-  firewall rules. The firewall now allows it.
+  the egress firewall rules for the proxy users dropped the services' replies from their loopback
+  statistics ports, so the collector never got an answer. Replies on established loopback
+  connections are now allowed; new connections from the proxies to local addresses stay blocked.
 - `apt-get` retries while unattended-upgrades or apt-daily holds the archive lock.
 - No stray `#` lines in `--help`; `veiltrium help` prints the full help and an unknown word
   shows the short usage.
