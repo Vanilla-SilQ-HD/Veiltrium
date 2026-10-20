@@ -27,6 +27,8 @@ export const api = {
   client: (name) => call('GET', '/clients/' + encodeURIComponent(name)),
   addClient: (name, onStep) => stream('POST', '/clients', { name }, onStep),
   removeClient: (name, onStep) => stream('DELETE', '/clients/' + encodeURIComponent(name), undefined, onStep),
+  resetClient: (name, onStep) => stream('POST', '/clients/' + encodeURIComponent(name) + '/reset', undefined, onStep),
+  audit: () => call('GET', '/audit'),
 };
 
 // A client change: NDJSON lines {"step"}, then {"result"} or {"error"}.

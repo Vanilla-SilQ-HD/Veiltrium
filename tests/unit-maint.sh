@@ -203,11 +203,12 @@ helper() { printf '%s\n' "$1" | helper_main 2>/dev/null; }
 out="$(helper 'reset-client bob')"
 [[ "${out}" == *'"args":"--reset-client bob --json -"'* && "${out}" == *'"source":"panel"'* && "${out}" == *'::exit 0'* ]]
 check $? 0 "helper: reset-client NAME runs --reset-client NAME with VEILTRIUM_SOURCE=panel"
-for req in 'reset-client main' 'reset-client' 'reset-client Bad' 'reset-client ../x' 'reset-client a b' 'uninstall' 'audit' 'reset-client bob; id'; do
+for req in 'reset-client main' 'reset-client' 'reset-client Bad' 'reset-client ../x' 'reset-client a b' 'uninstall' 'audit 5' 'audit x' 'reset-client bob; id'; do
     out="$(helper "${req}")"
     [[ "${out}" == *'request refused'* && "${out}" == *'::exit 2'* && "${out}" != *'"args"'* ]]
     check $? 0 "helper refuses '${req}'"
 done
+out="$(helper 'audit')"; [[ "${out}" == *'"args":"--audit 20 --json -"'* && "${out}" == *'::exit 0'* ]]; check $? 0 "helper: audit runs --audit 20 --json -"
 out="$(helper 'add-client bob')"; [[ "${out}" == *'"args":"--add-client bob --json -"'* ]]; check $? 0 "helper: add-client still works"
 
 # ---- the server load in --status ---------------------------------------------------------

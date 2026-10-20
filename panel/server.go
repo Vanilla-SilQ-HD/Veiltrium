@@ -61,6 +61,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/clients/{name}", s.authed(s.showClient))
 	mux.HandleFunc("POST /api/clients", s.authed(s.addClient))
 	mux.HandleFunc("DELETE /api/clients/{name}", s.authed(s.removeClient))
+	mux.HandleFunc("POST /api/clients/{name}/reset", s.authed(s.resetClient))
+	mux.HandleFunc("GET /api/audit", s.authed(s.simple("audit")))
 	mux.Handle("GET /", s.staticHandler())
 	return s.guard(mux)
 }
@@ -278,6 +280,10 @@ func (s *Server) addClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.change(w, r, "add-client", body.Name)
+}
+
+func (s *Server) resetClient(w http.ResponseWriter, r *http.Request) {
+	s.change(w, r, "reset-client", r.PathValue("name"))
 }
 
 func (s *Server) removeClient(w http.ResponseWriter, r *http.Request) {

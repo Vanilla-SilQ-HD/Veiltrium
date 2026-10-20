@@ -45,14 +45,14 @@ func TestHashVerify(t *testing.T) {
 
 func TestValidRequest(t *testing.T) {
 	ok := [][2]string{{"status", ""}, {"list-clients", ""}, {"check-russia", ""}, {"show-client", "main"}, {"show-client", "anna"},
-		{"add-client", "a_b-1"}, {"remove-client", "x"}}
+		{"add-client", "a_b-1"}, {"remove-client", "x"}, {"reset-client", "bob"}, {"audit", ""}}
 	for _, c := range ok {
 		if err := ValidRequest(c[0], c[1]); err != nil {
 			t.Errorf("%v rejected: %v", c, err)
 		}
 	}
 	bad := [][2]string{{"reboot", ""}, {"status", "x"}, {"show-client", ""}, {"show-client", "../x"},
-		{"add-client", "Anna"}, {"add-client", "main"}, {"remove-client", "main"}, {"add-client", "a b"},
+		{"add-client", "Anna"}, {"add-client", "main"}, {"remove-client", "main"}, {"reset-client", "main"}, {"reset-client", "Bob"}, {"reset-client", "a;id"}, {"reset-client", ""}, {"audit", "5"}, {"add-client", "a b"},
 		{"add-client", "a;id"}, {"add-client", strings.Repeat("a", 33)}, {"show-client", "anna\nstatus"}, {"check-russia", "x"}}
 	for _, c := range bad {
 		if err := ValidRequest(c[0], c[1]); err == nil {
@@ -191,6 +191,10 @@ func TestAPI(t *testing.T) {
 			return "::log hello\n::json {\"schema\":\"veiltrium-status/1\"}\n::exit 0\n"
 		case strings.HasPrefix(req, "add-client"):
 			return "::step write\n::step restart\n::log ok\n::json {\"ok\":true}\n::exit 0\n"
+		case req == "audit":
+			return "::json [{\"time\":\"2026-10-20T10:00:00Z\",\"source\":\"cli\",\"action\":\"install\",\"target\":\"-\",\"result\":\"ok\"}]\n::exit 0\n"
+		case req == "reset-client bob":
+			return "::step write\n::json {\"ok\":true}\n::exit 0\n"
 		case strings.HasPrefix(req, "remove-client"):
 			return "::step write\n::log ✖ ERROR: the change did not pass the checks\n::json null\n::exit 1\n"
 		}
@@ -261,6 +265,28 @@ func TestAPI(t *testing.T) {
 	}
 	if r := do(t, c, "DELETE", u+"/api/clients/main", "", h); r.StatusCode != 400 {
 		t.Fatalf("removing main: %d", r.StatusCode)
+	}
+	if r := do(t, c, "POST", u+"/api/clients/bob/reset", "", map[string]string{"Cookie": cookie["Cookie"], "Origin": u}); r.StatusCode != 403 {
+		t.Fatalf("reset without the CSRF header: %d", r.StatusCode)
+	}
+	if r := do(t, c, "POST", u+"/api/clients/bob/reset", "", map[string]string{csrfHeader: "1", "Origin": u}); r.StatusCode != 401 {
+		t.Fatalf("reset without a session: %d", r.StatusCode)
+	}
+	r = do(t, c, "POST", u+"/api/clients/bob/reset", "", h)
+	b, _ = io.ReadAll(r.Body)
+	if ls := strings.Split(strings.TrimSpace(string(b)), "\n"); len(ls) != 2 || ls[0] != `{"step":"write"}` || (*reqs)[len(*reqs)-1] != "reset-client bob" {
+		t.Fatalf("reset stream: %q", b)
+	}
+	if r := do(t, c, "POST", u+"/api/clients/main/reset", "", h); r.StatusCode != 400 {
+		t.Fatalf("resetting main: %d", r.StatusCode)
+	}
+	r = do(t, c, "GET", u+"/api/audit", "", cookie)
+	b, _ = io.ReadAll(r.Body)
+	if r.StatusCode != 200 || !strings.Contains(string(b), `"action":"install"`) {
+		t.Fatalf("audit: %d %s", r.StatusCode, b)
+	}
+	if r := do(t, c, "GET", u+"/api/audit", "", nil); r.StatusCode != 401 {
+		t.Fatalf("audit without a session: %d", r.StatusCode)
 	}
 	// logout ends the session
 	do(t, c, "POST", u+"/api/logout", "", h)

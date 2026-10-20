@@ -22,7 +22,7 @@ import (
 //	::exit <code>   the installer's exit code, always last
 var (
 	helperVerbs = map[string]bool{"status": false, "list-clients": false, "check-russia": false,
-		"show-client": true, "add-client": true, "remove-client": true}
+		"show-client": true, "add-client": true, "remove-client": true, "reset-client": true, "audit": false}
 	clientNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 	stepRE       = regexp.MustCompile(`^[a-z-]{1,32}$`)
 )
@@ -58,8 +58,8 @@ func ValidRequest(verb, arg string) error {
 	if arg != "" && arg != "main" && !clientNameRE.MatchString(arg) {
 		return errors.New("a client name is 1-32 characters: a-z, 0-9, _ and -")
 	}
-	if (verb == "add-client" || verb == "remove-client") && arg == "main" {
-		return errors.New("the main client cannot be added or removed")
+	if (verb == "add-client" || verb == "remove-client" || verb == "reset-client") && arg == "main" {
+		return errors.New("the main client cannot be added, removed or reset")
 	}
 	return nil
 }

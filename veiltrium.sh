@@ -2836,6 +2836,7 @@ helper_main() {
     if [[ "${line}" == *" "* ]]; then arg="${line#* }"; fi
     case "${verb}" in
         status|list-clients|check-russia) [[ -z "${arg}" ]] || verb="" ;;
+        audit) [[ -z "${arg}" ]] || verb=""; arg=20 ;;
         show-client) [[ "${arg}" == "main" || "${arg}" =~ ${CLIENT_RE} ]] || verb="" ;;
         add-client|remove-client|reset-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
         *) verb="" ;;
@@ -2844,7 +2845,7 @@ helper_main() {
         printf '::log ERROR: request refused\n::exit 2\n'
         return 0
     fi
-    case "${verb}" in status|list-clients|show-client|check-russia) wait=10 ;; esac
+    case "${verb}" in status|list-clients|show-client|check-russia|audit) wait=10 ;; esac
     d="$(mktemp -d /run/veiltrium-helper.XXXXXX 2>/dev/null || mktemp -d)"   # /run: root-only tmpfs; tests run without root
     # stdout (the JSON) to the file, stderr (human text, progress) through the relay
     # stdin is the socket: the child must never wait on it

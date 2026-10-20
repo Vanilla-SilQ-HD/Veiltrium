@@ -6,6 +6,7 @@
   import Dialog from './Dialog.svelte';
   import Steps from './Steps.svelte';
   import ClientDetail from './ClientDetail.svelte';
+  import { bytes, ago } from './format.js';
 
   let { onAuthLost, onChanged } = $props();
   let list = $state(null);
@@ -85,6 +86,24 @@
     dialog = null;
     selected = n;
   }
+  async function reset() {
+    if (running) return;
+    const n = selected;
+    running = true; steps = []; changeError = '';
+    try {
+      await api.resetClient(n, (s) => (steps = [...steps, s]));
+      dialog = null;
+      flash(t('reset.done', { name: n }));
+      await loadList();
+      loadDetail(n);
+    } catch (err) {
+      fail(err, (m) => (changeError = t('reset.failed', { reason: m })));
+      // the change may have finished on the server
+      if (!(err instanceof AuthError)) { await loadList(); loadDetail(selected); }
+    } finally {
+      running = false;
+    }
+  }
   async function revoke() {
     if (running) return;
     const n = selected;
@@ -132,6 +151,8 @@
             <span class="flex min-w-0 flex-1 flex-col">
               <span class="font-medium">{c.name}</span>
               <span class="text-xs text-muted">{c.main ? t('cl.first') : t('cl.added', { date: c.created ?? '' })}</span>
+              <span class="text-xs text-muted">
+                {c.traffic ? t('cl.traffic', { total: bytes(c.traffic.up + c.traffic.down), seen: ago(c.traffic.last_seen) }) : t('cl.notCounted')}</span>
             </span>
           </button>
         {/each}
@@ -139,7 +160,8 @@
     </div>
 
     {#if detail}
-      <ClientDetail c={detail} onRevoke={() => { dialog = 'remove'; steps = []; changeError = ''; }} />
+      <ClientDetail c={detail} onRevoke={() => { dialog = 'remove'; steps = []; changeError = ''; }}
+        onReset={() => { dialog = 'reset'; steps = []; changeError = ''; }} />
     {:else if detailError}
       <div role="alert" class="flex-[2_1_460px] rounded-xl border border-danger-line p-4 text-danger">{detailError}</div>
     {:else}
@@ -188,6 +210,22 @@
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
         <button type="button" onclick={revoke} class="h-11 rounded-lg bg-danger px-4 font-semibold text-white">{t('rm.button')}</button>
+      </div>
+    {/if}
+  </Dialog>
+{/if}
+
+{#if dialog === 'reset'}
+  <Dialog label={t('reset.title', { name: selected })} locked={running} onClose={close}>
+    <span class="text-lg font-semibold">{t('reset.title', { name: selected })}</span>
+    {#if running}
+      <Steps {order} seen={steps} />
+    {:else}
+      <p class="m-0 text-muted">{t('reset.text', { name: selected })}</p>
+      {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
+      <div class="flex justify-end gap-2">
+        <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
+        <button type="button" onclick={reset} class="h-11 rounded-lg bg-danger px-4 font-semibold text-white">{t('reset.button')}</button>
       </div>
     {/if}
   </Dialog>

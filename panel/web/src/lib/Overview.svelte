@@ -2,6 +2,7 @@
   import { api, AuthError } from './api.js';
   import { t } from './i18n.js';
   import Icon from './Icon.svelte';
+  import { bytes, mib } from './format.js';
 
   let { onAuthLost } = $props();
   let st = $state(null);
@@ -22,13 +23,19 @@
   }
   load();
 
+  // recent actions: a muted note, never an error, when they cannot be loaded
+  let audit = $state(null);
+  let auditFailed = $state(false);
+  api.audit().then((a) => (audit = Array.isArray(a) ? a.slice().reverse() : []), () => (auditFailed = true));
+
   const uptime = (s) => {
     const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600);
     return d > 0 ? `${d}d ${h}h` : `${h}h ${Math.floor((s % 3600) / 60)}m`;
   };
   const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   // home-network results: ok | fail | degraded | route_unverified | stale | untested
-  const good = (v) => v === 'ok' || v === 'verified';
+  const homeText = (v) => (v === 'stalled' ? t('ov.homeStalled') : v);
+  const good =(v) => v === 'ok' || v === 'verified';
 
   // a protocol that is switched off is not a service that is down
   let services = $derived(st ? Object.entries(st.services)
@@ -72,15 +79,15 @@
   let protocols = $derived(st ? [
     st.reality && { name: 'VLESS Reality', svc: st.services.xray, port: `${st.reality.port}/TCP`, sni: st.reality.sni,
       tls: t('ov.tlsReality'), version: `Xray ${st.versions.xray}`, check: st.last_install_check?.reality,
-      home: t('ov.homeCheck', { state: st.reality.home_network }), homeOk: good(st.reality.home_network),
+      home: t('ov.homeCheck', { state: homeText(st.reality.home_network) }), homeOk: good(st.reality.home_network),
       homeKnown: st.reality.home_network !== 'untested' },
     { name: 'Hysteria 2', svc: st.services['hysteria-server'], port: `${st.hysteria2.port}/UDP`, sni: st.hysteria2.sni,
       tls: t('ov.tlsPinned'), version: st.versions.hysteria, check: st.last_install_check?.hysteria2,
-      home: t('ov.homeCheck', { state: st.hysteria2.home_network }), homeOk: good(st.hysteria2.home_network),
+      home: t('ov.homeCheck', { state: homeText(st.hysteria2.home_network) }), homeOk: good(st.hysteria2.home_network),
       homeKnown: st.hysteria2.home_network !== 'untested' },
     st.trusttunnel && { name: 'TrustTunnel', svc: st.services.trusttunnel, port: `${st.trusttunnel.port}/TCP+UDP`,
       sni: st.trusttunnel.hostname, tls: t('ov.tlsLink'), version: st.versions.trusttunnel, check: st.last_install_check?.trusttunnel_h2,
-      home: t('ov.homeCheckTT', { h2: st.trusttunnel.home_network_h2, h3: st.trusttunnel.home_network_h3 }),
+      home: t('ov.homeCheckTT', { h2: homeText(st.trusttunnel.home_network_h2), h3: homeText(st.trusttunnel.home_network_h3) }),
       homeOk: good(st.trusttunnel.home_network_h2), homeKnown: st.trusttunnel.home_network_h2 !== 'untested' },
   ].filter(Boolean) : []);
 </script>
@@ -129,6 +136,7 @@
           {:else if ruTally && ruTally.total}{t('ov.ruNote', { ok: ruTally.ok, total: ruTally.total, when: day(ru.checked_at) })}
           {:else}{t('ov.ruNoteNone')}{/if}
         </span>
+        {#if ru?.bad_streak >= 2}<span role="alert" class="text-xs text-warn">{t('ov.ruStreak', { n: ru.bad_streak })}</span>{/if}
         {#if ruMsg}<span role="alert" class="text-xs text-warn">{ruMsg}</span>{/if}
       </div>
       <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
@@ -138,6 +146,27 @@
           {st.reboot_required ? t('ov.rebootPending') : t('ov.noReboot', { uptime: uptime(st.uptime_seconds) })}</span>
       </div>
     </div>
+
+    {#if st.resources || st.traffic}
+      <div class="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-3">
+        {#if st.resources}
+          <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
+            <span class="text-xs text-muted">{t('ov.server')}</span>
+            <span class="text-xl font-semibold">{t('ov.load', st.resources.load)}</span>
+            <span class="text-xs text-muted">{t('ov.cpus', { n: st.resources.cpus })} · {t('ov.uptime', { uptime: uptime(st.uptime_seconds) })}</span>
+            <span class="text-xs text-muted">{t('ov.memory', { used: mib(st.resources.memory_mb.used), total: mib(st.resources.memory_mb.total) })}</span>
+            <span class="text-xs text-muted">{t('ov.disk', { used: mib(st.resources.disk_mb.used), total: mib(st.resources.disk_mb.total) })}</span>
+          </div>
+        {/if}
+        {#if st.traffic}
+          <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
+            <span class="text-xs text-muted">{t('ov.traffic')}</span>
+            <span class="text-xl font-semibold">{t('ov.trafficValue', { down: bytes(st.traffic.down), up: bytes(st.traffic.up) })}</span>
+            <span class="text-xs text-muted">{t('ov.trafficNote')}</span>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     <h2 class="m-0 mt-2 text-[15px] font-semibold">{t('ov.protocols')}</h2>
     <div class="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-3">
@@ -182,5 +211,23 @@
         </div>
       {/each}
     </dl>
+
+    <h2 class="m-0 mt-2 text-[15px] font-semibold">{t('ov.audit')}</h2>
+    {#if auditFailed}
+      <p class="m-0 text-xs text-muted">{t('ov.auditFailed')}</p>
+    {:else if audit && audit.length === 0}
+      <p class="m-0 text-xs text-muted">{t('ov.auditNone')}</p>
+    {:else if audit}
+      <ul class="m-0 list-none overflow-hidden rounded-xl border border-line bg-surface p-0 text-[13px]">
+        {#each audit as a, i (i)}
+          <li class="flex flex-wrap gap-x-4 gap-y-0.5 px-4 py-2.5 {i ? 'border-t border-line' : ''}">
+            <span class="basis-36 text-muted">{day(a.time)}</span>
+            <span class="basis-14 text-muted">{a.source}</span>
+            <span class="font-mono">{a.action}{a.target && a.target !== '-' ? ' ' + a.target : ''}</span>
+            <span class="ml-auto {a.result === 'ok' ? 'text-ok' : a.result === 'rolled-back' ? 'text-warn' : 'text-danger'}">{a.result}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {/if}
 </div>
