@@ -93,12 +93,14 @@ fi
 # a slow 30 MB download (150 KB/s) for the "connections survive a re-run" test
 mkdir -p "$D/www"
 dd if=/dev/urandom of="$D/www/big" bs=1M count=30 status=none
-chmod 755 "$D/www"; chmod 644 "$D/www/big"
+dd if=/dev/urandom of="$D/www/fast" bs=1M count=8 status=none   # full speed: traffic counters test (tests/features-ci.sh)
+chmod 755 "$D/www"; chmod 644 "$D/www/big" "$D/www/fast"
 A="$A
 server {
     listen 11.22.33.44:80;
     root $D/www;
-    location / { limit_rate 150k; }
+    location = /big { limit_rate 150k; }
+    location / { }
 }"
 nginx_ns sitesa "$A"
 nginx_ns sitesb "$B"

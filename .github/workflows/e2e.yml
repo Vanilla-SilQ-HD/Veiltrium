@@ -617,6 +617,9 @@ jobs:
       - name: Web panel (loopback only, helper, login and CSRF rules, a client change, new password)
         run: bash tests/panel-ci.sh
 
+      - name: Features of 2026-10-20 (traffic, limits, reset, standby, alerts, short command; export, uninstall and import last)
+        run: bash tests/features-ci.sh
+
       - name: Diagnostics
         if: always()
         run: |
@@ -683,12 +686,24 @@ jobs:
                   i += n
               print("tt", " ".join(out))'
           }
-          KEYS="/etc/hysteria/server.crt /etc/hysteria/server.key /etc/hysteria/node.env
-            /usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json
-            /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/node.env /etc/trusttunnel/credentials.toml"
-          keys0="$(sudo sha256sum $KEYS)"
+          # Since the traffic counters, the first run of this version rewrites the proxy configs
+          # (statistics endpoints, an email for the main Xray client) and the state files (the
+          # *_STATS_* keys), so the proxies restart once. The secrets must not change: files that
+          # hold only secrets byte for byte, the state files without the statistics keys, and the
+          # Xray config by its client ids, Reality settings and port.
+          KEYS="/etc/hysteria/server.crt /etc/hysteria/server.key
+            /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/credentials.toml"
+          keyview() {
+            sudo sha256sum $KEYS
+            for f in /etc/hysteria/node.env /usr/local/etc/xray/reality.env /etc/trusttunnel/node.env; do
+              echo "== $f"; sudo grep -v '_STATS_' "$f"
+            done
+            sudo jq -S '{port: .inbounds[0].port, clients: [.inbounds[0].settings.clients[] | {id, flow}],
+              reality: .inbounds[0].streamSettings.realitySettings}' /usr/local/etc/xray/config.json
+          }
+          keys0="$(keyview)"
           creds0="$(creds /root/hy2-client.txt /root/hy2-clients/anna.txt)"
-          state0="$(sudo cat /etc/hy2-secure/probe.env /etc/hy2-secure/clients/anna.env)"
+          state0="$(sudo cat /etc/hy2-secure/probe.env; sudo grep -E '^C_(UUID|HY2_PASS|TT_PASS)=' /etc/hy2-secure/clients/anna.env)"
           name0="$(sudo grep '^N_NAME=' /etc/hy2-secure/node.env)"
           test "$(printf '%s\n' "$creds0" | grep -c .)" = 6      # three links each for main and anna
           sudo nft list table inet hy2fw >/dev/null
@@ -720,10 +735,13 @@ jobs:
           grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null || { echo "the move did not run"; tail -60 /tmp/up.log; exit 1; }
           if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then exit 1; fi
           # the same secrets and links (the node name file only gains the GLOBALPING setting)
-          [ "$keys0" = "$(sudo sha256sum $KEYS)" ] || { echo "keys or configs changed:"; diff <(echo "$keys0") <(sudo sha256sum $KEYS); exit 1; }
+          [ "$keys0" = "$(keyview)" ] || { echo "keys or configs changed:"; diff <(echo "$keys0") <(keyview) | sed -E 's/[0-9a-f]{20,}/<secret>/g'; exit 1; }
+          # the one expected restart of the move: the new config has its statistics endpoints
+          sudo grep -E '^H_STATS_PORT=' /etc/hysteria/node.env >/dev/null
+          sudo jq -e '.inbounds[0].settings.clients[0].email == "main"' /usr/local/etc/xray/config.json >/dev/null
           creds1="$(creds /root/veiltrium/client.txt /root/veiltrium/clients/anna.txt)"
           [ "$creds0" = "$creds1" ] || { echo "links changed"; diff <(echo "$creds0") <(echo "$creds1") | sed -E 's/[0-9a-f]{20,}/<secret>/g'; exit 1; }
-          [ "$state0" = "$(sudo cat /etc/veiltrium/probe.env /etc/veiltrium/clients/anna.env)" ] || { echo "probe key or client state changed"; exit 1; }
+          [ "$state0" = "$(sudo cat /etc/veiltrium/probe.env; sudo grep -E '^C_(UUID|HY2_PASS|TT_PASS)=' /etc/veiltrium/clients/anna.env)" ] || { echo "probe key or client secrets changed"; exit 1; }
           sudo grep -x "$name0" /etc/veiltrium/node.env >/dev/null || { echo "node name lost"; sudo cat /etc/veiltrium/node.env; exit 1; }
           # nothing of the old names is left
           for f in /etc/hy2-secure /var/lib/hy2-secure /root/hy2-client.txt /root/hy2-probe.env /root/hy2-clients \
