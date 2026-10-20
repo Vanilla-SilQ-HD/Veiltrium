@@ -42,6 +42,24 @@
   let traffic = $derived(c.traffic);
   let qrLink = $derived(qrTabs.find((l) => tabId(l) === qrKind) ?? qrTabs[0]);
 
+  let profileText = $derived(c.singbox_profile ? JSON.stringify(c.singbox_profile, null, 2) : '');
+  function downloadProfile() {
+    const file = `${c.node_name}-${c.name}.singbox.json`;
+    const url = URL.createObjectURL(new Blob([profileText], { type: 'application/json' }));
+    const a = Object.assign(document.createElement('a'), { href: url, download: file });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    flash(t('cl.downloaded', { file }));
+  }
+  async function copyProfile() {
+    try {
+      await navigator.clipboard.writeText(profileText);
+      flash(t('common.copied', { what: t('cl.imp.profileCopy') }));
+    } catch {
+      flash(t('common.error'));
+    }
+  }
+
   const proto = (k) => {
     const p = traffic?.by_protocol?.[k];
     return p ? bytes(p.up + p.down) : '-';
@@ -51,6 +69,10 @@
     const lines = [`Veiltrium connection details: node ${c.node_name}, client ${c.name}`,
       'Keep this secret: the links and configs contain passwords and keys.', ''];
     for (const l of links) lines.push(`${l.title}:`, l.value, '');
+    if (standby.length) {
+      lines.push(`Standby servers (${(c.standby ?? []).join(', ')}):`);
+      for (const l of standby) lines.push(`${l.title}:`, l.value, '');
+    }
     lines.push('sing-box outbound (Hysteria 2):', JSON.stringify(c.hysteria2.outbound, null, 2), '');
     if (c.vless) lines.push('sing-box outbound (VLESS Reality):', JSON.stringify(c.vless.outbound, null, 2), '');
     const file = `${c.node_name}-${c.name}.txt`;
@@ -174,5 +196,44 @@
       {/each}
     </div>
   {/if}
+  <div class="flex flex-col gap-3 border-t border-line pt-4">
+    <span class="text-[15px] font-semibold">{t('cl.imp.title')}</span>
+    {#if c.subscription_base64 || c.singbox_profile}
+      {#if c.subscription_base64}
+        <div class="flex flex-wrap gap-5">
+          <div class="flex min-w-0 flex-[1_1_280px] flex-col gap-2">
+            <CopyField title={t('cl.imp.sub')} hint="" value={c.subscription_base64}
+              shown={reveal ? c.subscription_base64 : dots} />
+            <span class="text-xs text-muted">{t('cl.imp.subHint')}</span>
+          </div>
+          {#if reveal}
+            <QR text={c.subscription_base64} label={t('cl.imp.subQr')} />
+          {/if}
+        </div>
+      {/if}
+      {#if c.singbox_profile}
+        <div class="flex flex-col gap-2">
+          <span class="text-xs font-medium">{t('cl.imp.profile')}</span>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" onclick={copyProfile} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3 text-fg">
+              <Icon name="copy" size={16} /><span>{t('common.copy', { what: t('cl.imp.profileCopy') })}</span>
+            </button>
+            <button type="button" onclick={downloadProfile} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3 text-fg">
+              <Icon name="download" size={16} /><span>{t('cl.imp.profileDownload')}</span>
+            </button>
+          </div>
+          <span class="text-xs text-muted">{t('cl.imp.profileHint')}</span>
+        </div>
+      {/if}
+      <div class="flex flex-col gap-1">
+        <span class="text-xs font-medium">{t('cl.imp.hints')}</span>
+        <ul class="flex list-disc flex-col gap-1 pl-5 text-xs text-muted">
+          {#each [1, 2, 3, 4, 5] as n (n)}<li>{t('cl.imp.h' + n)}</li>{/each}
+        </ul>
+      </div>
+    {:else}
+      <span class="text-xs text-muted">{t('cl.imp.disabled')}</span>
+    {/if}
+  </div>
   <span class="text-xs text-muted">{t('cl.awgNote')}</span>
 </section>
