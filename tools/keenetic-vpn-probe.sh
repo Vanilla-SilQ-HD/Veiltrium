@@ -435,7 +435,15 @@ route_status() {   # $1 ip, $2 port, $3 tcp|udp -> ROUTE (verified|route_unverif
 }
 
 # ---- measurements through a local SOCKS port --------------------------------
-measure() {   # $1 SOCKS port. Sets M_OK, M_MED, M_PAY (ok|stall_after_20kb|fail|skipped), M_BYTES, M_ERR
+classify_payload() {   # $1 bytes received, $2 curl exit code. Sets M_PAY (ok|stalled|fail) and M_ERR
+    # Some bytes but not all: the connection froze mid-transfer (TSPU cuts connections to
+    # foreign datacenter addresses after ~16-20 KB; through a tunnel fewer payload bytes
+    # arrive, so there is no byte threshold). No bytes at all: a plain failure.
+    if [ "$1" -ge "${PAYLOAD_BYTES}" ]; then M_PAY="ok"; M_ERR=""
+    elif [ "$1" -gt 0 ]; then M_PAY="stalled"; M_ERR="payload_stalled_$(($1 / 1000))kb"
+    else M_PAY="fail"; M_ERR="payload_failed_rc$2"; fi
+}
+measure() {   # $1 SOCKS port. Sets M_OK, M_MED, M_PAY (ok|stalled|fail|skipped), M_BYTES, M_ERR
     M_OK=0; times=""; M_ERR=""
     # One slow download keeps a tunnel connection open for several seconds, so the
     # route evidence can always find the test client's socket (short requests may
@@ -463,16 +471,14 @@ measure() {   # $1 SOCKS port. Sets M_OK, M_MED, M_PAY (ok|stall_after_20kb|fail
             --socks5-hostname "127.0.0.1:$1" "${PAYLOAD_URL}${PAYLOAD_BYTES}" 2>/dev/null)"
         rc=$?
         M_BYTES="$(printf '%s\n' "${out}" | awk '{ printf "%d", $2 }')"
-        if [ "${M_BYTES}" -ge "${PAYLOAD_BYTES}" ]; then M_PAY="ok"
-        elif [ "${M_BYTES}" -gt 20000 ]; then M_PAY="stall_after_20kb"; M_ERR="payload_stalled_rc${rc}"
-        else M_PAY="fail"; M_ERR="payload_failed_rc${rc}"; fi
+        classify_payload "${M_BYTES}" "${rc}"
     fi
     [ ${M_OK} -gt 0 ] || M_ERR="no_response"
     kill "${KEEP_PID}" 2>/dev/null; wait "${KEEP_PID}" 2>/dev/null
 }
 status_of() {   # -> ok | degraded | fail
     if [ "${M_OK}" -eq 0 ]; then echo fail
-    elif [ "${M_OK}" -lt "${RUNS}" ] || [ "${M_PAY}" = "stall_after_20kb" ] || [ "${M_PAY}" = "fail" ]; then echo degraded
+    elif [ "${M_OK}" -lt "${RUNS}" ] || [ "${M_PAY}" = "stalled" ] || [ "${M_PAY}" = "fail" ]; then echo degraded
     else echo ok; fi
 }
 classify_log() {   # $1 log file -> short error token

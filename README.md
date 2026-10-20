@@ -227,12 +227,15 @@ A check from a European server says nothing about a home provider in Russia. Two
 
 - **Server names on the RKN block list.** The list is downloaded at every site choice (`RU_BLOCKLISTS`, by default itdoginfo's curated `Categories/block.lst`: RKN blocks only, without the sites that geoblock Russians themselves, which do not matter for Reality). A candidate on it is never chosen as the Reality site or as a Hysteria / TrustTunnel name; `--diagnose` warns if a name in use is on it.
 - **Is the server's address reachable from Russia?** At the end of every install, in `--diagnose`, with `--check-russia` and with the panel's *Check now*, [Globalping](https://globalping.io) probes in Russian networks (two at MTS, two at Rostelecom, four more anywhere in Russia) ping the address and connect to the Reality and TrustTunnel TCP ports. No answer from any of them means the address is blocked: ask the hoster for another one. The result is kept in `/var/lib/veiltrium/russia.json` and shown in the panel.
+- **The check repeats every 6 hours** (`veiltrium-russia-check.timer`, started 20 minutes after boot, with a random delay; output in the journal) while `GLOBALPING` is on. `russia.json` keeps `bad_streak`, the number of checks in a row that were `partly` or `blocked` (a `reachable` check resets it; a check Globalping did not answer changes nothing). From 2 in a row, `--status` warns that the address is not reachable from Russia: consider moving to a new server or switching clients to a standby address.
 - The server's address goes to Globalping's public measurement service. `GLOBALPING=0` (saved) turns the automatic check off; `--check-russia` still runs on request.
 - Neither check sees whether DPI lets a protocol through: that shows only in a real client (for example, the tunnel's status in AWG Manager).
 
 ### Optional: a probe from a Keenetic router
 
 `tools/keenetic-vpn-probe.sh` tests every protocol with real clients from the home network itself, through the router's physical WAN, and signs the results for the server (`--import-mts`), where a verified success counts in the Reality site score. It is not needed for a working setup.
+
+Home-network status values on the server: `ok`, `fail`, `degraded`, `stalled`, `route_unverified`, `stale` (older than 14 days) and `untested`. `stalled` means the tunnel connects, but transfers freeze after a few KB (the TSPU 16-20 KB cut-off): the probe got only part of the payload download. Such a result is a penalty in the Reality site score, like `degraded`.
 
 A result measured from a European VPS says nothing about reachability from a home provider. `keenetic-vpn-probe.sh` runs on the router (POSIX sh, BusyBox) and tests each server through the physical WAN. It uses temporary clients with a local SOCKS port only: no TUN, no routes, no firewall changes, and AWG Manager keeps running.
 

@@ -904,7 +904,7 @@ reality_cost() {
     local c=$(( $1 + $2 + 250 * $3 + $4 + 250 * $5 ))
     case "$6" in
         ok) c=$(( c - 200 )) ;;
-        fail|degraded) c=$(( c + 600 )) ;;
+        fail|degraded|stalled) c=$(( c + 600 )) ;;
     esac
     (( c >= 0 )) || c=0
     printf '%s' "${c}"
@@ -1274,20 +1274,24 @@ hmac_sha256_hex() {
     { printf '%b' "${opad}"; printf '%b' "$(sed 's/../\\x&/g' <<<"${inner}")"; } | sha256sum | cut -c1-64
 }
 
-# $1 = test, $2 = SNI -> ok|fail|degraded|route_unverified|stale|untested
+# $1 = test, $2 = SNI -> ok|fail|degraded|stalled|route_unverified|stale|untested
 # The newest result counts ("skipped" is no result); on the same time the worse one wins.
+# stalled = a degraded result whose error is payload_stalled_<N>kb: the tunnel connects, but
+# transfers freeze after a few KB (the TSPU 16-20 KB cut-off). Older probes wrote
+# payload_stalled_rc<N>; those stay plain "degraded".
 mts_status() {
-    local line ts route status now
+    local line ts route status err now
     if [[ ! -s "${MTS_RECORDS}" ]]; then printf 'untested'; return 0; fi
     line="$(awk -F'|' -v t="$1" -v s="$2" '
         $1 == "v2" && ($6 == t || (t == "reality" && $6 == "reality_trial")) && $7 == s && $10 != "skipped" {
             rank = ($10 == "ok" ? 0 : ($10 == "degraded" ? 1 : 2)) + ($9 == "verified" ? 0 : 3)
-            print $2, rank, $9, $10 }' "${MTS_RECORDS}" | sort -k1,1n -k2,2n | tail -n 1 || true)"
+            print $2, rank, $9, $10, $14 }' "${MTS_RECORDS}" | sort -k1,1n -k2,2n | tail -n 1 || true)"
     if [[ -z "${line}" ]]; then printf 'untested'; return 0; fi
-    read -r ts _ route status <<<"${line}"
+    read -r ts _ route status err <<<"${line}"
     now="$(date +%s)"
     if (( now - 10#${ts} > MTS_MAX_AGE_DAYS * 86400 )); then printf 'stale'
     elif [[ "${route}" != "verified" ]]; then printf 'route_unverified'
+    elif [[ "${status}" == "degraded" && "${err:-}" =~ ^payload_stalled_[0-9]+kb$ ]]; then printf 'stalled'
     else printf '%s' "${status}"; fi
     return 0
 }
@@ -1560,6 +1564,19 @@ russia_summary() {
                          else "partly" end)}'
 }
 
+# $1 = the saved russia.json (may be absent), $2 = a new result -> the new result with
+# previous_verdict and bad_streak: checks in a row that were partly or blocked (reachable
+# resets it; unchecked, where Globalping did not answer, keeps it).
+russia_streak_merge() {
+    local old
+    old="$(jq -c . "$1" 2>/dev/null || true)"
+    jq --argjson old "${old:-null}" '
+        . + {previous_verdict: ($old.verdict // null),
+             bad_streak: (if .verdict == "reachable" then 0
+                          elif .verdict == "unchecked" then ($old.bad_streak // 0)
+                          else (($old.bad_streak // 0) + 1) end)}' "$2"
+}
+
 # Runs the check (GLOBALPING=1 or $1 = force), saves ${RUSSIA_FILE}, prints one line.
 # Sets RU_VERDICT (reachable|partly|blocked|unchecked|off).
 russia_check() {
@@ -1583,6 +1600,9 @@ russia_check() {
     install -d -m 700 "${STATE_DIR}"
     # A check that got no answer from the API (down, rate limit) does not replace the last real result.
     if [[ -s "${TMPD}/russia.json" ]] && { [[ "${RU_VERDICT}" != "unchecked" ]] || [[ ! -s "${RUSSIA_FILE}" ]]; }; then
+        if russia_streak_merge "${RUSSIA_FILE}" "${TMPD}/russia.json" > "${TMPD}/russia.merged" 2>/dev/null && [[ -s "${TMPD}/russia.merged" ]]; then
+            mv -f "${TMPD}/russia.merged" "${TMPD}/russia.json"
+        fi
         install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"
     fi
     line="$(jq -r '"ping \(.icmp.ok)/\(.icmp.total)"
@@ -1623,7 +1643,7 @@ build_report() {
         --arg changes "$(printf '%s\n' "${CHANGES[@]+"${CHANGES[@]}"}")" \
         --arg links "$(printf '%s\n' "${LINKS_CHANGED[@]+"${LINKS_CHANGED[@]}"}")" \
         --arg rollbacks "$(printf '%s\n' "${ROLLBACKS[@]+"${ROLLBACKS[@]}"}")" \
-        --argjson selection "${sel}"         --argjson russia "$(jq -c '{verdict, checked_at, networks}' "${RUSSIA_FILE}" 2>/dev/null || echo null)" '
+        --argjson selection "${sel}"         --argjson russia "$(jq -c '{verdict, checked_at, networks, bad_streak: (.bad_streak // 0)}' "${RUSSIA_FILE}" 2>/dev/null || echo null)" '
         def lines: split("\n") | map(select(length > 0));
         def proof($vps; $mts): {vps_verified: ($vps == "verified" or $vps == "ok"), vps: $vps,
             mts_verified: ($mts == "ok"), mts: $mts};
@@ -2209,7 +2229,7 @@ status_json() {
     report="$(jq -c '{generated_at, mode, reality: .reality.vps, hysteria2: .hysteria2.vps,
         trusttunnel_h2: .trusttunnel.h2.vps, trusttunnel_h3: .trusttunnel.h3.vps}' "${REPORT_FILE}" 2>/dev/null || true)"
     n="$(count_clients)"
-    ru="$(jq -c '{verdict, checked_at, networks, icmp: (.icmp | {ok, total}),
+    ru="$(jq -c '{verdict, checked_at, networks, bad_streak: (.bad_streak // 0), previous_verdict, icmp: (.icmp | {ok, total}),
         tcp_reality: (.tcp_reality | if . then {ok, total, port} else null end),
         tcp_trusttunnel: (.tcp_trusttunnel | if . then {ok, total, port} else null end)}' "${RUSSIA_FILE}" 2>/dev/null || true)"
     scan="$(nft -j list set inet veiltrium scanners4 2>/dev/null \
@@ -2942,7 +2962,7 @@ Settings (environment variables, saved where noted):
   PANEL_ENABLE=0                    no web panel (it listens on 127.0.0.1 only; SSH tunnel)
   PANEL_PORT=2096                   the panel's port on 127.0.0.1 (saved)
   GLOBALPING=0                      no check from Russian networks (it sends the server's address
-                                    to Globalping probes; saved; default 1)
+                                    to Globalping probes, also every 6 hours; saved; default 1)
   STANDBY_HOSTS=1.2.3.4[,...] | none   standby servers (max 3, same ports) added to every client
                                     link and config, so clients switch if this address is blocked (saved)
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
@@ -3129,7 +3149,10 @@ if [[ "${MODE}" != "install" ]]; then
                 status_json | jq -r '"\(.node_name) \(.server), \(.os); Veiltrium \(.script_version)",
                     (.services | to_entries[] | "  \(.key): \(.value)"),
                     "  clients: main + \(.clients.added) added; reboot required: \(.reboot_required)",
-                    (if (.standby | length) > 0 then "  standby servers: \(.standby | join(", "))" else empty end)'
+                    (if (.standby | length) > 0 then "  standby servers: \(.standby | join(", "))" else empty end),
+                    (if ((.russia.bad_streak // 0) >= 2) then
+                        "  WARNING: not reachable from Russia in \(.russia.bad_streak) checks in a row: \(.russia.verdict) (\((.russia.networks // []) | join(", "))); consider moving to a new server or switching clients to a standby address"
+                     else empty end)'
             fi
             exit 0 ;;
         list-clients|show-client|add-client|remove-client)
@@ -4608,6 +4631,55 @@ write_probe_profile
 
 # ---- Connection details -----------------------------------------------------
 write_client_files
+
+# ---- Periodic check from Russia (every 6 hours, with GLOBALPING on) -----------
+# Runs the installed copy of this script (the same one the panel helper uses).
+install -d -m 755 "${PANEL_LIB}"
+if ! cmp -s "${SCRIPT_PATH}" "${PANEL_LIB}/veiltrium.sh"; then
+    install -m 755 "${SCRIPT_PATH}" "${PANEL_LIB}/veiltrium.sh.new"
+    mv -f "${PANEL_LIB}/veiltrium.sh.new" "${PANEL_LIB}/veiltrium.sh"
+fi
+cat > "${TMPD}/russia-check.service" <<EOF
+# veiltrium: periodic check from Russian networks
+[Unit]
+Description=Check from Russian networks that the server answers (Veiltrium)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${PANEL_LIB}/veiltrium.sh --check-russia
+EOF
+cat > "${TMPD}/russia-check.timer" <<'EOF'
+# veiltrium: periodic check from Russian networks
+[Unit]
+Description=Check from Russian networks every 6 hours (Veiltrium)
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+RC_CHANGED=0
+for u in service timer; do
+    if ! cmp -s "${TMPD}/russia-check.${u}" "/etc/systemd/system/veiltrium-russia-check.${u}"; then
+        install -m 644 "${TMPD}/russia-check.${u}" "/etc/systemd/system/veiltrium-russia-check.${u}"
+        RC_CHANGED=1
+    fi
+done
+(( RC_CHANGED == 0 )) || systemctl daemon-reload
+if [[ "${GLOBALPING}" == "1" ]]; then
+    systemctl enable veiltrium-russia-check.timer >/dev/null 2>&1 || true
+    if (( RC_CHANGED == 1 )); then systemctl restart veiltrium-russia-check.timer >/dev/null 2>&1 || true
+    else systemctl start veiltrium-russia-check.timer >/dev/null 2>&1 || true; fi
+    info "The check from Russia repeats every 6 hours (GLOBALPING=0 turns it off)"
+else
+    systemctl disable --now veiltrium-russia-check.timer >/dev/null 2>&1 || true
+fi
 
 # =============================================================================
 step 13 "Web panel"
