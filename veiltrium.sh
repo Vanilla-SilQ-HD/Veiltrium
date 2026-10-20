@@ -72,7 +72,7 @@ fi
 set -Eeuo pipefail
 umask 022
 
-SCRIPT_VERSION="2026-10-20.1"
+SCRIPT_VERSION="2026-10-20.2"
 
 # ---- Pinned versions (change only together with the checksums) -------------
 HY2_VERSION="v2.13.0"
