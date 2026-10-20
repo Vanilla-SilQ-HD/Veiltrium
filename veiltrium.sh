@@ -57,6 +57,11 @@
 #                                                   only by the address)
 #    bash veiltrium.sh --help
 #
+#  Standby servers: deploy a second VPS from an export of this node, then run
+#  STANDBY_HOSTS=<its IPv4>[,more] bash veiltrium.sh here (saved; "none" clears). Every link,
+#  sing-box outbound (with a urltest group) and the AWG Manager group then also list the
+#  standby servers (same ports assumed). Re-export after adding or removing clients.
+#
 #  To regenerate everything:  VT_RECONFIGURE=1 bash veiltrium.sh
 #  Without VLESS Reality:     REALITY_ENABLE=0 bash veiltrium.sh
 # =============================================================================
@@ -118,6 +123,9 @@ PUBLIC_IP="${PUBLIC_IP:-}"                     # empty: detected automatically
 # Node name in client apps: "Veiltrium-<NODE_NAME>". Saved; empty on a new node: the
 # server's country code (e.g. PL); "auto": detect again; "none": just "Veiltrium".
 NODE_NAME="${NODE_NAME:-}"
+# Standby servers (comma-separated public IPv4, max 3; "none" clears; saved): copies of this node
+# on the same ports, added to every client link/config so clients switch if this address is blocked.
+STANDBY_HOSTS="${STANDBY_HOSTS:-}"
 GLOBALPING="${GLOBALPING:-}"                   # 1 (default, saved): check from Russian networks that the server's
                                                # address answers (Globalping probes; the address is sent to them); 0: off
 # Domains blocked in Russia by the RKN (curated, without sites that only geoblock Russians):
@@ -216,6 +224,7 @@ HAVE_PSP=0
 CL_NAMES=(); CL_UUID=(); CL_HPASS=(); CL_TPASS=(); CL_CREATED=()
 H_AUTH=""; HY2_AUTH_MAIN=""
 N_NAME=""; LABEL="Veiltrium"
+N_STANDBY=""; STANDBY=(); STANDBY_ERR=""
 
 # ---- Helpers ----------------------------------------------------------------
 fetch() {
@@ -380,14 +389,15 @@ masquerade:
 EOF
 }
 
-# hysteria2:// share link. $1 = user ("" with one shared password), $2 = password.
+# hysteria2:// share link. $1 = user ("" with one shared password), $2 = password,
+# $3 = server (default: this node), $4 = link name (default: the node name).
 # A user is written as user:password, as the Hysteria URI scheme defines it.
 hy2_link() {
     local auth
     auth="$(url_encode "$2")"
     if [[ -n "$1" ]]; then auth="$(url_encode "$1"):${auth}"; fi
-    printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1&pinSHA256=%s&pcs=%s#%s' "${auth}" "${HOST}" "${HY2_PORT}" \
-        "$(url_encode "${HY2_SNI}")" "${CERT_SHA}" "${CERT_SHA}" "$(url_encode "${LABEL}")"
+    printf 'hysteria2://%s@%s:%s/?sni=%s&insecure=1&pinSHA256=%s&pcs=%s#%s' "${auth}" "${3:-${HOST}}" "${HY2_PORT}" \
+        "$(url_encode "${HY2_SNI}")" "${CERT_SHA}" "${CERT_SHA}" "$(url_encode "${4:-${LABEL}}")"
 }
 
 # ---- Node name and added clients ----------------------------------------------
@@ -396,7 +406,7 @@ CLIENT_RE='^[a-z0-9][a-z0-9_-]{0,31}$'
 
 # The saved node name. Sets N_NAME (may be empty), N_SAVED (1: a choice was saved) and LABEL.
 load_node_name() {
-    N_NAME=""; N_SAVED=0; N_GLOBALPING=""
+    N_NAME=""; N_SAVED=0; N_GLOBALPING=""; N_STANDBY=""
     if [[ -s "${NODE_ENV}" ]]; then
         # shellcheck disable=SC1090
         source "${NODE_ENV}"
@@ -408,6 +418,39 @@ load_node_name() {
     # GLOBALPING: explicit setting, else the saved one, else on
     if [[ -z "${GLOBALPING}" ]]; then GLOBALPING="${N_GLOBALPING:-1}"; fi
     [[ "${GLOBALPING}" == "0" || "${GLOBALPING}" == "1" ]] || GLOBALPING=1
+    # STANDBY_HOSTS: explicit setting ("none" clears), else the saved list, else none
+    if [[ -n "${STANDBY_HOSTS}" ]]; then N_STANDBY="${STANDBY_HOSTS}"; fi
+    standby_parse "${N_STANDBY}" || die "${STANDBY_ERR}"
+    N_STANDBY="$(IFS=,; printf '%s' "${STANDBY[*]:-}")"
+    return 0
+}
+
+# Parses a STANDBY_HOSTS list ("none" or empty = no standby servers). Sets STANDBY (array),
+# or returns 1 with STANDBY_ERR. $2 = this server's address (optional, may not be a standby).
+standby_parse() {
+    local list="$1" h seen=","
+    local -a items
+    STANDBY=(); STANDBY_ERR=""
+    list="${list// /}"
+    if [[ -z "${list}" || "${list}" == "none" ]]; then return 0; fi
+    IFS=, read -r -a items <<<"${list}"
+    for h in "${items[@]}"; do
+        if ! is_public_ipv4 "${h}"; then
+            STANDBY_ERR="STANDBY_HOSTS: '${h}' is not a public IPv4 address (use a comma-separated list, or none)."
+            STANDBY=(); return 1
+        fi
+        if [[ "${seen}" == *",${h},"* ]]; then STANDBY_ERR="STANDBY_HOSTS: ${h} is listed twice."; STANDBY=(); return 1; fi
+        if [[ -n "${2:-}" && "${h}" == "$2" ]]; then
+            STANDBY_ERR="STANDBY_HOSTS: ${h} is this server's own address."
+            STANDBY=(); return 1
+        fi
+        seen+="${h},"
+        STANDBY+=("${h}")
+    done
+    if (( ${#STANDBY[@]} > 3 )); then
+        STANDBY_ERR="STANDBY_HOSTS: at most 3 standby servers (got ${#STANDBY[@]})."
+        STANDBY=(); return 1
+    fi
     return 0
 }
 
@@ -428,6 +471,7 @@ save_node_name() {   # $1 = 1: the name is a choice (explicit, detected or "none
         printf '# veiltrium: node name in client apps (Veiltrium-<N_NAME>); checks from Russia (Globalping)\n'
         if [[ "${1:-1}" == "1" ]]; then printf 'N_NAME=%q\n' "${N_NAME}"; fi
         printf 'N_GLOBALPING=%q\n' "${GLOBALPING}"
+        if [[ -n "${N_STANDBY}" ]]; then printf 'N_STANDBY=%q\n' "${N_STANDBY}"; fi
     } > "${NODE_ENV}.new"
     mv -f "${NODE_ENV}.new" "${NODE_ENV}"
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
@@ -502,9 +546,11 @@ tt_credentials_toml() {
 
 # tt:// link of TrustTunnel user $1, built by the endpoint itself (the certificate is
 # embedded). Prints nothing if the export failed (the reason is in ${TMPD}/tt-link.err).
+# $2 = server address (default: this node), $3 = link name (default: the node name):
+# a standby server gets its own link from the same endpoint.
 tt_export_link() {
-    "${TT_BIN}" "${TT_DIR}/vpn.toml" "${TT_DIR}/hosts.toml" -c "$1" -a "${PUBLIC_IP}:${TT_PORT}" \
-        --name "${LABEL}" > "${TMPD}/tt-link.txt" 2>"${TMPD}/tt-link.err" || true
+    "${TT_BIN}" "${TT_DIR}/vpn.toml" "${TT_DIR}/hosts.toml" -c "$1" -a "${2:-${PUBLIC_IP}}:${TT_PORT}" \
+        --name "${3:-${LABEL}}" > "${TMPD}/tt-link.txt" 2>"${TMPD}/tt-link.err" || true
     grep -m1 -oE 'tt://[^[:space:]]+' "${TMPD}/tt-link.txt" || true
     rm -f "${TMPD}/tt-link.txt"
     return 0
@@ -1561,7 +1607,7 @@ build_report() {
     if [[ -s "${TMPD}/selection.json" ]]; then sel="$(cat "${TMPD}/selection.json")"
     elif [[ -s "${SELECTION_FILE}" ]]; then sel="$(cat "${SELECTION_FILE}")"; fi
     jq -n --arg now "$(date -u +%FT%TZ)" --arg version "${SCRIPT_VERSION}" --arg mode "${MODE}" \
-        --arg server "${PUBLIC_IP:-}" --arg label "${LABEL}" --arg n_clients "${#CL_NAMES[@]}" \
+        --arg server "${PUBLIC_IP:-}" --arg label "${LABEL}" --arg n_clients "${#CL_NAMES[@]}" --arg standby "${N_STANDBY}" \
         --arg h_auth "${H_AUTH:-}" \
         --arg r_enabled "${REALITY_ENABLE}" --arg r_site "${R_SITE:-}" --arg r_port "${REALITY_PORT}" \
         --arg r_vps "${REALITY_VPS:-untested}" --arg r_fallback "${RP_FALLBACK:-untested}" \
@@ -1583,7 +1629,7 @@ build_report() {
             mts_verified: ($mts == "ok"), mts: $mts};
         {
           schema: "veiltrium-report/1", generated_at: $now, script_version: $version, mode: $mode,
-          server: $server, node_name: $label,
+          server: $server, node_name: $label, standby: ($standby | split(",") | map(select(length > 0))),
           clients: {added: ($n_clients | tonumber), hysteria_auth: $h_auth},
           reality:(if $r_enabled == "1" then ({
               sni: $r_site, port: ($r_port | tonumber), candidates_source: $r_cand_source,
@@ -1674,37 +1720,40 @@ client_creds() {
     return 0
 }
 
-vless_link() {   # $1 = UUID
+vless_link() {   # $1 = UUID, $2 = server (default: this node), $3 = link name (default: the node name)
     printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp#%s' \
-        "$1" "${HOST}" "${REALITY_PORT}" "${R_SITE}" "${REALITY_FP}" "${R_PUB}" "${R_SID}" "$(url_encode "${LABEL}")"
+        "$1" "${2:-${HOST}}" "${REALITY_PORT}" "${R_SITE}" "${REALITY_FP}" "${R_PUB}" "${R_SID}" "$(url_encode "${3:-${LABEL}}")"
 }
 
-# Globals: HOST, HY2_PORT, HY2_SNI, CERT_SHA, PK_SHA, H_AUTH, H_PASSWORD, R_* (R_SITE
-# empty: no Reality), REALITY_PORT, REALITY_FP, T_SNI, TT_PORT, LABEL, the clients.
-# $1 = client ("main" or an added one), $2 = its tt:// link ("" = none), $3 = its file.
-client_details() {
-    local name="$1" tt="$2" file="$3" hy_user hy_pass uuid auth jauth reality_text="" tt_text="" foot
-    client_creds "${name}"
-    hy_user="${CC_USER}"; hy_pass="${CC_PASS}"; uuid="${CC_UUID}"; auth="${CC_AUTH}"
-    jauth="$(json_escape "${auth}")"
-    if [[ -n "${R_SITE}" ]]; then   # also when the previous settings were restored: the link stays in the file
-        reality_text="$(cat <<EOF
+# ---- sing-box outbound texts (one template each: the main server and every standby) -----
+# $1 = server, $2 = tag, $3 = JSON-escaped Hysteria password.
+hy2_outbound_text() {
+    cat <<EOF
+{
+  "type": "hysteria2",
+  "tag": "$2",
+  "server": "$1",
+  "server_port": ${HY2_PORT},
+  "password": "$3",
+  "tls": {
+    "enabled": true,
+    "server_name": "${HY2_SNI}",
+    "insecure": false,
+    "certificate_public_key_sha256": ["${PK_SHA}"]
+  }
+}
+EOF
+}
 
-----------------------------------------------------------------------
-VLESS Reality: backup protocol (TCP), masked as ${R_SITE}
-Port: ${REALITY_PORT}/TCP. A prober without the key sees the real site ${R_SITE}.
-If the site ever changes (--reselect-reality), only sni / server_name changes.
-
-3) VLESS Reality link (v2rayN, Hiddify, NekoBox, v2rayNG, sing-box, AWG Manager):
-$(vless_link "${uuid}")
-
-4) VLESS Reality outbound for sing-box (router):
+# $1 = server, $2 = tag, $3 = UUID.
+vless_outbound_text() {
+    cat <<EOF
 {
   "type": "vless",
-  "tag": "reality",
-  "server": "${HOST}",
+  "tag": "$2",
+  "server": "$1",
   "server_port": ${REALITY_PORT},
-  "uuid": "${uuid}",
+  "uuid": "$3",
   "flow": "xtls-rprx-vision",
   "tls": {
     "enabled": true,
@@ -1714,9 +1763,124 @@ $(vless_link "${uuid}")
   }
 }
 EOF
+}
+
+# One entry of the AWG Manager server group (section 6): $1 = server, $2 = tag, $3 = JSON-escaped password.
+awg_entry_text() {
+    cat <<EOF
+  {
+    "type": "hysteria2",
+    "tag": "$2",
+    "server": "$1",
+    "server_port": ${HY2_PORT},
+    "password": "$3",
+    "tls": {
+      "enabled": true,
+      "server_name": "${HY2_SNI}",
+      "certificate_public_key_sha256": ["${PK_SHA}"]
+    }
+  }
+EOF
+}
+
+# sing-box urltest group: $1 = tag, the other arguments are the outbound tags it chooses from.
+urltest_text() {
+    local tag="$1" list="" t
+    shift
+    for t in "$@"; do list+="${list:+, }\"${t}\""; done
+    cat <<EOF
+{
+  "type": "urltest",
+  "tag": "${tag}",
+  "outbounds": [${list}],
+  "url": "https://www.gstatic.com/generate_204",
+  "interval": "3m",
+  "tolerance": 50
+}
+EOF
+}
+
+# A JSON array of the objects given as arguments (each one a multi-line text).
+json_objects_text() {
+    local it first=1
+    printf '[\n'
+    for it in "$@"; do
+        if (( first == 0 )); then printf ',\n'; fi
+        first=0
+        printf '%s' "$(printf '%s\n' "${it}" | sed 's/^/  /')"
+    done
+    printf '\n]\n'
+}
+
+# The standby outbounds and the urltest group as a JSON array (client file, section 2 and 4).
+standby_outbounds_text() {   # $1 = hy2 | reality, $2 = main tag, $3 = JSON-escaped password or UUID
+    local i objs=() tags=("$2")
+    for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+        tags+=("$2-standby$(( i + 1 ))")
+        if [[ "$1" == "hy2" ]]; then objs+=("$(hy2_outbound_text "${STANDBY[i]}" "$2-standby$(( i + 1 ))" "$3")")
+        else objs+=("$(vless_outbound_text "${STANDBY[i]}" "$2-standby$(( i + 1 ))" "$3")"); fi
+    done
+    objs+=("$(urltest_text "Veiltrium-auto-$1" "${tags[@]}")")
+    json_objects_text "${objs[@]}"
+}
+
+# Globals: HOST, HY2_PORT, HY2_SNI, CERT_SHA, PK_SHA, H_AUTH, H_PASSWORD, R_* (R_SITE
+# empty: no Reality), REALITY_PORT, REALITY_FP, T_SNI, TT_PORT, LABEL, the clients.
+# $1 = client ("main" or an added one), $2 = its tt:// link ("" = none), $3 = its file.
+client_details() {
+    local name="$1" tt="$2" file="$3" hy_user hy_pass uuid auth jauth reality_text="" tt_text="" foot
+    local hy2_obj vless_obj awg_entries hy2_sb_links="" vless_sb_links="" tt_sb_links="" awg_end="" i l
+    client_creds "${name}"
+    hy_user="${CC_USER}"; hy_pass="${CC_PASS}"; uuid="${CC_UUID}"; auth="${CC_AUTH}"
+    jauth="$(json_escape "${auth}")"
+    hy2_obj="$(hy2_outbound_text "${HOST}" hy2 "${jauth}")"
+    awg_entries="$(awg_entry_text "${HOST}" Veiltrium "${jauth}")"
+    if (( ${#STANDBY[@]} )); then
+        hy2_obj+=$'\n\n'"   Standby servers (same ports and secrets): one outbound each and a urltest group that"$'\n'
+        hy2_obj+="   picks the fastest working one (tested every 3 min). Add all of them:"$'\n'
+        hy2_obj+="$(standby_outbounds_text hy2 hy2 "${jauth}")"
+        hy2_sb_links=$'\n'"   Standby servers (same ports and secrets):"
+        for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+            hy2_sb_links+=$'\n'"$(hy2_link "${hy_user}" "${hy_pass}" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))")"
+            awg_entries+=$',\n'"$(awg_entry_text "${STANDBY[i]}" "Veiltrium-standby$(( i + 1 ))" "${jauth}")"
+        done
+        awg_end=$'\n\n'"----------------------------------------------------------------------"$'\n'
+        awg_end+="7) Standby servers: ${STANDBY[*]}"$'\n'
+        awg_end+="   They are assumed to be copies of this node (same ports, passwords, keys and certificate"$'\n'
+        awg_end+="   fingerprints; deploy them from an export of this node). The links and configs above include"$'\n'
+        awg_end+="   them, so clients can switch if ${HOST} is blocked. After adding or removing clients here,"$'\n'
+        awg_end+="   export the node again and re-import it on every standby server."
+    fi
+    if [[ -n "${R_SITE}" ]]; then   # also when the previous settings were restored: the link stays in the file
+        vless_obj="$(vless_outbound_text "${HOST}" reality "${uuid}")"
+        if (( ${#STANDBY[@]} )); then
+            vless_sb_links=$'\n'"   Standby servers (same ports and secrets):"
+            for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+                vless_sb_links+=$'\n'"$(vless_link "${uuid}" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))")"
+            done
+            vless_obj+=$'\n\n'"   Standby servers: one outbound each and a urltest group (tested every 3 min). Add all of them:"$'\n'
+            vless_obj+="$(standby_outbounds_text reality reality "${uuid}")"
+        fi
+        reality_text="$(cat <<EOF
+
+----------------------------------------------------------------------
+VLESS Reality: backup protocol (TCP), masked as ${R_SITE}
+Port: ${REALITY_PORT}/TCP. A prober without the key sees the real site ${R_SITE}.
+If the site ever changes (--reselect-reality), only sni / server_name changes.
+
+3) VLESS Reality link (v2rayN, Hiddify, NekoBox, v2rayNG, sing-box, AWG Manager):
+$(vless_link "${uuid}")${vless_sb_links}
+
+4) VLESS Reality outbound for sing-box (router):
+${vless_obj}
+EOF
 )"
     fi
     if [[ -n "${tt}" ]]; then
+        if (( ${#TT_STANDBY_LINKS[@]} )); then
+            tt_sb_links=$'\n'"   Standby servers (same ports and secrets):"
+            for l in "${TT_STANDBY_LINKS[@]}"; do tt_sb_links+=$'\n'"${l}"; done
+        fi
         tt_text="$(cat <<EOF
 
 ----------------------------------------------------------------------
@@ -1724,7 +1888,7 @@ TrustTunnel: port ${TT_PORT}/TCP+UDP, hostname ${T_SNI} (self-signed certificate
 embedded in the link; the client checks the server against it)
 
 5) TrustTunnel link (TrustTunnel apps, AWG Manager on the router: HTTP/2 only there):
-${tt}
+${tt}${tt_sb_links}
 EOF
 )"
     fi
@@ -1757,25 +1921,13 @@ Certificate fingerprint (SHA-256):  ${CERT_SHA}
 Public key fingerprint (sing-box, base64):  ${PK_SHA}
 
 1) Hysteria 2 link for phone and PC (v2rayN, Hiddify, NekoBox, sing-box):
-$(hy2_link "${hy_user}" "${hy_pass}")
+$(hy2_link "${hy_user}" "${hy_pass}")${hy2_sb_links}
    AWG Manager (Keenetic) ignores pinSHA256 in this link and then connects
    WITHOUT checking the certificate. On the router use section 6 instead.
 
 2) Outbound for sing-box (router). No speed is set: sing-box adapts
    by itself (BBR), which is more reliable than a fixed speed.
-{
-  "type": "hysteria2",
-  "tag": "hy2",
-  "server": "${HOST}",
-  "server_port": ${HY2_PORT},
-  "password": "${jauth}",
-  "tls": {
-    "enabled": true,
-    "server_name": "${HY2_SNI}",
-    "insecure": false,
-    "certificate_public_key_sha256": ["${PK_SHA}"]
-  }
-}
+${hy2_obj}
 ${reality_text}
 ${tt_text}
 
@@ -1783,19 +1935,8 @@ ${tt_text}
 6) AWG Manager: add Hysteria with key pinning as a server group
    (server group -> sing-box JSON), paste this whole block:
 [
-  {
-    "type": "hysteria2",
-    "tag": "Veiltrium",
-    "server": "${HOST}",
-    "server_port": ${HY2_PORT},
-    "password": "${jauth}",
-    "tls": {
-      "enabled": true,
-      "server_name": "${HY2_SNI}",
-      "certificate_public_key_sha256": ["${PK_SHA}"]
-    }
-  }
-]
+${awg_entries}
+]${awg_end}
 
 ----------------------------------------------------------------------
 Copy links without any chat app or Markdown in between (it breaks & and _):
@@ -1805,6 +1946,21 @@ ${foot}
 EOF
 }
 
+# TrustTunnel links of the standby servers for user $1 (only if it has a link $2): the
+# endpoint builds them for the other address. Sets TT_STANDBY_LINKS; a failed export is skipped.
+TT_STANDBY_LINKS=()
+tt_standby_links() {
+    local i l
+    TT_STANDBY_LINKS=()
+    [[ -n "$2" ]] || return 0
+    for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+        l="$(tt_export_link "$1" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))")"
+        if [[ -n "${l}" ]]; then TT_STANDBY_LINKS+=("${l}")
+        else warn "TrustTunnel link for standby ${STANDBY[i]} (client $1) could not be built; it is left out."; fi
+    done
+    return 0
+}
+
 # Rewrites the details of every client (main: ${CLIENT_FILE}; the others in
 # ${CLIENT_FILES_DIR}) and removes the files of clients that no longer exist.
 # TT_URL = the main client's tt:// link ("" = no TrustTunnel).
@@ -1812,6 +1968,7 @@ write_client_files() {
     local i f n tt
     install -d -m 700 "${VT_ROOT_DIR}"
     install -m 600 /dev/null "${CLIENT_FILE}.new"
+    tt_standby_links "${T_USER}" "${TT_URL}"
     client_details main "${TT_URL}" "${CLIENT_FILE}" > "${CLIENT_FILE}.new"
     mv -f "${CLIENT_FILE}.new" "${CLIENT_FILE}"
     if (( ${#CL_NAMES[@]} )); then install -d -m 700 "${CLIENT_FILES_DIR}"; fi
@@ -1822,6 +1979,7 @@ write_client_files() {
             tt="$(tt_export_link "${CL_NAMES[i]}")"
             if [[ -z "${tt}" ]]; then tt="$(grep -m1 '^tt://' "${f}" 2>/dev/null || true)"; fi
         fi
+        tt_standby_links "${CL_NAMES[i]}" "${tt}"
         install -m 600 /dev/null "${f}.new"
         client_details "${CL_NAMES[i]}" "${tt}" "${f}" > "${f}.new"
         mv -f "${f}.new" "${f}"
@@ -1971,29 +2129,59 @@ step_mark() {
 }
 
 # Connection details of client $1 as JSON; secrets included (root and the panel only).
-# $2 = its tt:// link ("" = none).
+# $2 = its tt:// link ("" = none), $3 = the tt:// links of the standby servers (one per line).
+# With standby servers the document gains "standby" (the addresses) and per protocol
+# standby_links, standby_outbounds (outbounds + a urltest group) and a longer awg_group.
 client_json() {
-    local vless=""
+    local vless="" i hy_sb='[]' vless_sb='[]' tt_sb='[]' sb='[]'
     client_creds "$1"
     if [[ -n "${R_SITE}" ]]; then vless="$(vless_link "${CC_UUID}")"; fi
+    if (( ${#STANDBY[@]} )); then
+        sb="$(jq -nc '$ARGS.positional' --args "${STANDBY[@]}")"
+        hy_sb="$(for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+            hy2_link "${CC_USER}" "${CC_PASS}" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))"; printf '\n'; done \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+        if [[ -n "${vless}" ]]; then
+            vless_sb="$(for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+                vless_link "${CC_UUID}" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))"; printf '\n'; done \
+                | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+        fi
+        if [[ -n "${3:-}" ]]; then tt_sb="$(printf '%s\n' "$3" | jq -R -s -c 'split("\n") | map(select(length > 0))')"; fi
+    fi
     jq -n --arg name "$1" --arg created "${CC_CREATED}" --arg label "${LABEL}" --arg server "${HOST}" \
         --arg hy_link "$(hy2_link "${CC_USER}" "${CC_PASS}")" --arg auth "${CC_AUTH}" --arg hy_sni "${HY2_SNI}" \
         --argjson hy_port "${HY2_PORT}" --arg pk "${PK_SHA}" --arg cert "${CERT_SHA}" \
         --arg vless "${vless}" --arg uuid "${CC_UUID}" --arg r_site "${R_SITE}" --argjson r_port "${REALITY_PORT}" \
-        --arg fp "${REALITY_FP}" --arg pbk "${R_PUB}" --arg sid "${R_SID}" --arg tt "$2" '
+        --arg fp "${REALITY_FP}" --arg pbk "${R_PUB}" --arg sid "${R_SID}" --arg tt "$2" \
+        --argjson sb "${sb}" --argjson hy_sb "${hy_sb}" --argjson vless_sb "${vless_sb}" --argjson tt_sb "${tt_sb}" '
+        def hy_out($s; $tag): {type: "hysteria2", tag: $tag, server: $s, server_port: $hy_port, password: $auth,
+            tls: {enabled: true, server_name: $hy_sni, insecure: false, certificate_public_key_sha256: [$pk]}};
+        def awg($s; $tag): {type: "hysteria2", tag: $tag, server: $s, server_port: $hy_port, password: $auth,
+            tls: {enabled: true, server_name: $hy_sni, certificate_public_key_sha256: [$pk]}};
+        def vless_out($s; $tag): {type: "vless", tag: $tag, server: $s, server_port: $r_port, uuid: $uuid,
+            flow: "xtls-rprx-vision", tls: {enabled: true, server_name: $r_site,
+              utls: {enabled: true, fingerprint: $fp},
+              reality: {enabled: true, public_key: $pbk, short_id: $sid}}};
+        def urltest($tag; $tags): {type: "urltest", tag: $tag, outbounds: $tags,
+            url: "https://www.gstatic.com/generate_204", interval: "3m", tolerance: 50};
+        def numbered($tag): [range(0; $sb | length)] | map($tag + "-standby" + (. + 1 | tostring));
         {schema: "veiltrium-client/1", name: $name, main: ($name == "main"),
-         created: (if $created == "" then null else $created end), node_name: $label, server: $server,
-         hysteria2: {link: $hy_link, auth: $auth, sni: $hy_sni, port: $hy_port, pin_sha256: $cert,
-           outbound: {type: "hysteria2", tag: "hy2", server: $server, server_port: $hy_port, password: $auth,
-             tls: {enabled: true, server_name: $hy_sni, insecure: false, certificate_public_key_sha256: [$pk]}},
-           awg_group: [{type: "hysteria2", tag: "Veiltrium", server: $server, server_port: $hy_port, password: $auth,
-             tls: {enabled: true, server_name: $hy_sni, certificate_public_key_sha256: [$pk]}}]},
-         vless: (if $vless == "" then null else {link: $vless, sni: $r_site, port: $r_port,
-           outbound: {type: "vless", tag: "reality", server: $server, server_port: $r_port, uuid: $uuid,
-             flow: "xtls-rprx-vision", tls: {enabled: true, server_name: $r_site,
-               utls: {enabled: true, fingerprint: $fp},
-               reality: {enabled: true, public_key: $pbk, short_id: $sid}}}} end),
-         trusttunnel: (if $tt == "" then null else {link: $tt} end)}'
+         created: (if $created == "" then null else $created end), node_name: $label, server: $server}
+         + (if ($sb | length) > 0 then {standby: $sb} else {} end)
+         + {hysteria2: ({link: $hy_link, auth: $auth, sni: $hy_sni, port: $hy_port, pin_sha256: $cert,
+           outbound: hy_out($server; "hy2"),
+           awg_group: ([awg($server; "Veiltrium")]
+             + [range(0; $sb | length) as $i | awg($sb[$i]; "Veiltrium-standby" + ($i + 1 | tostring))])}
+           + (if ($sb | length) > 0 then {standby_links: $hy_sb,
+               standby_outbounds: ([range(0; $sb | length) as $i | hy_out($sb[$i]; "hy2-standby" + ($i + 1 | tostring))]
+                 + [urltest("Veiltrium-auto-hy2"; ["hy2"] + numbered("hy2"))])} else {} end)),
+         vless: (if $vless == "" then null else ({link: $vless, sni: $r_site, port: $r_port,
+           outbound: vless_out($server; "reality")}
+           + (if ($sb | length) > 0 then {standby_links: $vless_sb,
+               standby_outbounds: ([range(0; $sb | length) as $i | vless_out($sb[$i]; "reality-standby" + ($i + 1 | tostring))]
+                 + [urltest("Veiltrium-auto-reality"; ["reality"] + numbered("reality"))])} else {} end)) end),
+         trusttunnel: (if $tt == "" then null else ({link: $tt}
+           + (if ($tt_sb | length) > 0 then {standby_links: $tt_sb} else {} end)) end)}'
 }
 
 # The clients of the node as JSON (no secrets).
@@ -2037,9 +2225,10 @@ status_json() {
         --arg h_sni "${H_SNI}" --arg h_port "${HY2_PORT}" --arg h_mts "$(mts_status hysteria2 "${H_SNI:-none}")" \
         --arg t_sni "${T_SNI}" --arg t_port "${TT_PORT}" --arg t2 "$(mts_status tt_h2 "${T_SNI:-none}")" \
         --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" --argjson ru "${ru:-null}" \
-        --arg globalping "${GLOBALPING}" '
+        --arg globalping "${GLOBALPING}" --arg standby "${N_STANDBY}" '
         {schema: "veiltrium-status/1", generated_at: $now, script_version: $version, node_name: $label,
-         server: $server, os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
+         server: $server, standby: ($standby | split(",") | map(select(length > 0))),
+         os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
          services: ($st | split("\n") | map(select(length > 0) | split("=") | {key: .[0], value: .[1]}) | from_entries),
          versions: {hysteria: $vh, xray: $vx, trusttunnel: $vt},
          clients: {added: ($n | tonumber), hysteria_auth: $h_auth},
@@ -2754,6 +2943,8 @@ Settings (environment variables, saved where noted):
   PANEL_PORT=2096                   the panel's port on 127.0.0.1 (saved)
   GLOBALPING=0                      no check from Russian networks (it sends the server's address
                                     to Globalping probes; saved; default 1)
+  STANDBY_HOSTS=1.2.3.4[,...] | none   standby servers (max 3, same ports) added to every client
+                                    link and config, so clients switch if this address is blocked (saved)
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
   VT_EXPORT_PASSPHRASE / VT_IMPORT_PASSPHRASE   passphrase for --export / --import without a
@@ -2937,7 +3128,8 @@ if [[ "${MODE}" != "install" ]]; then
             else
                 status_json | jq -r '"\(.node_name) \(.server), \(.os); Veiltrium \(.script_version)",
                     (.services | to_entries[] | "  \(.key): \(.value)"),
-                    "  clients: main + \(.clients.added) added; reboot required: \(.reboot_required)"'
+                    "  clients: main + \(.clients.added) added; reboot required: \(.reboot_required)",
+                    (if (.standby | length) > 0 then "  standby servers: \(.standby | join(", "))" else empty end)'
             fi
             exit 0 ;;
         list-clients|show-client|add-client|remove-client)
@@ -2956,7 +3148,8 @@ if [[ "${MODE}" != "install" ]]; then
                         die "no client ${CLIENT_ARG} (see --list-clients)."
                     fi
                     if [[ -n "${JSON_OUT}" ]]; then
-                        client_json "${CLIENT_ARG}" "$(grep -m1 '^tt://' "${CLIENT_TXT}" 2>/dev/null || true)" | json_emit
+                        client_json "${CLIENT_ARG}" "$(grep -m1 '^tt://' "${CLIENT_TXT}" 2>/dev/null || true)" \
+                            "$(grep '^tt://' "${CLIENT_TXT}" 2>/dev/null | tail -n +2 || true)" | json_emit
                     else
                         cat "${CLIENT_TXT}"
                     fi ;;
@@ -4039,6 +4232,8 @@ if [[ -z "${PUBLIC_IP}" ]]; then
     [[ -n "${PUBLIC_IP}" ]] || die "could not detect the server's public IPv4; set it manually: PUBLIC_IP=x.x.x.x bash $0"
     is_public_ipv4 "${PUBLIC_IP}" || warn "The server has no public IPv4 of its own (${PUBLIC_IP}); if it is behind NAT, set PUBLIC_IP."
 fi
+standby_parse "${N_STANDBY}" "${PUBLIC_IP}" || die "${STANDBY_ERR}"
+if (( ${#STANDBY[@]} )); then info "Standby servers in the client links and configs: ${STANDBY[*]} (assumed to use the same ports)"; fi
 # The node name in client apps (Veiltrium-<name>): explicit setting, else the saved one,
 # else the server's country code (detected once, then saved).
 N_KNOWN=1

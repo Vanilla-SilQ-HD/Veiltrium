@@ -107,6 +107,7 @@ Optional settings are environment variables:
 | `GLOBALPING` | `1` | `0` turns off the check from Russian networks (it sends the server's address to Globalping); saved |
 | `RU_BLOCKLISTS` | itdoginfo `Categories/block.lst` | URLs of RKN block lists (domains, one per line) |
 | `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
+| `STANDBY_HOSTS` | none | up to 3 public IPv4 addresses of standby servers, comma-separated; saved; `none` clears. Every client link and config (hysteria2, vless, tt, sing-box outbounds with a `urltest` group, the AWG Manager server group) then also lists them, so phones and the router switch by themselves if this address is blocked. The standby servers must be copies of this node using the same ports: deploy the second VPS from an export of this node, then set `STANDBY_HOSTS` here and re-run; export again after adding or removing clients |
 | `SCANNER_BLOCK` | `1` | `0` turns the scanner blocklist off |
 | `VT_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
 | `VT_RECONFIGURE` | `0` | `1` issues new passwords, keys and certificates, for the added clients too (all clients must be updated) |
