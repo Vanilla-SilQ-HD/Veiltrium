@@ -5136,6 +5136,9 @@ ${reality_out}    }
     # Where the Hysteria and Xray services, i.e. proxy clients, may connect:
     # the internet, yes; the server's own addresses and private networks, no.
     chain proxy_egress {
+        # Replies on the loopback (the services' own statistics endpoints answer the traffic collector).
+        # Only an established connection: a service still cannot open one to the server itself.
+        oifname "lo" ct state established accept
         udp sport ${HY2_PORT} accept
 ${reality_egress}${DNS_RULES}        fib daddr type local reject
         ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/3 } reject

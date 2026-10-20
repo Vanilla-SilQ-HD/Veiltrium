@@ -121,9 +121,6 @@ state_is() {   # $1 = client, $2 = state, $3 = reason ("" = none)
         '.clients[] | select(.name == $n) | (.state == $s and ((.reason // "") == $r))' > /dev/null
 }
 
-# the traffic timer and these tests would both change client states and read the counters
-sudo systemctl stop veiltrium-traffic.timer
-trap 'sudo systemctl start veiltrium-traffic.timer 2>/dev/null || true' EXIT
 
 TSNI="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
 TTPORT=8443
@@ -152,13 +149,15 @@ carol_expect() {   # 204 | not204
 }
 
 # ======================================================================================
-echo "== a. traffic counters"
+sec_a() {
+    echo "== a. traffic counters"
 sudo grep -E '^H_STATS_PORT=' /etc/hysteria/node.env > /dev/null || fail "no Hysteria statistics port in the node state"
 sudo grep -E '^R_STATS_PORT=' /usr/local/etc/xray/reality.env > /dev/null || fail "no Xray statistics port in the node state"
 sudo grep -E '^T_STATS_PORT=' /etc/trusttunnel/node.env > /dev/null || fail "no TrustTunnel statistics port in the node state"
 sudo jq -e '.inbounds[0].settings.clients[0].email == "main"' /usr/local/etc/xray/config.json
 sudo bash ./veiltrium.sh --traffic-reset > /dev/null 2>&1
-inst --add-client carol > "$W/add.log" 2>&1 || { cat "$W/add.log"; exit 1; }
+test -s "$CF" || fail "carol does not exist"
+sudo systemctl stop veiltrium-traffic.timer 2>/dev/null || true
 load_carol
 WHAT=big
 expect "main: hysteria2 download" "$(hy_case "$H_MAIN")" big
@@ -182,8 +181,10 @@ if grep -E '[0-9a-f]{48}' "$W/traffic.json"; then fail "a secret in the traffic 
 sudo bash ./veiltrium.sh --traffic > "$W/traffic.txt" 2>&1
 grep -E '^  carol ' "$W/traffic.txt" > /dev/null
 
+}
 # ======================================================================================
-echo "== c. reset-client"
+sec_c() {
+    echo "== c. reset-client"
 if inst --reset-client main > "$W/rm.log" 2>&1; then fail "reset-client accepted main"; fi
 grep -F 'VT_RECONFIGURE=1' "$W/rm.log" > /dev/null
 OLD_H="$C_H"; cp "$W/c4.json" "$W/old4.json"; OLD_TP="$C_TP"
@@ -203,8 +204,10 @@ expect "carol after reset: old TrustTunnel" "$(tt_case carol "$OLD_TP")" not204
 test "$main0" = "$(creds "$MAIN")"
 main_expect
 
+}
 # ======================================================================================
-echo "== b. limits, disable and enable, expiry"
+sec_b() {
+    echo "== b. limits, disable and enable, expiry"
 if inst --set-client main --limit 1M > "$W/bad.log" 2>&1; then fail "a limit on main was accepted"; fi
 if inst --set-client carol --limit abc > "$W/bad.log" 2>&1; then fail "a bad size was accepted"; fi
 if inst --set-client carol > "$W/bad.log" 2>&1; then fail "--set-client without a setting was accepted"; fi
@@ -267,8 +270,10 @@ for a in 'action=add-client target=carol result=ok' 'action=reset-client target=
     grep -F "$a" "$W/audit.txt" > /dev/null || { cat "$W/audit.txt"; fail "no audit line: $a"; }
 done
 
+}
 # ======================================================================================
-echo "== d. standby servers"
+sec_d() {
+    echo "== d. standby servers"
 snap() {
     sudo sh -c 'for f in /root/veiltrium/client.txt /root/veiltrium/clients/*.txt; do echo "== $f"; grep -v "^Veiltrium connection details" "$f"; done'
 }
@@ -310,8 +315,10 @@ if instenv STANDBY_HOSTS=10.1.2.3 > "$W/sb3.log" 2>&1; then fail "a private stan
 grep -F "is not a public IPv4 address" "$W/sb3.log" > /dev/null || { tail -20 "$W/sb3.log"; fail "no message about the bad standby address"; }
 test "$ids0" = "$(ids)"
 
+}
 # ======================================================================================
-echo "== f. alerts (an unreachable webhook)"
+sec_f() {
+    echo "== f. alerts (an unreachable webhook)"
 test "$(systemctl is-enabled veiltrium-watch.timer 2>/dev/null || true)" != enabled || fail "the watch timer is on without alert channels"
 if inst --test-alert > "$W/ta0.log" 2>&1; then fail "--test-alert succeeded without channels"; fi
 grep -F 'no alert channel is set' "$W/ta0.log" > /dev/null
@@ -340,8 +347,10 @@ test "$(systemctl is-enabled veiltrium-watch.timer 2>/dev/null || true)" != enab
 sudo test ! -e /etc/veiltrium/alerts.env
 if inst --test-alert > "$W/ta2.log" 2>&1; then fail "--test-alert succeeded after the channels were cleared"; fi
 
+}
 # ======================================================================================
-echo "== g. the short command and QR codes"
+sec_g() {
+    echo "== g. the short command and QR codes"
 command -v qrencode > /dev/null || fail "qrencode is not installed"
 VT=/usr/local/bin/veiltrium
 test -x "$VT"
@@ -362,9 +371,11 @@ grep -F 'Usage: veiltrium COMMAND' "$W/help.txt" > /dev/null
 rc=0; sudo "$VT" bogus > "$W/bogus.txt" 2>&1 || rc=$?
 test "$rc" = 2
 
+}
 # ======================================================================================
-if [ "${FEATURES_REINSTALL:-1}" != 1 ]; then echo "features: all checks passed (export and import skipped)"; exit 0; fi
-echo "== e. export, uninstall, import on the same machine"
+if [ "${FEATURES_REINSTALL:-1}" != 1 ]; then echo "export and import skipped"; return 0; fi
+sec_e() {
+    echo "== e. export, uninstall, import on the same machine"
 PASS='ci-export-passphrase-0001'
 EXPF=/root/vt-ci-export.vtx
 links0="$(creds "$MAIN" "$CF")"
@@ -427,3 +438,20 @@ sudo env GLOBALPING=0 bash ./veiltrium.sh --diagnose > "$W/diag.log" 2>&1 || { c
 if grep -F 'ERROR' "$W/diag.log"; then fail "--diagnose printed an error after the import"; fi
 sudo rm -f "$EXPF"
 echo "features: all checks passed"
+}
+
+# ======================================================================================
+# Each section runs in its own shell: one failure does not hide the others (the order is
+# fixed; e reinstalls the node and must stay last).
+if [ "${1:-all}" != all ]; then "sec_$1"; exit 0; fi
+# the traffic timer and these tests would both change client states and read the counters
+sudo systemctl stop veiltrium-traffic.timer
+trap 'sudo systemctl start veiltrium-traffic.timer 2>/dev/null || true' EXIT
+inst --add-client carol > "$W/add.log" 2>&1 || { cat "$W/add.log"; exit 1; }
+FAILED=()
+for s in a c b d f g e; do
+    echo "######## section $s"
+    bash "$0" "$s" || { FAILED+=("$s"); echo "######## SECTION $s FAILED"; }
+done
+if (( ${#FAILED[@]} )); then echo "failed sections: ${FAILED[*]}"; exit 1; fi
+echo "features: all sections passed"
