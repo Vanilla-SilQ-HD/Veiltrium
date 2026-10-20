@@ -5278,6 +5278,18 @@ EOF
 audit_setup
 APT_GET=(apt-get -q -o DPkg::Lock::Timeout=900
          -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+# DPkg::Lock::Timeout waits for the dpkg locks only, not for the archives/lists locks that a
+# running unattended-upgrades or apt-daily holds: retry while such a process is there.
+apt_run() {
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if "${APT_GET[@]}" "$@"; then return 0; fi
+        pgrep -x 'apt-get|apt|dpkg|unattended-upgr' >/dev/null 2>&1 || return 1
+        warn "apt is busy with another process (attempt ${i}), retrying in 30 s..."
+        sleep 30
+    done
+    return 1
+}
 # If a previous run was cut off in the middle of package installation, finish it.
 dpkg --force-confdef --force-confold --configure -a </dev/null || true
 apt_updated=0
@@ -5287,9 +5299,10 @@ for attempt in 1 2 3 4 5 6; do
     sleep 15
 done
 (( apt_updated == 1 )) || die "could not update package lists (check the server's internet connection)."
-"${APT_GET[@]}" -y full-upgrade
-"${APT_GET[@]}" -y install curl ca-certificates openssl nftables unattended-upgrades iproute2 util-linux unzip jq qrencode
-if "${APT_GET[@]}" -y install fail2ban python3-systemd; then
+apt_run -y full-upgrade || die "the system upgrade (apt-get full-upgrade) failed; see ${LOG_FILE}."
+apt_run -y install curl ca-certificates openssl nftables unattended-upgrades iproute2 util-linux unzip jq qrencode \
+    || die "could not install the required packages; see ${LOG_FILE}."
+if apt_run -y install fail2ban python3-systemd; then
     HAVE_FAIL2BAN=1
 else
     HAVE_FAIL2BAN=0
