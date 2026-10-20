@@ -198,7 +198,7 @@ bash /root/veiltrium.sh --remove-client anna
 bash /root/veiltrium.sh --reset-client anna    # new credentials, same name
 ```
 
-The installer also writes a short command, `/usr/local/bin/veiltrium`, which runs the installed copy of the script: `veiltrium status`, `clients`, `add NAME`, `remove NAME`, `show NAME`, `qr NAME`, `export FILE`, `russia`, `diagnose`, `panel-password`, `install` (the same as re-running the installer) and `help` (all modes and settings). Any installer option works too, for example `veiltrium --dry-run`. `veiltrium qr NAME` prints terminal QR codes of the client's links (including standby servers); it writes to the terminal only, because the links hold secrets.
+The installer also writes a short command, `/usr/local/bin/veiltrium`, which runs the installed copy of the script: `veiltrium status`, `clients`, `add NAME`, `remove NAME`, `show NAME`, `qr NAME`, `export FILE`, `russia`, `traffic`, `reset NAME`, `audit [N]`, `test-alert`, `check-update`, `update`, `uninstall`, `diagnose`, `panel-password`, `install` (the same as re-running the installer) and `help` (all modes and settings). Any installer option works too, for example `veiltrium --dry-run`. `veiltrium qr NAME` prints terminal QR codes of the client's links (including standby servers); it writes to the terminal only, because the links hold secrets.
 
 - Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `main` is the first client.
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
@@ -221,7 +221,7 @@ It never touches what protects the server by itself: the SSH settings (`/etc/ssh
 
 ## Audit log
 
-Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `panel-password`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
+Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `panel-password`, `traffic-reset`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
 
 ```
 2026-10-20T09:14:02Z source=panel action=add-client target=anna result=ok

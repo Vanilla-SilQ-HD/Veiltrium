@@ -37,32 +37,40 @@
 #
 #  Modes:
 #    bash veiltrium.sh                     install / update / repair
+#    bash veiltrium.sh --update            download the newest release, check it, run it as an install
+#    bash veiltrium.sh --check-update      is a newer release out? (no changes)
+#
+#  Reality site:
 #    bash veiltrium.sh --reselect-reality  re-evaluate the Reality site
 #                                                   (only the VLESS sni changes)
 #    bash veiltrium.sh --dry-run           what --reselect-reality would do; no changes
-#    bash veiltrium.sh --diagnose          check the node; no changes
-#    bash veiltrium.sh --import-mts FILE   import results of tools/keenetic-vpn-probe.sh (optional)
 #    bash veiltrium.sh --trial-reality SITE[,SITE]   temporary extra Reality
 #                                                   names for a probe from home; auto-revert
 #    bash veiltrium.sh --trial-stop        end a Reality trial now
+#
+#  Clients:
 #    bash veiltrium.sh --add-client NAME   a new client: own credentials for all protocols
 #    bash veiltrium.sh --remove-client NAME   revoke a client
 #    bash veiltrium.sh --reset-client NAME new credentials for a client (the old ones stop working)
 #    bash veiltrium.sh --list-clients      the clients of this node
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
-#    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
+#    bash veiltrium.sh --qr NAME           terminal QR codes of a client's links (main: the first one)
 #    bash veiltrium.sh --traffic           traffic per client (up/down, last seen); --json - for JSON
 #    bash veiltrium.sh --traffic-reset     set all traffic counters to zero
+#
+#  Checks and alerts:
+#    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
+#    bash veiltrium.sh --diagnose          check the node; no changes
 #    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
-#    bash veiltrium.sh --qr NAME           terminal QR codes of a client's links (main: the first one)
+#    bash veiltrium.sh --import-mts FILE   import results of tools/keenetic-vpn-probe.sh (optional)
 #    bash veiltrium.sh --test-alert        send a test message to the alert channels (ALERT_*)
-#    bash veiltrium.sh --check-update      is a newer release out? (no changes)
-#    bash veiltrium.sh --update            download the newest release, check it, run it as an install
+#    bash veiltrium.sh --audit [N]         the last N (default 50) lines of the audit log
+#
+#  The node itself:
 #    bash veiltrium.sh --panel-password    a new web panel password (signs everybody out)
 #    bash veiltrium.sh --export FILE      pack this node (all secrets, encrypted with a passphrase)
 #    bash veiltrium.sh --import FILE       install on a new server with the same secrets (links differ
 #                                                   only by the address)
-#    bash veiltrium.sh --audit [N]         the last N (default 50) lines of the audit log
 #    bash veiltrium.sh --uninstall         remove Veiltrium from this server (asks to type "uninstall";
 #                                                   SSH, fail2ban, updates and sysctl hardening stay)
 #    bash veiltrium.sh --help
@@ -187,6 +195,7 @@ TRAFFIC_FILE="${STATE_DIR}/traffic.json"       # per-client traffic counters (se
 TRAFFIC_LOCK="/run/veiltrium-traffic.lock"     # its own lock: the timer and an install must not write at once
 TXN_DIR="${STATE_DIR}/txn"                     # backups of changes in progress (see txn_begin)
 RECOVER_BIN="/usr/local/sbin/veiltrium-recover"
+CLI_BIN="/usr/local/bin/veiltrium"            # the short command (cli_wrapper_text)
 WATCHDOG_UNIT="veiltrium-watchdog"
 RUN_DIR="/run/veiltrium-trial"
 TRIAL_CONFIG="${RUN_DIR}/xray-trial.json"
@@ -3344,13 +3353,20 @@ Usage: veiltrium COMMAND [NAME|FILE]
   clients          list the clients
   add NAME         add a client (own credentials for all protocols)
   remove NAME      revoke a client
+  reset NAME       new credentials for a client (the old ones stop working)
   show NAME        connection details of a client (main: the first one)
   qr NAME          QR codes of a client's links
+  traffic          traffic per client
   export FILE      pack this node for a new server (encrypted with a passphrase)
   russia           can Russian networks reach this server?
+  audit [N]        the last N lines of the audit log (default 50)
+  test-alert       send a test message to the alert channels
+  check-update     is a newer release out?
+  update           download the newest release and install it
   diagnose         check the node; no changes
   panel-password   a new web panel password
   install          run the installer again (update or repair)
+  uninstall        remove Veiltrium from this server (asks first)
   help             all modes and settings
 
 Any option of the installer also works:  veiltrium --dry-run
@@ -3364,12 +3380,19 @@ case "${cmd}" in
     clients)        set -- --list-clients "$@" ;;
     add)            set -- --add-client "$@" ;;
     remove)         set -- --remove-client "$@" ;;
+    reset)          set -- --reset-client "$@" ;;
     show)           set -- --show-client "$@" ;;
     qr)             set -- --qr "$@" ;;
+    traffic)        set -- --traffic "$@" ;;
     export)         set -- --export "$@" ;;
     russia)         set -- --check-russia "$@" ;;
+    audit)          set -- --audit "$@" ;;
+    test-alert)     set -- --test-alert "$@" ;;
+    check-update)   set -- --check-update "$@" ;;
+    update)         set -- --update "$@" ;;
     diagnose)       set -- --diagnose "$@" ;;
     panel-password) set -- --panel-password "$@" ;;
+    uninstall)      set -- --uninstall "$@" ;;
     install)        set -- "$@" ;;
     help)           set -- --help ;;
     *)              echo "veiltrium: unknown command: ${cmd}" >&2; cli_usage >&2; exit 2 ;;
@@ -3380,7 +3403,7 @@ EOF
 
 # Rewritten only when the text differs (no needless writes on a re-run).
 write_cli_wrapper() {
-    local dest="${1:-/usr/local/bin/veiltrium}"
+    local dest="${1:-${CLI_BIN}}"
     cli_wrapper_text "${PANEL_LIB}/veiltrium.sh" > "${dest}.new"
     if cmp -s "${dest}.new" "${dest}"; then
         rm -f "${dest}.new"
@@ -3714,7 +3737,7 @@ update_main() {
 
 # ---- Audit log ----------------------------------------------------------------
 # One line per action that changes the node (add-client, remove-client, reset-client,
-# export, import, install, uninstall, panel-password): time, source (cli, or panel when
+# export, import, install, uninstall, panel-password, traffic-reset): time, source (cli, or panel when
 # the panel's root helper runs it), action, target, result (ok, rolled-back, failed).
 # Never a secret: the target is a client name or the base name of a file.
 audit_line() {   # $1 = action, $2 = target ("" = none), $3 = ok | rolled-back | failed
@@ -3779,7 +3802,8 @@ audit_show() {   # $1 = how many lines; JSON_OUT set: a JSON array
 UNINSTALL_UNITS=(hysteria-server.service xray.service trusttunnel.service
     veiltrium-panel.service veiltrium-helper.socket veiltrium-helper@.service
     veiltrium-recover.service veiltrium-scanner-block.service veiltrium-scanner-block.timer
-    veiltrium-russia-check.service veiltrium-russia-check.timer)
+    veiltrium-russia-check.service veiltrium-russia-check.timer
+    veiltrium-watch.service veiltrium-watch.timer veiltrium-traffic.service veiltrium-traffic.timer)
 # created by systemd-run (a change in progress, a Reality trial): gone after a stop
 UNINSTALL_RUNTIME_UNITS=(veiltrium-watchdog.timer veiltrium-watchdog.service
     veiltrium-trial-end.timer veiltrium-trial-end.service)
@@ -3793,6 +3817,8 @@ uninstall_paths() {
         "${TRIAL_DROPIN}" "${RUN_DIR}" "${HELPER_SOCK%/*}" \
         /var/lib/systemd/timers/stamp-veiltrium-scanner-block.timer \
         /var/lib/systemd/timers/stamp-veiltrium-russia-check.timer \
+        /var/lib/systemd/timers/stamp-veiltrium-watch.timer /var/lib/systemd/timers/stamp-veiltrium-traffic.timer \
+        "${CLI_BIN}" "${CLI_BIN}.new" "${TRAFFIC_LOCK}" \
         "${HY2_BIN}" "${XRAY_BIN}" "${TT_BIN}" "${PANEL_BIN}" "${SCANNER_BIN}" "${RECOVER_BIN}" \
         "${HY2_DIR}" "${XRAY_DIR}" "${TT_DIR}" "${SCANNER_DIR}" "${PANEL_ETC}" "${STATE_DIR}" "${PANEL_LIB}" \
         /var/lib/hysteria "${VT_ROOT_DIR}" \
@@ -3945,7 +3971,7 @@ uninstall_main() {
     step_mark stop
     for svc in "${UNINSTALL_RUNTIME_UNITS[@]}"; do systemctl stop "${svc}" >/dev/null 2>&1 || true; done
     systemctl stop 'veiltrium-helper@*.service' >/dev/null 2>&1 || true
-    for u in veiltrium-panel.service veiltrium-helper.socket veiltrium-russia-check.timer veiltrium-scanner-block.timer \
+    for u in veiltrium-panel.service veiltrium-helper.socket veiltrium-russia-check.timer veiltrium-scanner-block.timer veiltrium-watch.timer veiltrium-traffic.timer \
              hysteria-server.service xray.service trusttunnel.service veiltrium-recover.service; do
         systemctl disable --now "${u}" >/dev/null 2>&1 || true
     done
@@ -3986,15 +4012,16 @@ Settings (environment variables, saved where noted):
                                     to Globalping probes, also every 6 hours; saved; default 1)
   STANDBY_HOSTS=1.2.3.4[,...] | none   standby servers (max 3, same ports) added to every client
                                     link and config, so clients switch if this address is blocked (saved)
-  ALERT_TG_TOKEN + ALERT_TG_CHAT    Telegram bot token and chat id for alerts (saved in
-                                    /etc/veiltrium/alerts.env, root only; "none" clears)
-  ALERT_WEBHOOK=https://...         a URL that gets a JSON POST on every alert (saved; "none" clears)
-                                    Alerts: a service down, no reach from Russia, a rollback. Outbound only.
-  VT_YES=1                          --update without the question
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
   VT_EXPORT_PASSPHRASE / VT_IMPORT_PASSPHRASE   passphrase for --export / --import without a
                                     terminal (otherwise it is asked for; 12+ characters on export)
+
+Alerts and updates (outbound only; a service down, no reach from Russia, a rollback):
+  ALERT_TG_TOKEN + ALERT_TG_CHAT    Telegram bot token and chat id for alerts (saved in
+                                    /etc/veiltrium/alerts.env, root only; "none" clears)
+  ALERT_WEBHOOK=https://...         a URL that gets a JSON POST on every alert (saved; "none" clears)
+  VT_YES=1                          --update without the question (--uninstall: VT_YES=uninstall)
 
 Ports and protocols:
   HY2_PORT=443                      Hysteria UDP port (an existing node keeps its port)
@@ -4171,7 +4198,7 @@ case "${MODE}" in
         else AUDIT_ACTION="install"; fi ;;
     add-client|remove-client|reset-client) AUDIT_ACTION="${MODE}"; AUDIT_TARGET="${CLIENT_ARG}" ;;
     export) AUDIT_ACTION="export"; AUDIT_TARGET="${EXPORT_FILE##*/}" ;;
-    panel-password|uninstall) AUDIT_ACTION="${MODE}" ;;
+    panel-password|uninstall|traffic-reset) AUDIT_ACTION="${MODE}" ;;
 esac
 
 # =============================================================================

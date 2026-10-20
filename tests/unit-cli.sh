@@ -34,6 +34,14 @@ check "$(W export /root/x.vt)" "ARGS:--export /root/x.vt" "wrapper: export FILE"
 check "$(W russia)" "ARGS:--check-russia" "wrapper: russia"
 check "$(W diagnose)" "ARGS:--diagnose" "wrapper: diagnose"
 check "$(W panel-password)" "ARGS:--panel-password" "wrapper: panel-password"
+check "$(W traffic)" "ARGS:--traffic" "wrapper: traffic"
+check "$(W reset anna)" "ARGS:--reset-client anna" "wrapper: reset NAME"
+check "$(W uninstall)" "ARGS:--uninstall" "wrapper: uninstall"
+check "$(W audit)" "ARGS:--audit" "wrapper: audit"
+check "$(W audit 200)" "ARGS:--audit 200" "wrapper: audit N"
+check "$(W update)" "ARGS:--update" "wrapper: update"
+check "$(W check-update)" "ARGS:--check-update" "wrapper: check-update"
+check "$(W test-alert)" "ARGS:--test-alert" "wrapper: test-alert"
 check "$(W help)" "ARGS:--help" "wrapper: help"
 check "$(W)" "ARGS:--help" "wrapper: no arguments"
 check "$(W install)" "ARGS:" "wrapper: install"
@@ -60,7 +68,7 @@ grep -q "VT_SCRIPT=${TMPD}/lib/veiltrium.sh" "${TMPD}/cli"; check $? 0 "write_cl
 
 # ---- --help: every documented variable is read by the script
 help_text="$(usage 2>&1)"
-vars="HY2_PORT REALITY_PORT TT_PORT REALITY_ENABLE TT_ENABLE REALITY_FP REALITY_RESELECT PUBLIC_IP SCANNER_BLOCK RU_BLOCKLISTS MTS_MAX_AGE_DAYS VT_AUTO_REBOOT AUTO_REBOOT_TIME VT_RECONFIGURE TRIAL_MINUTES REALITY_CANDIDATES REALITY_SNI HY2_SNI HY2_MASQUERADE_URL TT_SNI PANEL_ENABLE PANEL_PORT GLOBALPING STANDBY_HOSTS NODE_NAME VT_EXPORT_PASSPHRASE VT_IMPORT_PASSPHRASE"
+vars="HY2_PORT REALITY_PORT TT_PORT REALITY_ENABLE TT_ENABLE REALITY_FP REALITY_RESELECT PUBLIC_IP SCANNER_BLOCK RU_BLOCKLISTS MTS_MAX_AGE_DAYS VT_AUTO_REBOOT AUTO_REBOOT_TIME VT_RECONFIGURE TRIAL_MINUTES REALITY_CANDIDATES REALITY_SNI HY2_SNI HY2_MASQUERADE_URL TT_SNI PANEL_ENABLE PANEL_PORT GLOBALPING STANDBY_HOSTS NODE_NAME VT_EXPORT_PASSPHRASE VT_IMPORT_PASSPHRASE ALERT_TG_TOKEN ALERT_TG_CHAT ALERT_WEBHOOK VT_YES"
 for v in ${vars}; do
     [[ "${help_text}" == *"${v}"* ]]; check $? 0 "help mentions ${v}"
     grep -qE "\\\$\{${v}[:}]|[\"'(\` ]${v}=|read_passphrase ${v}" veiltrium.sh; check $? 0 "script reads ${v}"
@@ -71,6 +79,12 @@ for v in $(printf '%s\n' "${help_text}" | sed -n 's/^  \([A-Z][A-Z0-9_]*\)[= ].*
 done
 [[ "${help_text}" != *"is in README.md"* ]]; check $? 0 "help no longer sends to README for the list"
 grep -q '^#    bash veiltrium.sh --qr NAME' veiltrium.sh; check $? 0 "modes header (printed by --help) lists --qr"
+# every user-facing mode of the parser is in the modes header (printed by --help), once
+for m in --update --check-update --reselect-reality --dry-run --trial-reality --trial-stop --add-client --remove-client --reset-client \
+         --list-clients --show-client --qr --traffic --traffic-reset --status --diagnose --check-russia --import-mts --test-alert \
+         --audit --panel-password --export --import --uninstall; do
+    check "$(grep -cE -- "^#    bash veiltrium.sh ${m}( |$)" veiltrium.sh)" 1 "help lists ${m} once"
+done
 
 # ---- --qr: the links of main and of an added client (stub qrencode)
 mkdir -p "${TMPD}/bin"

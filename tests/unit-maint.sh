@@ -40,10 +40,15 @@ for u in $(grep -oE '/etc/systemd/system/[A-Za-z0-9@.-]+\.(service|timer|socket)
 done
 check "${miss}" "" "uninstall: every unit file written under /etc/systemd/system is in the path list"
 # the russia-check units are written as veiltrium-russia-check.${u}
-for u in service timer; do
-    in_list "/etc/systemd/system/veiltrium-russia-check.${u}" "${paths}"
-    check $? 0 "uninstall: veiltrium-russia-check.${u} is in the path list"
+for u in veiltrium-russia-check veiltrium-watch veiltrium-traffic; do
+  for t in service timer; do
+    in_list "/etc/systemd/system/${u}.${t}" "${paths}"; check $? 0 "uninstall: ${u}.${t} is in the path list"
+  done
 done
+for u in veiltrium-scanner-block veiltrium-russia-check veiltrium-watch veiltrium-traffic; do
+    in_list "/var/lib/systemd/timers/stamp-${u}.timer" "${paths}"; check $? 0 "uninstall: the ${u} timer stamp is removed"
+done
+for p in "${CLI_BIN}" "${TRAFFIC_LOCK}"; do in_list "${p}" "${paths}"; check $? 0 "uninstall: ${p} is in the path list"; done
 # the runtime ones (systemd-run, trial) are stopped and their files removed
 for u in veiltrium-watchdog.timer veiltrium-watchdog.service veiltrium-trial-end.timer veiltrium-trial-end.service; do
     [[ " ${UNINSTALL_RUNTIME_UNITS[*]} " == *" ${u} "* ]]; check $? 0 "uninstall: runtime unit ${u} is stopped"

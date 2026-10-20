@@ -64,6 +64,10 @@ if have jq && have openssl; then
     run bash tests/unit-migrate.sh
     run bash tests/unit-standby.sh
     run bash tests/unit-stall.sh
+    run bash tests/unit-cli.sh
+    run bash tests/unit-alerts.sh
+    run bash tests/unit-maint.sh
+    run bash tests/unit-traffic.sh
 else
     SKIPPED+=("unit tests (need jq and openssl)")
 fi
