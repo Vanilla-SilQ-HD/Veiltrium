@@ -1,3 +1,5 @@
+English | [Русский](CHANGELOG.ru.md)
+
 # Changelog
 
 All notable changes to Veiltrium are recorded here. The format follows
@@ -16,7 +18,7 @@ Web panel: 0.1.6
 ### Added
 - Per-client base64 subscription and sing-box profile (as files and as JSON), a "Phones and
   apps" section in the client files, and a subscription QR code.
-- The panel gets an import-to-apps section (subscription, sing-box profile, app hints); standby
+- The panel gets an "Import to apps" section (subscription, sing-box profile, app hints); standby
   links are included in the downloaded `.txt`.
 
 ### Changed
@@ -87,7 +89,7 @@ Web panel: 0.1.3
   Output is unchanged without standby servers.
 - `--export` and `--import` move a node to a new server with the same secrets, through an
   encrypted archive that is validated before anything is placed.
-- A "stalled" home-network status (the 16-20 KB connection freeze seen on some Russian
+- A `stalled` home-network status (the 16-20 KB connection freeze seen on some Russian
   networks) and a check from Russia every six hours.
 
 ### Upgrade notes
@@ -154,7 +156,7 @@ Includes the changes of 2026-10-13.2, which was never tagged.
 - `--panel-password` sets a new panel password and signs everyone out.
 - Check from Russia: Globalping probes in Russian networks (MTS, Rostelecom and others) ping
   the server and connect to its TCP ports, at the end of the install, in `--diagnose`, with
-  `--check-russia` and the panel's Check now. `GLOBALPING=0` (saved) turns it off.
+  `--check-russia` and the panel's "Check now" button. `GLOBALPING=0` (saved) turns it off.
 - `--status` and the report show the result; the panel Overview gets a "From Russia" tile.
 - Server names on the RKN block list (itdoginfo `Categories/block.lst`) are never chosen for
   Reality, Hysteria or TrustTunnel; `--diagnose` warns about one in use.
@@ -169,7 +171,7 @@ Includes the changes of 2026-10-13.2, which was never tagged.
 
 ### Fixed
 - A move from `hy2-secure-install.sh` that is cut off leaves a loadable firewall, so a reboot
-  mid-move still boots a filtered server.
+  in the middle of the move still boots a filtered server.
 - The move also removes the old scanner timer's systemd stamp, leftover temp folders, backups
   and stray files of the old version.
 
@@ -199,8 +201,8 @@ blocking and transactional changes with automatic rollback.
 
 The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUMS).
 
-### [0.1.6] - 2026-10-20
-- Import-to-apps section: subscription, sing-box profile and app hints.
+### [0.1.6] - 2026-10-21
+- "Import to apps" section: subscription, sing-box profile and app hints.
 - Standby links in the downloaded client `.txt`.
 
 ### [0.1.5] - 2026-10-20
@@ -214,7 +216,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 
 ### [0.1.3] - 2026-10-20
 - A busy installer lock gives HTTP 503 instead of a long hang; unknown API paths give 404.
-- Check now reports when Globalping did not answer; the selected client is reloaded after changes.
+- "Check now" reports when Globalping did not answer; the selected client is reloaded after changes.
 - Graceful shutdown waits for requests in flight.
 
 ### [0.1.2] - 2026-10-13
@@ -222,7 +224,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 - A wrong password is reported as such; lockout counting is exact.
 
 ### [0.1.1] - 2026-10-13
-- "From Russia" tile and Check now button.
+- "From Russia" tile and "Check now" button.
 
 ### [0.1.0] - 2026-10-13
 - First release: Overview and Clients (links, QR codes, AWG Manager JSON, add, revoke), loopback

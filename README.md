@@ -15,7 +15,7 @@ Automated, security-focused deployment of Hysteria2, VLESS Reality and TrustTunn
 
 </div>
 
-Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved. Every change to a working node is checked with a real client and rolled back automatically if it fails, and the installer checks from Russian networks whether the server is reachable at all.
+Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved. Every change to a working node is checked with a real client and rolled back automatically if it fails. The installer also checks from Russian networks whether the server is reachable at all.
 
 The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol **Vt**).
 
@@ -57,7 +57,7 @@ veiltrium qr anna        # QR codes of the client's links in the terminal
 
 **Protocols and TLS identities**
 
-- Hysteria 2, VLESS Reality (Vision) and TrustTunnel from one run; each can be turned off (`REALITY_ENABLE=0`, `TT_ENABLE=0`).
+- Hysteria 2, VLESS Reality (Vision) and TrustTunnel from one run; Reality and TrustTunnel can be turned off (`REALITY_ENABLE=0`, `TT_ENABLE=0`).
 - Separate TLS identities: each protocol has its own server name and certificate, kept between runs. Changing one never touches the others.
 - Measured Reality site selection: candidates are checked directly and with a real Reality client on an isolated loopback instance. The choice comes from a reproducible score, with no random picks and no rotation on re-runs.
 - Client apps show the node as `Veiltrium-<country>` (for example `Veiltrium-PL`).
@@ -77,15 +77,15 @@ veiltrium qr anna        # QR codes of the client's links in the terminal
 
 **Censorship awareness**
 
-- A server name on the RKN block list is never chosen for Reality, Hysteria or TrustTunnel.
+- A server name on the block list of Roskomnadzor (RKN) is never chosen for Reality, Hysteria 2 or TrustTunnel.
 - [Globalping](https://globalping.io) probes in Russian networks (MTS, Rostelecom and others) check that the server's address answers: at install time, on request, and automatically every 6 hours.
-- TSPU stall detection: the optional router probe reports `stalled` when a tunnel connects but transfers freeze after 16-20 KB.
+- TSPU stall detection: the optional router probe reports `stalled` when a tunnel connects but the transfer freezes after 16-20 KB (the cut-off of TSPU, the DPI equipment of Russian providers).
 - Standby servers: up to 3 more addresses in every link and config, so phones and the router switch by themselves if one address is blocked.
 - Export and import move a node with all its secrets to a new VPS; clients change only the address.
 
 **Clients**
 
-- `main` plus any number of added clients, each with its own Hysteria user and password, VLESS UUID and TrustTunnel login; revoke or reset one without touching the others.
+- `main` plus any number of added clients, each with its own Hysteria user and password, VLESS UUID and TrustTunnel login and password; revoke or reset one without touching the others.
 - Per-client traffic limit, expiry date, periodic reset and a manual disable switch, enforced by a timer.
 - Traffic counters per client and protocol, with no extra software in the data path.
 - For phones: a base64 subscription and a complete sing-box profile for every client, plus terminal QR codes.
@@ -99,7 +99,7 @@ veiltrium qr anna        # QR codes of the client's links in the terminal
 
 ## How it compares
 
-A comparison with typical one-click VPN install scripts (generic, no project is named).
+How Veiltrium compares with typical one-click VPN install scripts (generic; no project is named).
 
 | | Typical one-click script | Veiltrium |
 |---|---|---|
@@ -182,7 +182,7 @@ The installer writes the short command `/usr/local/bin/veiltrium`, which runs th
 | `veiltrium uninstall` | `--uninstall` | remove Veiltrium |
 | `veiltrium install` | (no option) | the same as re-running the installer |
 
-Options without a short form: `--reselect-reality`, `--dry-run`, `--trial-reality`, `--trial-stop`, `--enforce`, `--traffic-reset`, `--import`, `--import-mts`.
+Options without a short form: `--reselect-reality`, `--dry-run`, `--trial-reality`, `--trial-minutes`, `--trial-stop`, `--enforce`, `--traffic-reset`, `--import`, `--import-mts`.
 
 **Web panel.** Every node gets a small panel on `127.0.0.1:2096`. Open the tunnel and browse to `http://localhost:2096/`:
 
@@ -190,11 +190,11 @@ Options without a short form: `--reselect-reality`, `--dry-run`, `--trial-realit
 ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP
 ```
 
-The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt`. Details are in the [reference](#reference) below.
+The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt`. The details are in the web panel entry of the [reference](#reference) below.
 
 ## Phones and apps
 
-Every client gets two extra files next to its details (`/root/veiltrium/client.*` for `main`, `/root/veiltrium/clients/NAME.*` for the others, root only, none for a disabled client). They are also in `--show-client NAME --json -` as `subscription_base64` and `singbox_profile`, and the panel offers them in its import section.
+Every client gets two extra files next to its details (`/root/veiltrium/client.*` for `main`, `/root/veiltrium/clients/NAME.*` for the others; root only; a disabled client has none). They are also in `--show-client NAME --json -` as `subscription_base64` and `singbox_profile`, and the panel offers them in its import section.
 
 | File | What it is | For |
 |---|---|---|
@@ -211,7 +211,7 @@ Every client gets two extra files next to its details (`/root/veiltrium/client.*
 - **Hysteria 2.** AWG Manager deliberately drops `pinSHA256` from `hysteria2://` links and imports them with `insecure=true`, i.e. **without any certificate check**. Instead, use section 6 of `/root/veiltrium/client.txt`: a sing-box JSON block with `certificate_public_key_sha256`, imported as a server group (sing-box JSON). The router's sing-box build (`1.15.0-alpha.12-awgm.33`) enforces the pin, including over QUIC; CI checks this with the same build. `keenetic-vpn-probe.sh --check-awg` shows whether the router's config actually pins the key.
 - **VLESS Reality.** The `vless://` link imports as is (`fp=chrome`, `flow=xtls-rprx-vision`).
 - **TrustTunnel.** The `tt://` link carries the certificate. AWG Manager verifies it, but uses HTTP/2 only.
-- **sing-box clients in general.** Use the JSON outbounds from the client file. `certificate_public_key_sha256` is the base64 SHA-256 of the public key (SPKI), which is not the same value as Hysteria's hex `pinSHA256`.
+- **Other sing-box clients.** Use the JSON outbounds from the client file. `certificate_public_key_sha256` is the base64 SHA-256 of the public key (SPKI), which is not the same value as Hysteria's hex `pinSHA256`.
 
 </details>
 
@@ -296,7 +296,7 @@ Without a domain, Hysteria 2 and TrustTunnel use self-signed certificates.
 
 ## Reference
 
-Long reference material, folded away.
+Longer reference material; every topic is collapsed below.
 
 <details>
 <summary>Installing on a fresh VPS</summary>
@@ -355,7 +355,7 @@ A plain re-run:
 - keys, passwords, certificates, clients and links stay as they are; the three proxy services restart once (the comments in their configs change), so connected clients reconnect within seconds;
 - the old files are removed at the end of the run. Results of an older `keenetic-vpn-probe.sh` are still accepted.
 
-Maintenance modes take the same lock as the installer; the first three change nothing on the server.
+Maintenance modes take the installer's lock and wait up to 90 seconds for it. `--diagnose` and `--dry-run` change nothing on the server.
 
 ```bash
 bash /root/veiltrium.sh --diagnose            # check the node, change nothing
@@ -370,7 +370,7 @@ bash /root/veiltrium.sh --help
 <details>
 <summary>Clients, reset, limits and expiry</summary>
 
-The first client, `main`, is created by the installer (`/root/veiltrium/client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID and a TrustTunnel login. Revoking one never affects the others.
+The first client, `main`, is created by the installer (`/root/veiltrium/client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID, and a TrustTunnel login and password. Revoking one never affects the others.
 
 ```bash
 bash /root/veiltrium.sh --add-client anna      # prints the details, saves /root/veiltrium/clients/anna.txt
@@ -543,10 +543,10 @@ bash /root/veiltrium.sh --trial-stop
 <details>
 <summary>What Russia sees: RKN list, Globalping, 6-hour check</summary>
 
-A check from a European server says nothing about a home provider in Russia. Two things the installer checks by itself:
+A check from a European server says nothing about a home provider in Russia. The installer therefore checks the following by itself:
 
 - **Server names on the RKN block list.** The list is downloaded at every site choice (`RU_BLOCKLISTS`, by default itdoginfo's curated `Categories/block.lst`: RKN blocks only, without the sites that geoblock Russians themselves, which do not matter for Reality). A candidate on it is never chosen as the Reality site or as a Hysteria / TrustTunnel name; `--diagnose` warns if a name in use is on it.
-- **Is the server's address reachable from Russia?** At the end of every install, in `--diagnose`, with `--check-russia` and with the panel's *Check now*, [Globalping](https://globalping.io) probes in Russian networks (two at MTS, two at Rostelecom, four more anywhere in Russia) ping the address and connect to the Reality and TrustTunnel TCP ports. No answer from any of them means the address is blocked: ask the hoster for another one. The result is kept in `/var/lib/veiltrium/russia.json` and shown in the panel.
+- **Is the server's address reachable from Russia?** At the end of every install, in `--diagnose`, with `--check-russia` and with the panel's *Check now* button, [Globalping](https://globalping.io) probes in Russian networks (two at MTS, two at Rostelecom, four more anywhere in Russia) ping the address and connect to the Reality and TrustTunnel TCP ports. No answer from any of them means the address is blocked: ask the hoster for another one. The result is kept in `/var/lib/veiltrium/russia.json` and shown in the panel.
 - **The check repeats every 6 hours** (`veiltrium-russia-check.timer`, started 20 minutes after boot, with a random delay; output in the journal) while `GLOBALPING` is on. `russia.json` keeps `bad_streak`, the number of checks in a row that were `partly` or `blocked` (a `reachable` check resets it; a check Globalping did not answer changes nothing). From 2 in a row, `--status` warns that the address is not reachable from Russia: consider moving to a new server or switching clients to a standby address.
 - The server's address goes to Globalping's public measurement service. `GLOBALPING=0` (saved) turns the automatic check off; `--check-russia` still runs on request.
 - Neither check sees whether DPI lets a protocol through: that shows only in a real client (for example, the tunnel's status in AWG Manager).
@@ -560,7 +560,7 @@ A check from a European server says nothing about a home provider in Russia. Two
 
 Home-network status values on the server: `ok`, `fail`, `degraded`, `stalled`, `route_unverified`, `stale` (older than 14 days) and `untested`. `stalled` means the tunnel connects, but transfers freeze after a few KB (the TSPU 16-20 KB cut-off): the probe got only part of the payload download. Such a result is a penalty in the Reality site score, like `degraded`.
 
-A result measured from a European VPS says nothing about reachability from a home provider. `keenetic-vpn-probe.sh` runs on the router (POSIX sh, BusyBox) and tests each server through the physical WAN. It uses temporary clients with a local SOCKS port only: no TUN, no routes, no firewall changes, and AWG Manager keeps running.
+The script runs on the router (POSIX sh, BusyBox) and tests each server through the physical WAN. It uses temporary clients with a local SOCKS port only: no TUN, no routes, no firewall changes, and AWG Manager keeps running.
 
 The examples use the Entware SSH server on the router (often port 222); adjust address and port.
 
@@ -607,7 +607,7 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 Two levels:
 
 - **FAST** (`tests/fast.sh`, workflow `fast.yml`, on every push, seconds): `bash -n`, shellcheck, `dash` and BusyBox syntax for the probe, unit tests of scoring, choice, home-network records, client configs and links, and HMAC (RFC 4231 vectors and agreement with OpenSSL for both the server and the BusyBox implementation).
-- **FULL** (workflow `e2e.yml`, about 30 minutes; manual only, on any branch including `main`, before merge or release). It runs on Ubuntu 26.04 and 24.04 and covers a fresh install with the firewall checked from a separate network namespace, real clients of all three protocols, the exact router sing-box build, fail2ban bans, reboot simulation, re-runs with live connections, added clients, the web panel, every rollback path, local test sites for Reality selection, the Keenetic probe under BusyBox and an upgrade job from the release in use.
+- **FULL** (workflow `e2e.yml`, about 30 minutes; manual only, on any branch including `main`, before merge or release). It runs on Ubuntu 26.04 and 24.04 and covers a fresh install with the firewall checked from a separate network namespace, real clients of all three protocols, the exact router sing-box build, fail2ban bans, reboot simulation, re-runs with live connections, added clients, the web panel, every rollback path, local test sites for Reality selection, the Keenetic probe under BusyBox and an upgrade job from an earlier release.
 
 <details>
 <summary>What FULL covers</summary>
@@ -623,7 +623,7 @@ Two levels:
 - rollback: SIGINT, SIGTERM, SIGKILL with the watchdog, a simulated power loss, systemd start failures;
 - local test sites for Reality selection (invalid certificate, no HTTP/2, a dead CDN address, timeouts, NXDOMAIN);
 - the Keenetic probe under BusyBox with policy routing, redirects, NAT and a VPN given as the WAN;
-- a separate upgrade job from the release in use: it must change nothing in the secrets and links, and its first added client switches Hysteria to per-client passwords.
+- a separate upgrade job from an earlier release: it must change nothing in the secrets and links, and its first added client switches Hysteria to per-client passwords.
 
 CI has no Russian home network: everything about reachability from a home provider is a simulation there, and needs the probe on a real router.
 
@@ -639,7 +639,7 @@ CI has no Russian home network: everything about reachability from a home provid
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md).
+See [CHANGELOG.md](CHANGELOG.md). A Russian version is in [CHANGELOG.ru.md](CHANGELOG.ru.md).
 
 ## License
 
