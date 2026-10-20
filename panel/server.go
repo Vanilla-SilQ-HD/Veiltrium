@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +64,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/clients", s.authed(s.addClient))
 	mux.HandleFunc("DELETE /api/clients/{name}", s.authed(s.removeClient))
 	mux.HandleFunc("POST /api/clients/{name}/reset", s.authed(s.resetClient))
+	mux.HandleFunc("POST /api/clients/{name}/limits", s.authed(s.setLimits))
+	mux.HandleFunc("POST /api/clients/{name}/disable", s.authed(s.disableClient))
+	mux.HandleFunc("POST /api/clients/{name}/enable", s.authed(s.enableClient))
 	mux.HandleFunc("GET /api/audit", s.authed(s.simple("audit")))
 	mux.Handle("GET /", s.staticHandler())
 	return s.guard(mux)
@@ -262,6 +267,8 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, verb, arg string) {
 // another change is running).
 const helperBusyCode = 75
 
+var digitsRE = regexp.MustCompile(`^[0-9]{1,16}$`)
+
 func busyText(res *HelperResult) string {
 	for _, l := range res.Log {
 		if strings.Contains(l, "ERROR: ") {
@@ -288,6 +295,58 @@ func (s *Server) resetClient(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) removeClient(w http.ResponseWriter, r *http.Request) {
 	s.change(w, r, "remove-client", r.PathValue("name"))
+}
+
+// setLimits: {"limit": bytes|null, "expires": "YYYY-MM-DD"|null, "reset": "none|daily|weekly|monthly"};
+// all three keys are required, so a missing one never clears a setting by accident.
+func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) {
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&raw); err != nil {
+		writeError(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	var body struct {
+		Limit   *json.Number
+		Expires *string
+		Reset   *string
+	}
+	for _, k := range []string{"limit", "expires", "reset"} {
+		if _, ok := raw[k]; !ok {
+			writeError(w, http.StatusBadRequest, "bad request: "+k+" is missing")
+			return
+		}
+	}
+	dec := func(k string, v any) bool { return json.Unmarshal(raw[k], v) == nil }
+	if !dec("limit", &body.Limit) || !dec("expires", &body.Expires) || !dec("reset", &body.Reset) || body.Reset == nil {
+		writeError(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	var limit *int64
+	if body.Limit != nil {
+		if !digitsRE.MatchString(body.Limit.String()) {
+			writeError(w, http.StatusBadRequest, "the limit is a whole number of bytes (1-16 digits) or null")
+			return
+		}
+		n, err := strconv.ParseInt(body.Limit.String(), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad limit")
+			return
+		}
+		limit = &n
+	}
+	exp := ""
+	if body.Expires != nil {
+		exp = *body.Expires
+	}
+	s.change(w, r, "set-client", SetClientArg(r.PathValue("name"), limit, exp, *body.Reset))
+}
+
+func (s *Server) disableClient(w http.ResponseWriter, r *http.Request) {
+	s.change(w, r, "disable-client", r.PathValue("name"))
+}
+
+func (s *Server) enableClient(w http.ResponseWriter, r *http.Request) {
+	s.change(w, r, "enable-client", r.PathValue("name"))
 }
 
 // change streams a client change as NDJSON: {"step":…} lines, then {"result":…} or {"error":…}.

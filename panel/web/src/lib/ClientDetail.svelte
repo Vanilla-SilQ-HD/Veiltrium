@@ -4,9 +4,11 @@
   import CopyField from './CopyField.svelte';
   import { t } from './i18n.svelte.js';
   import { flash } from './toast.svelte.js';
-  import { bytes, ago } from './format.js';
+  import StateBadge from './StateBadge.svelte';
+  import LimitUsage from './LimitUsage.svelte';
+  import { bytes, bytesDec, ago, dateText } from './format.js';
 
-  let { c, onRevoke, onReset } = $props(); // c: a veiltrium-client/1 document
+  let { c, onRevoke, onReset, onLimits, onDisable, onEnable } = $props(); // c: a veiltrium-client/1 document
   let reveal = $state(false);
   let qrKind = $state('vless');
 
@@ -74,6 +76,18 @@
         <Icon name="download" size={16} /><span>{t('cl.download')}</span>
       </button>
       {#if !c.main}
+        <button type="button" onclick={onLimits} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3 text-fg">
+          <Icon name="gauge" size={16} /><span>{t('lim.edit')}</span>
+        </button>
+        {#if c.state === 'disabled'}
+          <button type="button" onclick={onEnable} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3 text-fg">
+            <Icon name="play" size={16} /><span>{t('lim.enable')}</span>
+          </button>
+        {:else}
+          <button type="button" onclick={onDisable} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3 text-fg">
+            <Icon name="pause" size={16} /><span>{t('lim.disable')}</span>
+          </button>
+        {/if}
         <button type="button" onclick={onReset} class="flex h-10 items-center gap-2 rounded-lg border border-line px-3 text-fg">
           <Icon name="refresh" size={16} /><span>{t('cl.reset')}</span>
         </button>
@@ -83,6 +97,36 @@
       {/if}
     </div>
   </div>
+
+  {#if !c.main}
+    <div class="flex flex-col gap-2 text-[13px]">
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] uppercase tracking-wider text-muted">{t('lim.title')}</span>
+        <StateBadge {c} />
+      </div>
+      {#if c.state === 'disabled'}
+        <span class="text-xs text-warn">{t('lim.why.' + (['quota', 'expired'].includes(c.reason) ? c.reason : 'manual'))}</span>
+      {/if}
+      {#if !c.limit && !c.expires && c.reset === 'none'}
+        <span class="text-muted">{t('lim.noLimits')}</span>
+      {:else}
+        <div class="flex flex-wrap gap-x-8 gap-y-2">
+          <span class="flex flex-col"><span class="text-xs text-muted">{t('lim.fieldLimit')}</span>
+            <span>{c.limit ? bytesDec(c.limit) : t('lim.unlimited')}</span></span>
+          <span class="flex flex-col"><span class="text-xs text-muted">{t('lim.fieldExpiry')}</span>
+            <span>{c.expires ? dateText(c.expires) : t('lim.never')}</span></span>
+          <span class="flex flex-col"><span class="text-xs text-muted">{t('lim.fieldReset')}</span>
+            <span>{t('lim.reset.' + (c.reset ?? 'none'))}</span></span>
+        </div>
+        {#if c.period_bytes !== null && c.period_bytes !== undefined}
+          <div class="flex max-w-sm flex-col gap-1">
+            <span class="text-xs text-muted">{c.period_start ? t('lim.periodSince', { used: bytesDec(c.period_bytes), date: dateText(c.period_start) }) : t('lim.periodUsed', { used: bytesDec(c.period_bytes) })}</span>
+            <LimitUsage {c} />
+          </div>
+        {/if}
+      {/if}
+    </div>
+  {/if}
 
   <div class="flex flex-col gap-0.5 text-[13px]">
     <span class="text-[11px] uppercase tracking-wider text-muted">{t('cl.usage')}</span>

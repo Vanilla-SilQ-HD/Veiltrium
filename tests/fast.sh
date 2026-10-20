@@ -49,7 +49,7 @@ if have go && have npm; then
     panel_check() {
         local tmp
         tmp="$(mktemp -d)"
-        bash panel/build.sh "${tmp}/veiltrium-panel" amd64 dev >/dev/null             && (cd panel && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)             && test "$("${tmp}/veiltrium-panel" version)" = dev
+        bash panel/build.sh "${tmp}/veiltrium-panel" amd64 dev >/dev/null             && (cd panel && test -z "$(gofmt -l .)" && go vet ./... && go test -count=1 ./...)             && node panel/web/scripts/check-locales.mjs             && test "$("${tmp}/veiltrium-panel" version)" = dev
         local rc=$?
         rm -rf "${tmp}"
         return "${rc}"

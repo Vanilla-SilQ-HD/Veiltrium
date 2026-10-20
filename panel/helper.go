@@ -22,9 +22,12 @@ import (
 //	::exit <code>   the installer's exit code, always last
 var (
 	helperVerbs = map[string]bool{"status": false, "list-clients": false, "check-russia": false,
-		"show-client": true, "add-client": true, "remove-client": true, "reset-client": true, "audit": false}
+		"show-client": true, "add-client": true, "remove-client": true, "reset-client": true, "disable-client": true, "enable-client": true,
+		"set-client": true, "audit": false}
 	clientNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 	stepRE       = regexp.MustCompile(`^[a-z-]{1,32}$`)
+	// the whole argument of set-client, the same rule as HELPER_SET_RE in veiltrium.sh
+	setArgRE = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]{0,31}) limit=(none|[0-9]{1,16}) expires=(none|[0-9]{4}-[0-9]{2}-[0-9]{2}) reset=(none|daily|weekly|monthly)$`)
 )
 
 // HelperEvent is one reply line.
@@ -46,6 +49,18 @@ type Helper struct {
 	Socket string
 }
 
+// SetClientArg builds the argument of set-client: "NAME limit=<bytes|none> expires=<date|none> reset=<mode>".
+func SetClientArg(name string, limit *int64, expires, reset string) string {
+	l := "none"
+	if limit != nil {
+		l = strconv.FormatInt(*limit, 10)
+	}
+	if expires == "" {
+		expires = "none"
+	}
+	return name + " limit=" + l + " expires=" + expires + " reset=" + reset
+}
+
 // ValidRequest checks a verb and its argument before anything is sent.
 func ValidRequest(verb, arg string) error {
 	needsArg, ok := helperVerbs[verb]
@@ -55,11 +70,29 @@ func ValidRequest(verb, arg string) error {
 	if needsArg != (arg != "") {
 		return errors.New("wrong arguments")
 	}
+	if verb == "set-client" {
+		m := setArgRE.FindStringSubmatch(arg)
+		if m == nil {
+			return errors.New("bad limits: a size in bytes or none, a date YYYY-MM-DD or none, and none, daily, weekly or monthly")
+		}
+		if m[1] == "main" {
+			return errors.New("the main client has no limits")
+		}
+		if m[3] != "none" {
+			if _, err := time.Parse("2006-01-02", m[3]); err != nil {
+				return errors.New("the expiry is not a real date (YYYY-MM-DD)")
+			}
+		}
+		return nil
+	}
 	if arg != "" && arg != "main" && !clientNameRE.MatchString(arg) {
 		return errors.New("a client name is 1-32 characters: a-z, 0-9, _ and -")
 	}
-	if (verb == "add-client" || verb == "remove-client" || verb == "reset-client") && arg == "main" {
-		return errors.New("the main client cannot be added, removed or reset")
+	switch verb {
+	case "add-client", "remove-client", "reset-client", "disable-client", "enable-client":
+		if arg == "main" {
+			return errors.New("the main client cannot be added, removed, reset, disabled or enabled")
+		}
 	}
 	return nil
 }

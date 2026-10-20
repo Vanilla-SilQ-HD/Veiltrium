@@ -45,7 +45,10 @@ func TestHashVerify(t *testing.T) {
 
 func TestValidRequest(t *testing.T) {
 	ok := [][2]string{{"status", ""}, {"list-clients", ""}, {"check-russia", ""}, {"show-client", "main"}, {"show-client", "anna"},
-		{"add-client", "a_b-1"}, {"remove-client", "x"}, {"reset-client", "bob"}, {"audit", ""}}
+		{"add-client", "a_b-1"}, {"remove-client", "x"}, {"reset-client", "bob"}, {"audit", ""},
+		{"disable-client", "bob"}, {"enable-client", "bob"},
+		{"set-client", "bob limit=53687091200 expires=2026-12-31 reset=monthly"}, {"set-client", "a_b-1 limit=none expires=none reset=none"},
+		{"set-client", "bob limit=1 expires=2028-02-29 reset=daily"}, {"set-client", "bob limit=9999999999999999 expires=none reset=weekly"}}
 	for _, c := range ok {
 		if err := ValidRequest(c[0], c[1]); err != nil {
 			t.Errorf("%v rejected: %v", c, err)
@@ -53,7 +56,17 @@ func TestValidRequest(t *testing.T) {
 	}
 	bad := [][2]string{{"reboot", ""}, {"status", "x"}, {"show-client", ""}, {"show-client", "../x"},
 		{"add-client", "Anna"}, {"add-client", "main"}, {"remove-client", "main"}, {"reset-client", "main"}, {"reset-client", "Bob"}, {"reset-client", "a;id"}, {"reset-client", ""}, {"audit", "5"}, {"add-client", "a b"},
-		{"add-client", "a;id"}, {"add-client", strings.Repeat("a", 33)}, {"show-client", "anna\nstatus"}, {"check-russia", "x"}}
+		{"add-client", "a;id"}, {"add-client", strings.Repeat("a", 33)}, {"show-client", "anna\nstatus"}, {"check-russia", "x"},
+		{"disable-client", "main"}, {"enable-client", "main"}, {"disable-client", ""}, {"disable-client", "Bob"}, {"enable-client", "a b"},
+		{"set-client", ""}, {"set-client", "bob"}, {"set-client", "main limit=1 expires=none reset=none"},
+		{"set-client", "bob limit=1 expires=none reset=none\nadd-client x"}, {"set-client", "bob limit=1 expires=none reset=none "},
+		{"set-client", "bob  limit=1 expires=none reset=none"}, {"set-client", "bob limit=-5 expires=none reset=none"},
+		{"set-client", "bob limit=12345678901234567 expires=none reset=none"}, {"set-client", "bob limit= expires=none reset=none"},
+		{"set-client", "bob limit=1.5 expires=none reset=none"}, {"set-client", "bob limit=0x10 expires=none reset=none"},
+		{"set-client", "bob limit=1 expires=2027-02-30 reset=none"}, {"set-client", "bob limit=1 expires=2026-13-01 reset=none"},
+		{"set-client", "bob limit=1 expires=31-12-2026 reset=none"}, {"set-client", "bob limit=1 expires=none reset=hourly"},
+		{"set-client", "bob expires=none limit=1 reset=none"}, {"set-client", "bob limit=1 expires=none"},
+		{"set-client", "Bob limit=1 expires=none reset=none"}, {"set-client", "bob;id limit=1 expires=none reset=none"}}
 	for _, c := range bad {
 		if err := ValidRequest(c[0], c[1]); err == nil {
 			t.Errorf("%q accepted", c)
@@ -193,6 +206,8 @@ func TestAPI(t *testing.T) {
 			return "::step write\n::step restart\n::log ok\n::json {\"ok\":true}\n::exit 0\n"
 		case req == "audit":
 			return "::json [{\"time\":\"2026-10-20T10:00:00Z\",\"source\":\"cli\",\"action\":\"install\",\"target\":\"-\",\"result\":\"ok\"}]\n::exit 0\n"
+		case strings.HasPrefix(req, "set-client bob ") || req == "disable-client bob" || req == "enable-client bob":
+			return "::step write\n::json {\"ok\":true}\n::exit 0\n"
 		case req == "reset-client bob":
 			return "::step write\n::json {\"ok\":true}\n::exit 0\n"
 		case strings.HasPrefix(req, "remove-client"):
@@ -279,6 +294,52 @@ func TestAPI(t *testing.T) {
 	}
 	if r := do(t, c, "POST", u+"/api/clients/main/reset", "", h); r.StatusCode != 400 {
 		t.Fatalf("resetting main: %d", r.StatusCode)
+	}
+	// limits, disable and enable: the same guard, streamed like the other changes
+	lim := `{"limit":53687091200,"expires":"2026-12-31","reset":"monthly"}`
+	for _, p := range []string{"limits", "disable", "enable"} {
+		if r := do(t, c, "POST", u+"/api/clients/bob/"+p, lim, map[string]string{"Cookie": cookie["Cookie"], "Origin": u}); r.StatusCode != 403 {
+			t.Fatalf("%s without the CSRF header: %d", p, r.StatusCode)
+		}
+		if r := do(t, c, "POST", u+"/api/clients/bob/"+p, lim, map[string]string{csrfHeader: "1", "Origin": u}); r.StatusCode != 401 {
+			t.Fatalf("%s without a session: %d", p, r.StatusCode)
+		}
+		if r := do(t, c, "POST", u+"/api/clients/main/"+p, lim, h); r.StatusCode != 400 {
+			t.Fatalf("%s for main: %d", p, r.StatusCode)
+		}
+	}
+	for _, c2 := range [][2]string{
+		{"limits", lim}, {"disable", ""}, {"enable", ""},
+		{"limits", `{"limit":null,"expires":null,"reset":"none"}`},
+	} {
+		r = do(t, c, "POST", u+"/api/clients/bob/"+c2[0], c2[1], h)
+		b, _ = io.ReadAll(r.Body)
+		if ls := strings.Split(strings.TrimSpace(string(b)), "\n"); len(ls) != 2 || ls[0] != `{"step":"write"}` {
+			t.Fatalf("%s stream: %q", c2[0], b)
+		}
+	}
+	want := []string{"set-client bob limit=53687091200 expires=2026-12-31 reset=monthly", "disable-client bob", "enable-client bob",
+		"set-client bob limit=none expires=none reset=none"}
+	if got := (*reqs)[len(*reqs)-4:]; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("helper requests: %q", got)
+	}
+	before = len(*reqs)
+	for _, body := range []string{
+		`{"limit":-5,"expires":null,"reset":"none"}`, `{"limit":1.5,"expires":null,"reset":"none"}`, `{"limit":12345678901234567,"expires":null,"reset":"none"}`,
+		`{"limit":1e3,"expires":null,"reset":"none"}`, `{"limit":"1 expires=none","expires":null,"reset":"none"}`,
+		`{"limit":1,"expires":"2027-02-30","reset":"none"}`, `{"limit":1,"expires":"2026-12-31\nadd-client x","reset":"none"}`,
+		`{"limit":1,"expires":null,"reset":"hourly"}`, `{"limit":1,"expires":null,"reset":null}`,
+		`{"expires":null,"reset":"none"}`, `{"limit":1,"reset":"none"}`, `{"limit":1,"expires":null}`, `[]`, `{`, ``,
+	} {
+		if r := do(t, c, "POST", u+"/api/clients/bob/limits", body, h); r.StatusCode != 400 {
+			t.Fatalf("limits body %q: %d", body, r.StatusCode)
+		}
+	}
+	if r := do(t, c, "POST", u+"/api/clients/bob%20limit=1/limits", lim, h); r.StatusCode != 400 {
+		t.Fatalf("limits with a bad name: %d", r.StatusCode)
+	}
+	if len(*reqs) != before {
+		t.Fatalf("a refused limits request reached the helper: %q", (*reqs)[before:])
 	}
 	r = do(t, c, "GET", u+"/api/audit", "", cookie)
 	b, _ = io.ReadAll(r.Body)

@@ -28,6 +28,9 @@ export const api = {
   addClient: (name, onStep) => stream('POST', '/clients', { name }, onStep),
   removeClient: (name, onStep) => stream('DELETE', '/clients/' + encodeURIComponent(name), undefined, onStep),
   resetClient: (name, onStep) => stream('POST', '/clients/' + encodeURIComponent(name) + '/reset', undefined, onStep),
+  setClientLimits: (name, body, onStep) => stream('POST', '/clients/' + encodeURIComponent(name) + '/limits', body, onStep),
+  disableClient: (name, onStep) => stream('POST', '/clients/' + encodeURIComponent(name) + '/disable', undefined, onStep),
+  enableClient: (name, onStep) => stream('POST', '/clients/' + encodeURIComponent(name) + '/enable', undefined, onStep),
   audit: () => call('GET', '/audit'),
 };
 
