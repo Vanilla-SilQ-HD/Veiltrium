@@ -40,12 +40,13 @@ mknode() {   # $1 = root, $2 = Hysteria password
     setpaths "$1"
     install -d -m 700 "${HY2_DIR}" "${XRAY_DIR}" "${TT_DIR}" "${SCANNER_DIR}" "${CLIENTS_DIR}"
     H_PASSWORD="$2"; HY2_SNI="www.sony.com"; HY2_PORT=443; H_MASQ="https://www.sony.com/page?x=1&y=2"; H_AUTH=userpass
+    H_STATS_PORT=34567; H_STATS_SECRET="$(printf 'd%.0s' {1..48})"; R_STATS_PORT=34568
     save_hy2_state
     newcert "${HY2_CERT}" "${HY2_KEY}" www.sony.com
     R_UUID="11111111-2222-4333-8444-555555555551"; R_PRIV="${key43}"; R_PUB="${pub43}"; R_SID="0123456789abcdef"; R_SITE="www.amazon.com"
     save_reality_state
     T_USER="u1234abcd"; T_PASS="${c48}"; T_SNI="www.nvidia.com"; TT_IPV6=false
-    printf 'T_USER=%q\nT_PASS=%q\nT_SNI=%q\nT_IPV6=%q\n' "${T_USER}" "${T_PASS}" "${T_SNI}" "${TT_IPV6}" > "${TT_STATE}"
+    printf 'T_USER=%q\nT_PASS=%q\nT_SNI=%q\nT_IPV6=%q\nT_STATS_PORT=%q\n' "${T_USER}" "${T_PASS}" "${T_SNI}" "${TT_IPV6}" 34569 > "${TT_STATE}"
     newcert "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" www.nvidia.com
     N_NAME=PL; GLOBALPING=1; save_node_name 1
     printf 'PROBE_KEY=%q\nPROBE_SERVER=%q\n' "$(printf 'd%.0s' {1..64})" "192.0.2.10" > "${PROBE_ENV}"
@@ -60,15 +61,43 @@ try() { ( "$@" ) > "${T}/out.txt" 2>&1; RC=$?; OUT="$(cat "${T}/out.txt")"; }
 
 # ---- the state files the installer writes pass the validator -------------------------
 mknode "${T}/src" "${a48}"
-check "$(env_file_ok "${HY2_STATE}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH"; echo $?)" 0 "validator: the Hysteria state with a URL (printf %q escapes) passes"
+check "$(env_file_ok "${HY2_STATE}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET"; echo $?)" 0 "validator: the Hysteria state with a URL (printf %q escapes) and the counters passes"
 check "$(grep -c '\\' "${HY2_STATE}")" 1 "the saved masquerade URL really contains escapes"
-check "$(env_file_ok "${XRAY_STATE}" "R_UUID R_PRIV R_PUB R_SID R_SITE" ""; echo $?)" 0 "validator: reality.env passes"
+check "$(grep -c '^H_STATS_PORT=34567$' "${HY2_STATE}")" 1 "the state files written by the installer carry the counter keys (Hysteria)"
+check "$(env_file_ok "${XRAY_STATE}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; echo $?)" 0 "validator: reality.env (with the counter port) passes"
+check "$(env_file_ok "${TT_STATE}" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT"; echo $?)" 0 "validator: the TrustTunnel state (with the counter port) passes"
+# state files from before the counters (no such keys) still pass: old exports import
+printf 'H_PASSWORD=%s\nH_SNI=www.sony.com\nH_PORT=443\nH_MASQ=auto\nH_AUTH=userpass\n' "${a48}" > "${T}/old-h.env"
+check "$(env_file_ok "${T}/old-h.env" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET"; echo $?)" 0 "validator: an old Hysteria state without counters passes"
+printf 'R_UUID=11111111-2222-4333-8444-555555555551\nR_PRIV=%s\nR_PUB=%s\nR_SID=0123456789abcdef\nR_SITE=www.amazon.com\n' "${key43}" "${pub43}" > "${T}/old-r.env"
+check "$(env_file_ok "${T}/old-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; echo $?)" 0 "validator: an old reality.env without the counter port passes"
+printf 'T_USER=u1234abcd\nT_PASS=%s\nT_SNI=www.nvidia.com\nT_IPV6=false\n' "${c48}" > "${T}/old-t.env"
+check "$(env_file_ok "${T}/old-t.env" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT"; echo $?)" 0 "validator: an old TrustTunnel state without the counter port passes"
+for v in "H_STATS_PORT=80" "H_STATS_PORT=65536" "H_STATS_PORT=abc" "H_STATS_PORT=\$(id)" "H_STATS_SECRET=short" "H_STATS_SECRET=\$(id)" "H_STATS_PORT=34567;id"; do
+    printf 'H_PASSWORD=%s\nH_SNI=www.sony.com\nH_PORT=443\n%s\n' "${a48}" "${v}" > "${T}/bad-h.env"
+    if env_file_ok "${T}/bad-h.env" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET"; then r=accepted; else r=refused; fi
+    check "${r}" refused "validator refuses ${v}"
+done
+for v in "R_STATS_PORT=0" "R_STATS_PORT=1023" "R_STATS_PORT=70000" "R_STATS_PORT=\`id\`"; do
+    { cat "${T}/old-r.env"; printf '%s\n' "${v}"; } > "${T}/bad-r.env"
+    if env_file_ok "${T}/bad-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; then r=accepted; else r=refused; fi
+    check "${r}" refused "validator refuses ${v}"
+done
+for v in "T_STATS_PORT=99999" "T_STATS_PORT=-1" "T_STATS_PORT=1 2"; do
+    { cat "${T}/old-t.env"; printf '%s\n' "${v}"; } > "${T}/bad-t.env"
+    if env_file_ok "${T}/bad-t.env" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT"; then r=accepted; else r=refused; fi
+    check "${r}" refused "validator refuses ${v}"
+done
+# a counter key in a file that has no such key is refused
+{ cat "${T}/old-r.env"; printf 'H_STATS_PORT=34567\n'; } > "${T}/bad-r.env"
+if env_file_ok "${T}/bad-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; then r=accepted; else r=refused; fi
+check "${r}" refused "validator refuses a Hysteria counter key in reality.env"
 check "$(env_file_ok "${NODE_ENV}" "" "N_NAME N_GLOBALPING"; echo $?)" 0 "validator: the node name file with its comment passes"
 check "$(env_file_ok "${CLIENTS_DIR}/bob_2.env" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED"; echo $?)" 0 "validator: a client file passes"
 
 bad() {   # name, content (a state file that must be refused)
     printf '%b' "$2" > "${T}/bad.env"
-    if env_file_ok "${T}/bad.env" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH"; then check accepted refused "validator refuses $1"; else check refused refused "validator refuses $1"; fi
+    if env_file_ok "${T}/bad.env" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET"; then check accepted refused "validator refuses $1"; else check refused refused "validator refuses $1"; fi
 }
 good_head="H_PASSWORD=${a48}\nH_SNI=www.sony.com\nH_PORT=443\n"
 bad "a command substitution in a value" "${good_head}H_MASQ=\$(id)\n"

@@ -51,6 +51,8 @@
 #    bash veiltrium.sh --list-clients      the clients of this node
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
+#    bash veiltrium.sh --traffic           traffic per client (up/down, last seen); --json - for JSON
+#    bash veiltrium.sh --traffic-reset     set all traffic counters to zero
 #    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
 #    bash veiltrium.sh --qr NAME           terminal QR codes of a client's links (main: the first one)
 #    bash veiltrium.sh --test-alert        send a test message to the alert channels (ALERT_*)
@@ -181,6 +183,8 @@ MTS_RECORDS="${STATE_DIR}/mts-records"
 MTS_LAST_IMPORT="${STATE_DIR}/mts-last-import.json"
 MTS_RUNS="${STATE_DIR}/mts-runs"
 RUSSIA_FILE="${STATE_DIR}/russia.json"         # the last check from Russian networks (Globalping)
+TRAFFIC_FILE="${STATE_DIR}/traffic.json"       # per-client traffic counters (see traffic_collect)
+TRAFFIC_LOCK="/run/veiltrium-traffic.lock"     # its own lock: the timer and an install must not write at once
 TXN_DIR="${STATE_DIR}/txn"                     # backups of changes in progress (see txn_begin)
 RECOVER_BIN="/usr/local/sbin/veiltrium-recover"
 WATCHDOG_UNIT="veiltrium-watchdog"
@@ -235,6 +239,8 @@ HAVE_PSP=0
 # the credentials in the protocol state files.
 CL_NAMES=(); CL_UUID=(); CL_HPASS=(); CL_TPASS=(); CL_CREATED=()
 H_AUTH=""; HY2_AUTH_MAIN=""
+# Loopback statistics endpoints of the proxies (traffic counters); empty on a node from before them.
+H_STATS_PORT=""; H_STATS_SECRET=""; R_STATS_PORT=""; T_STATS_PORT=""
 N_NAME=""; LABEL="Veiltrium"
 N_STANDBY=""; STANDBY=(); STANDBY_ERR=""
 
@@ -325,7 +331,7 @@ URL_RE='^https?://[^[:space:]'\''"]+$'
 # Existing Hysteria node from a previous run. Sets H_PASSWORD, H_SNI, H_PORT,
 # H_MASQ ("auto" or a URL; empty if none), H_AUTH (password|userpass; empty: a new node).
 load_hy2_state() {
-    H_PASSWORD=""; H_SNI=""; H_PORT=""; H_MASQ=""; H_AUTH=""
+    H_PASSWORD=""; H_SNI=""; H_PORT=""; H_MASQ=""; H_AUTH=""; H_STATS_PORT=""; H_STATS_SECRET=""
     [[ "${VT_RECONFIGURE}" != "1" ]] || return 0
     [[ -e "${HY2_STATE}" || -e "${HY2_CONFIG}" ]] || return 0    # a new node
     local damaged=""
@@ -340,7 +346,7 @@ load_hy2_state() {
         damaged="${HY2_CERT} / ${HY2_KEY} (missing or not a pair)"
     fi
     if [[ -n "${damaged}" && ! -e "${CLIENT_FILE}" ]]; then
-        damaged=""; H_PASSWORD=""; H_SNI=""; H_PORT=""; H_MASQ=""; H_AUTH=""   # a first install that never finished: start over
+        damaged=""; H_PASSWORD=""; H_SNI=""; H_PORT=""; H_MASQ=""; H_AUTH=""; H_STATS_PORT=""; H_STATS_SECRET=""   # a first install that never finished: start over
     fi
     if [[ -n "${damaged}" ]]; then
         die "the Hysteria node is damaged (${damaged}); nothing was changed. New password and certificate (clients must be updated): VT_RECONFIGURE=1 bash $0"
@@ -356,6 +362,10 @@ load_hy2_state() {
     # Nodes from before 2026-10-13 have one shared password; they move to per-user
     # passwords (userpass) only when the first client is added.
     if [[ -n "${H_PASSWORD}" && "${H_AUTH}" != "userpass" ]]; then H_AUTH="password"; fi
+    # Nodes from before the traffic counters have no statistics endpoint (the installer adds it).
+    [[ "${H_STATS_PORT}" =~ ^[0-9]{1,5}$ ]] || H_STATS_PORT=""
+    [[ "${H_STATS_SECRET}" =~ ^[0-9a-f]{48}$ ]] || H_STATS_SECRET=""
+    if [[ -z "${H_STATS_PORT}" || -z "${H_STATS_SECRET}" ]]; then H_STATS_PORT=""; H_STATS_SECRET=""; fi
     return 0
 }
 
@@ -370,6 +380,9 @@ save_hy2_state() {
     install -m 600 /dev/null "${HY2_STATE}.new"
     printf 'H_PASSWORD=%q\nH_SNI=%q\nH_PORT=%q\nH_MASQ=%q\nH_AUTH=%q\n' \
         "${H_PASSWORD}" "${HY2_SNI}" "${HY2_PORT}" "${H_MASQ}" "${H_AUTH}" > "${HY2_STATE}.new"
+    if [[ -n "${H_STATS_PORT}" && -n "${H_STATS_SECRET}" ]]; then
+        printf 'H_STATS_PORT=%q\nH_STATS_SECRET=%q\n' "${H_STATS_PORT}" "${H_STATS_SECRET}" >> "${HY2_STATE}.new"
+    fi
     mv -f "${HY2_STATE}.new" "${HY2_STATE}"
 }
 
@@ -377,6 +390,9 @@ save_hy2_state() {
 # HY2_MASQ_URL. With one shared password the text is exactly what earlier versions wrote.
 hy2_server_yaml() {
     local auth i
+    # H_STATS_PORT / H_STATS_SECRET add the traffic statistics API on 127.0.0.1 (Hysteria v2.13.0:
+    # GET /traffic with the secret as the Authorization header; ids are the user names, and "user"
+    # with the shared-password auth).
     if [[ "${H_AUTH}" == "userpass" ]]; then
         auth="  type: userpass"$'\n'"  userpass:"$'\n'"    main: $(yaml_sq "${H_PASSWORD}")"
         for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
@@ -399,6 +415,9 @@ masquerade:
     url: $(yaml_sq "${HY2_MASQ_URL}")
     rewriteHost: true
 EOF
+    if [[ -n "${H_STATS_PORT}" && -n "${H_STATS_SECRET}" ]]; then
+        printf 'trafficStats:\n  listen: 127.0.0.1:%s\n  secret: %s\n' "${H_STATS_PORT}" "$(yaml_sq "${H_STATS_SECRET}")" >> "$1"
+    fi
 }
 
 # hysteria2:// share link. $1 = user ("" with one shared password), $2 = password,
@@ -570,7 +589,7 @@ tt_export_link() {
 
 # Reality keys and site from a previous run. Sets R_UUID, R_PRIV, R_PUB, R_SID, R_SITE.
 load_reality_state() {
-    R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""
+    R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""; R_STATS_PORT=""
     if [[ "${VT_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" ]]; then
         # shellcheck disable=SC1090
         source "${XRAY_STATE}"
@@ -581,14 +600,15 @@ load_reality_state() {
         if [[ "${VT_RECONFIGURE}" != "1" && -e "${XRAY_STATE}" && -e "${CLIENT_FILE}" ]]; then
             die "${XRAY_STATE} is damaged; nothing was changed. New keys (clients must be updated): VT_RECONFIGURE=1 bash $0"
         fi
-        R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""
+        R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""; R_STATS_PORT=""
     fi
     [[ -z "${R_SITE}" || "${R_SITE}" =~ ${DOMAIN_RE} ]] || R_SITE=""
+    [[ "${R_STATS_PORT}" =~ ^[0-9]{1,5}$ ]] || R_STATS_PORT=""   # empty: a node from before the traffic counters
     return 0
 }
 
 load_tt_state() {
-    T_USER=""; T_PASS=""; T_SNI=""; T_IPV6=""
+    T_USER=""; T_PASS=""; T_SNI=""; T_IPV6=""; T_STATS_PORT=""
     if [[ "${VT_RECONFIGURE}" != "1" && -e "${TT_STATE}" ]]; then
         # shellcheck disable=SC1090
         source "${TT_STATE}"
@@ -597,10 +617,11 @@ load_tt_state() {
             if [[ -e "${CLIENT_FILE}" ]]; then
                 die "the TrustTunnel endpoint is damaged (${TT_STATE}, cert.pem/key.pem); nothing was changed. New credentials: VT_RECONFIGURE=1 bash $0"
             fi
-            T_USER=""; T_PASS=""; T_SNI=""; T_IPV6=""   # a first install that never finished: start over
+            T_USER=""; T_PASS=""; T_SNI=""; T_IPV6=""; T_STATS_PORT=""   # a first install that never finished: start over
         fi
     fi
     [[ -z "${T_SNI}" || "${T_SNI}" =~ ${DOMAIN_RE} ]] || T_SNI=""
+    [[ "${T_STATS_PORT}" =~ ^[0-9]{1,5}$ ]] || T_STATS_PORT=""   # empty: a node from before the traffic counters
     return 0
 }
 
@@ -703,6 +724,23 @@ free_port() {   # a TCP/UDP port nobody listens on
     done
     printf '%s' 39871
 }
+# Loopback port of a proxy's statistics endpoint: $1 = the saved one (kept if nothing else uses
+# it: free, or held by the process $2), else a new free port. $3... = ports to avoid.
+stats_port_pick() {
+    local saved="$1" proc="$2" p listener _
+    shift 2
+    if [[ "${saved}" =~ ^[0-9]{1,5}$ && " $* " != *" ${saved} "* ]]; then
+        listener="$(ss -Htlnp "sport = :${saved}" 2>/dev/null || true)"
+        if [[ -z "${listener}" || "${listener}" == *"\"${proc}\""* ]]; then printf '%s' "${saved}"; return 0; fi
+    fi
+    p=""
+    for _ in $(seq 1 50); do
+        p="$(free_port)"
+        if [[ " $* " != *" ${p} "* ]]; then break; fi
+    done
+    printf '%s' "${p}"
+    return 0
+}
 stop_pid() {   # $1 = pid (may be empty)
     if [[ -n "${1:-}" ]]; then
         kill "$1" 2>/dev/null || true
@@ -737,20 +775,29 @@ tunnel_probe() {
 # site, $5... = extra server names (a trial). Without extras and listen address
 # the text is exactly what earlier versions wrote, so updates do not restart Xray.
 reality_server_json() {
-    local out="$1" listen="$2" port="$3" site="$4" names n listen_line="" clients i
+    local out="$1" listen="$2" port="$3" site="$4" names n listen_line="" clients i stats_lines="" main_email=""
     shift 4
     names="\"${site}\""
     for n in "$@"; do names+=", \"${n}\""; done
     if [[ -n "${listen}" ]]; then listen_line="    \"listen\": \"${listen}\","$'\n'; fi
+    # Traffic counters (production and trial configs only: a test server must not take the port):
+    # per-user statistics (email = the client name) and the gRPC StatsService on 127.0.0.1
+    # (Xray v26.3.27: api.listen). Nodes without R_STATS_PORT keep the text earlier versions wrote.
+    if [[ -n "${R_STATS_PORT}" && -z "${listen}" ]]; then
+        stats_lines='  "stats": {},'$'\n'
+        stats_lines+="  \"api\": {\"tag\": \"api\", \"listen\": \"127.0.0.1:${R_STATS_PORT}\", \"services\": [\"StatsService\"]},"$'\n'
+        stats_lines+='  "policy": {"levels": {"0": {"statsUserUplink": true, "statsUserDownlink": true}}},'$'\n'
+        main_email=", \"email\": \"main\""
+    fi
     # the main client first (as earlier versions wrote it), then the added ones by name
-    clients="{\"id\": \"${R_UUID}\", \"flow\": \"xtls-rprx-vision\"}"
+    clients="{\"id\": \"${R_UUID}\", \"flow\": \"xtls-rprx-vision\"${main_email}}"
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
         clients+=", {\"id\": \"${CL_UUID[i]}\", \"flow\": \"xtls-rprx-vision\", \"email\": \"${CL_NAMES[i]}\"}"
     done
     cat > "${out}" <<EOF
 {
   "log": {"loglevel": "warning"},
-  "inbounds": [{
+${stats_lines}  "inbounds": [{
 ${listen_line}    "port": ${port},
     "protocol": "vless",
     "settings": {"clients": [${clients}], "decryption": "none"},
@@ -1212,6 +1259,7 @@ reality_switch() {
         || { tail -5 "${TMPD}/xray-test.log"; die "Xray rejected its own config."; }
     mv -f "${XRAY_DIR}/config.new.json" "${XRAY_DIR}/config.json"
     systemctl enable xray.service >/dev/null 2>&1
+    traffic_collect   # the restart resets Xray's counters
     systemctl restart xray.service || true
     reality_verify_production "${site}"
     SWITCH_OK=0
@@ -1258,6 +1306,7 @@ save_reality_state() {
     install -m 600 /dev/null "${XRAY_STATE}.new"
     printf 'R_UUID=%q\nR_PRIV=%q\nR_PUB=%q\nR_SID=%q\nR_SITE=%q\n' \
         "${R_UUID}" "${R_PRIV}" "${R_PUB}" "${R_SID}" "${R_SITE}" > "${XRAY_STATE}.new"
+    if [[ -n "${R_STATS_PORT}" ]]; then printf 'R_STATS_PORT=%q\n' "${R_STATS_PORT}" >> "${XRAY_STATE}.new"; fi
     mv -f "${XRAY_STATE}.new" "${XRAY_STATE}"
 }
 
@@ -1382,6 +1431,7 @@ trial_active() { [[ -f "${TRIAL_DROPIN}" ]]; }
 trial_stop() {
     systemctl stop "${TRIAL_UNIT}.timer" >/dev/null 2>&1 || true
     if trial_active || [[ -f "${TRIAL_CONFIG}" ]]; then
+        traffic_collect   # the restart resets Xray's counters
         rm -f "${TRIAL_DROPIN}" "${TRIAL_CONFIG}" "${TRIAL_ENV}"
         systemctl daemon-reload
         systemctl restart xray.service || true
@@ -1443,6 +1493,7 @@ ExecStart=%s run -c %s
 '         "${XRAY_BIN}" "${TRIAL_CONFIG}" > "${TRIAL_DROPIN}.new"
     mv -f "${TRIAL_DROPIN}.new" "${TRIAL_DROPIN}"
     systemctl daemon-reload
+    traffic_collect   # the restart resets Xray's counters
     systemctl restart xray.service || true
     for site in "${R_SITE}" "${extra[@]}"; do
         reality_verify_production "${site}"
@@ -2164,6 +2215,274 @@ step_mark() {
     return 0
 }
 
+# ---- Traffic counters ---------------------------------------------------------
+# The proxies count per client: Hysteria (GET /traffic?clear=1 on 127.0.0.1, secret header), Xray
+# (api statsquery -reset, StatsService on 127.0.0.1) and TrustTunnel (per-user totals, /clients on
+# 127.0.0.1: lifetime totals of the process). A restart resets them, so they are read every 5 minutes
+# (veiltrium-traffic.timer) and right before a restart, and added to TRAFFIC_FILE (root only):
+#   {schema, since, updated_at,
+#    clients: {NAME: {up, down, last_seen, by_protocol: {hysteria2|vless|trusttunnel: {up, down}}}},
+#    daily:   {YYYY-MM-DD: {NAME: {up, down}}}      (the last 90 days),
+#    tt_raw:  {NAME: {up, down}}}                   (the last TrustTunnel totals, to get deltas)
+# up = from the client, down = to the client. No secrets and no client addresses are stored.
+TRAFFIC_KEEP_DAYS=90
+
+# The names a counter may belong to: main and the added clients (from their files).
+traffic_known_names() {
+    local f n
+    printf 'main\n'
+    for f in "${CLIENTS_DIR}"/*.env; do
+        [[ -f "${f}" ]] || continue
+        n="${f##*/}"; n="${n%.env}"
+        if [[ "${n}" =~ ${CLIENT_RE} && "${n}" != "main" ]]; then printf '%s\n' "${n}"; fi
+    done | LC_ALL=C sort
+    return 0
+}
+
+# Where the statistics endpoints are, from the saved state of the protocols (what is running).
+# Sets TS_H_PORT, TS_H_SECRET, TS_H_AUTH, TS_R_PORT, TS_T_PORT, TS_T_USER; empty = no counter.
+traffic_state() {
+    local v
+    TS_H_PORT=""; TS_H_SECRET=""; TS_H_AUTH=""; TS_R_PORT=""; TS_T_PORT=""; TS_T_USER=""
+    if [[ -s "${HY2_STATE}" ]]; then
+        v="$(env_get "${HY2_STATE}" H_STATS_PORT)"
+        if [[ "${v}" =~ ^[0-9]{1,5}$ ]]; then TS_H_PORT="${v}"; fi
+        v="$(env_get "${HY2_STATE}" H_STATS_SECRET)"
+        if [[ "${v}" =~ ^[0-9a-f]{48}$ ]]; then TS_H_SECRET="${v}"; fi
+        TS_H_AUTH="$(env_get "${HY2_STATE}" H_AUTH)"
+    fi
+    if [[ -z "${TS_H_PORT}" || -z "${TS_H_SECRET}" ]]; then TS_H_PORT=""; TS_H_SECRET=""; fi
+    if [[ -s "${XRAY_STATE}" ]]; then
+        v="$(env_get "${XRAY_STATE}" R_STATS_PORT)"
+        if [[ "${v}" =~ ^[0-9]{1,5}$ ]]; then TS_R_PORT="${v}"; fi
+    fi
+    if [[ -s "${TT_STATE}" ]]; then
+        v="$(env_get "${TT_STATE}" T_STATS_PORT)"
+        if [[ "${v}" =~ ^[0-9]{1,5}$ ]]; then TS_T_PORT="${v}"; fi
+        v="$(env_get "${TT_STATE}" T_USER)"
+        if [[ "${v}" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then TS_T_USER="${v}"; fi
+    fi
+    return 0
+}
+
+# Each fetcher prints {"NAME": {"up": N, "down": N}} (bytes since its last reading, TrustTunnel:
+# totals), or nothing if the endpoint did not answer. They never fail.
+traffic_fetch_hysteria() {
+    local out
+    [[ -n "${TS_H_PORT}" ]] || return 0
+    # the secret goes through stdin (-K -), not the command line
+    out="$(printf 'header = "Authorization: %s"\n' "${TS_H_SECRET}" \
+        | curl -fsS --max-time 8 -K - "http://127.0.0.1:${TS_H_PORT}/traffic?clear=1" 2>/dev/null || true)"
+    # tx = received from the client (up), rx = sent to it (down); with one shared password the id is "user"
+    jq -c --arg auth "${TS_H_AUTH}" 'if type == "object" then
+            with_entries(select(.value | type == "object")
+                | {key: (if $auth != "userpass" and .key == "user" then "main" else .key end),
+                   value: {up: (.value.tx // 0), down: (.value.rx // 0)}})
+        else empty end' <<<"${out}" 2>/dev/null || true
+    return 0
+}
+traffic_fetch_xray() {
+    local out
+    [[ -n "${TS_R_PORT}" && -x "${XRAY_BIN}" ]] || return 0
+    out="$("${XRAY_BIN}" api statsquery --server="127.0.0.1:${TS_R_PORT}" -pattern 'user>>>' -reset 2>/dev/null || true)"
+    # {"stat": [{"name": "user>>>NAME>>>traffic>>>uplink", "value": "123"}]}; zero counters may be missing
+    jq -c 'if type == "object" then
+            [(.stat // [])[] | select((.name // "") | test("^user>>>[^>]+>>>traffic>>>(uplink|downlink)$"))
+                | (.name | split(">>>")) as $n
+                | {user: $n[1], dir: $n[3], v: (.value // 0)}]
+            | group_by(.user)
+            | map({key: .[0].user, value: {
+                up: (map(select(.dir == "uplink") | .v) | add // 0),
+                down: (map(select(.dir == "downlink") | .v) | add // 0)}})
+            | from_entries
+        else empty end' <<<"${out}" 2>/dev/null || true
+    return 0
+}
+traffic_fetch_trusttunnel() {
+    local out
+    [[ -n "${TS_T_PORT}" ]] || return 0
+    # /clients: per user, lifetime totals of the process (the addresses in it are not used). Seen from the
+    # client: inbound = bytes toward the client (its download), outbound = from it (measured with the
+    # v1.1.0 endpoint and client v1.1.11; METRICS.md describes the two the other way round).
+    # The main client's login is T_USER.
+    out="$(curl -fsS --max-time 8 "http://127.0.0.1:${TS_T_PORT}/clients" 2>/dev/null || true)"
+    [[ -n "${out}" ]] || return 0
+    jq -c --arg tuser "${TS_T_USER}" 'if type == "array" then
+            map(select(.username | type == "string") | {key: (if .username == $tuser then "main" else .username end),
+                value: {up: (.outbound // 0), down: (.inbound // 0)}}) | from_entries
+        else empty end' <<<"${out}" 2>/dev/null || true
+    return 0
+}
+
+# The merge: $cur = the file so far, $h / $x = deltas of Hysteria / Xray (or null), $t = TrustTunnel totals
+# (or null), $known = the clients that exist, $now / $today / $cutoff = dates. Prints the new file.
+# TrustTunnel totals become deltas against tt_raw (a lower total means a restart: it counts from zero).
+# shellcheck disable=SC2016
+TRAFFIC_MERGE_JQ='
+def num: (if type == "number" then . elif type == "string" then (tonumber? // 0) else 0 end) | if . > 0 then floor else 0 end;
+def ud($a; $b): {up: (($a.up | num) + ($b.up | num)), down: (($a.down | num) + ($b.down | num))};
+def known: with_entries(select(.key | IN($known[])));
+($cur | if type == "object" then . else {} end) as $c
+| ($c.tt_raw // {}) as $raw
+| (if $t == null then {} else
+    ($t | known | with_entries(.value as $v | ($raw[.key] // {}) as $p
+        | .value = {up: (if ($v.up | num) >= ($p.up | num) then ($v.up | num) - ($p.up | num) else ($v.up | num) end),
+                    down: (if ($v.down | num) >= ($p.down | num) then ($v.down | num) - ($p.down | num) else ($v.down | num) end)}))
+  end) as $tdelta
+| (if $t == null then $raw else ($t | known | map_values({up: (.up | num), down: (.down | num)})) end) as $newraw
+| {hysteria2: (($h // {}) | known), vless: (($x // {}) | known), trusttunnel: $tdelta} as $protos
+| (reduce ($protos | to_entries[]) as $p ({};
+    reduce ($p.value | to_entries[]) as $e (.;
+        if ($e.value.up | num) + ($e.value.down | num) == 0 then . else .[$e.key] = ud(.[$e.key]; $e.value) end))) as $delta
+| (reduce ($protos | to_entries[]) as $p (($c.clients // {} | known);
+    reduce ($p.value | to_entries[]) as $e (.;
+        ($e.value.up | num) as $u | ($e.value.down | num) as $d
+        | if $u + $d == 0 then . else
+            .[$e.key] = ((.[$e.key] // {}) as $cl | ($cl.by_protocol // {}) as $bp
+                | {up: (($cl.up | num) + $u), down: (($cl.down | num) + $d), last_seen: $now,
+                   by_protocol: ($bp + {($p.key): ud($bp[$p.key]; {up: $u, down: $d})})})
+          end))) as $clients
+| (($c.daily // {}) | map_values(known)
+    | if ($delta | length) > 0 then .[$today] = (reduce ($delta | to_entries[]) as $e ((.[$today] // {}); .[$e.key] = ud(.[$e.key]; $e.value))) else . end
+    | with_entries(select(.key >= $cutoff and (.value | length) > 0))) as $daily
+| {schema: "veiltrium-traffic/1", since: ($c.since // $now), updated_at: $now,
+   clients: $clients, daily: $daily, tt_raw: $newraw}'
+
+# Reads the counters once and adds them to TRAFFIC_FILE. Under its own lock (the timer and an
+# install may meet); never fails: a node without counters, or an endpoint that does not answer,
+# is skipped.
+traffic_collect() {
+    command -v jq >/dev/null 2>&1 || return 0
+    (
+        flock -w 20 6 || exit 0
+        traffic_collect_locked
+    ) 6>"${TRAFFIC_LOCK}" || true
+    return 0
+}
+traffic_collect_locked() {
+    local h x t cur="{}" now today cutoff known new
+    traffic_state
+    [[ -n "${TS_H_PORT}${TS_R_PORT}${TS_T_PORT}" ]] || return 0
+    h="$(traffic_fetch_hysteria)"; x="$(traffic_fetch_xray)"; t="$(traffic_fetch_trusttunnel)"
+    [[ -n "${h}${x}${t}" ]] || return 0
+    cur="$(traffic_read_file)"
+    now="$(date -u +%FT%TZ)"; today="${now%%T*}"
+    cutoff="$(date -u -d "${TRAFFIC_KEEP_DAYS} days ago" +%F)"
+    known="$(traffic_known_names | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    new="$(jq -n --argjson cur "${cur}" --argjson h "${h:-null}" --argjson x "${x:-null}" --argjson t "${t:-null}" \
+        --argjson known "${known}" --arg now "${now}" --arg today "${today}" --arg cutoff "${cutoff}" \
+        "${TRAFFIC_MERGE_JQ}")" || return 0
+    traffic_write_file "${new}"
+    return 0
+}
+
+# The file as JSON; a damaged one is kept as .bad and counting starts again.
+traffic_read_file() {
+    if [[ -s "${TRAFFIC_FILE}" ]]; then
+        if jq -e 'type == "object"' "${TRAFFIC_FILE}" >/dev/null 2>&1; then cat "${TRAFFIC_FILE}"; return 0; fi
+        mv -f "${TRAFFIC_FILE}" "${TRAFFIC_FILE}.bad" 2>/dev/null || true
+    fi
+    printf '{}'
+    return 0
+}
+traffic_write_file() {   # $1 = the document
+    install -d -m 700 "$(dirname -- "${TRAFFIC_FILE}")"
+    install -m 600 /dev/null "${TRAFFIC_FILE}.new"
+    printf '%s\n' "$1" > "${TRAFFIC_FILE}.new"
+    mv -f "${TRAFFIC_FILE}.new" "${TRAFFIC_FILE}"
+    return 0
+}
+
+# Under the traffic lock: $1 = jq program, then its arguments; the file is replaced by the result.
+traffic_edit() {
+    command -v jq >/dev/null 2>&1 || return 0
+    (
+        flock -w 20 6 || exit 0
+        [[ -s "${TRAFFIC_FILE}" ]] || exit 0
+        new="$(jq "${@:2}" "$1" "${TRAFFIC_FILE}")" || exit 0
+        traffic_write_file "${new}"
+    ) 6>"${TRAFFIC_LOCK}" || true
+    return 0
+}
+# A removed client's counters go with it (a new client of the same name starts at zero).
+traffic_forget() {   # $1 = client name
+    traffic_edit 'del(.clients[$n]) | .daily |= map_values(del(.[$n])) | .tt_raw |= del(.[$n])' --arg n "$1"
+}
+# All counters to zero (the TrustTunnel baseline stays, or its lifetime totals would count again).
+traffic_reset() {
+    traffic_collect
+    traffic_edit '.clients = {} | .daily = {} | .since = $now | .updated_at = $now' --arg now "$(date -u +%FT%TZ)"
+}
+
+# The counters as one JSON document, no secrets: every client that exists is listed (zeros if unseen).
+traffic_doc() {
+    local known cur
+    known="$(traffic_known_names | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    cur="$(traffic_read_file)"
+    jq -n --argjson cur "${cur}" --argjson known "${known}" '
+        ($cur.clients // {}) as $c
+        | ($known | map({key: ., value: ($c[.] // {up: 0, down: 0, last_seen: null, by_protocol: {}})}) | from_entries) as $clients
+        | {schema: "veiltrium-traffic/1", since: ($cur.since // null), updated_at: ($cur.updated_at // null),
+           totals: {up: ([$clients[].up] | add // 0), down: ([$clients[].down] | add // 0)},
+           clients: $clients, daily: ($cur.daily // {})}'
+}
+traffic_client_json() {   # $1 = client name -> {up, down, last_seen, by_protocol}
+    traffic_doc | jq -c --arg n "$1" '.clients[$n] // {up: 0, down: 0, last_seen: null, by_protocol: {}}'
+}
+traffic_totals_json() {   # for --status
+    traffic_doc | jq -c '{up: .totals.up, down: .totals.down, since, updated_at}'
+}
+
+# 1536 -> "1.5 KiB"
+bytes_h() {
+    awk -v b="${1:-0}" 'BEGIN { split("B KiB MiB GiB TiB PiB", u, " "); i = 1
+        while (b >= 1024 && i < 6) { b /= 1024; i++ }
+        if (i == 1) printf "%d %s", b, u[i]; else printf "%.1f %s", b, u[i] }'
+}
+
+# --traffic: take the counters now, then show them.
+traffic_show() {
+    local doc name up down seen
+    traffic_collect
+    doc="$(traffic_doc)"
+    if [[ -n "${JSON_OUT}" ]]; then printf '%s\n' "${doc}" | json_emit; return 0; fi
+    traffic_state
+    printf '\nTraffic of %s since %s (up = from the client, down = to the client):\n' "${LABEL}" \
+        "$(jq -r '.since // "the first reading"' <<<"${doc}")"
+    printf '  %-24s %-12s %-12s %s\n' client up down "last seen"
+    while IFS=$'\t' read -r name up down seen; do
+        printf '  %-24s %-12s %-12s %s\n' "${name}" "$(bytes_h "${up}")" "$(bytes_h "${down}")" "${seen}"
+    done < <(jq -r '.clients | to_entries | sort_by(.key) | .[] | [.key, .value.up, .value.down, (.value.last_seen // "-")] | @tsv' <<<"${doc}")
+    printf '  %-24s %-12s %-12s\n' total "$(bytes_h "$(jq -r '.totals.up' <<<"${doc}")")" "$(bytes_h "$(jq -r '.totals.down' <<<"${doc}")")"
+    if [[ -z "${TS_H_PORT}" && -z "${TS_R_PORT}" && -z "${TS_T_PORT}" ]]; then
+        info "No counters are running on this node yet: run the installer once (bash $0) to enable them."
+    else
+        info "Counters: Hysteria $([[ -n "${TS_H_PORT}" ]] && echo on || echo off), VLESS Reality $([[ -n "${TS_R_PORT}" ]] && echo on || echo off), TrustTunnel $([[ -n "${TS_T_PORT}" ]] && echo on || echo off); read every 5 minutes."
+    fi
+    return 0
+}
+
+# The statistics endpoints of the installed node answer (the install check). Warnings only.
+traffic_endpoints_check() {
+    local out
+    traffic_state
+    if [[ -n "${TS_H_PORT}" ]]; then
+        out="$(printf 'header = "Authorization: %s"\n' "${TS_H_SECRET}" \
+            | curl -fsS --max-time 8 -K - "http://127.0.0.1:${TS_H_PORT}/traffic" 2>/dev/null || true)"
+        if jq -e 'type == "object"' <<<"${out}" >/dev/null 2>&1; then ok "Traffic counters: Hysteria"
+        else warn "Traffic counters: the Hysteria statistics endpoint did not answer"; fi
+    fi
+    if [[ -n "${TS_R_PORT}" ]]; then
+        if "${XRAY_BIN}" api statsquery --server="127.0.0.1:${TS_R_PORT}" -pattern 'user>>>' >/dev/null 2>&1; then ok "Traffic counters: VLESS Reality"
+        else warn "Traffic counters: the Xray statistics endpoint did not answer"; fi
+    fi
+    if [[ -n "${TS_T_PORT}" ]]; then
+        if curl -fsS --max-time 8 -o /dev/null "http://127.0.0.1:${TS_T_PORT}/clients" 2>/dev/null; then ok "Traffic counters: TrustTunnel"
+        else warn "Traffic counters: the TrustTunnel metrics endpoint did not answer"; fi
+    fi
+    return 0
+}
+
 # Connection details of client $1 as JSON; secrets included (root and the panel only).
 # $2 = its tt:// link ("" = none), $3 = the tt:// links of the standby servers (one per line).
 # With standby servers the document gains "standby" (the addresses) and per protocol
@@ -2189,7 +2508,8 @@ client_json() {
         --argjson hy_port "${HY2_PORT}" --arg pk "${PK_SHA}" --arg cert "${CERT_SHA}" \
         --arg vless "${vless}" --arg uuid "${CC_UUID}" --arg r_site "${R_SITE}" --argjson r_port "${REALITY_PORT}" \
         --arg fp "${REALITY_FP}" --arg pbk "${R_PUB}" --arg sid "${R_SID}" --arg tt "$2" \
-        --argjson sb "${sb}" --argjson hy_sb "${hy_sb}" --argjson vless_sb "${vless_sb}" --argjson tt_sb "${tt_sb}" '
+        --argjson sb "${sb}" --argjson hy_sb "${hy_sb}" --argjson vless_sb "${vless_sb}" --argjson tt_sb "${tt_sb}" \
+        --argjson traffic "$(traffic_client_json "$1")" '
         def hy_out($s; $tag): {type: "hysteria2", tag: $tag, server: $s, server_port: $hy_port, password: $auth,
             tls: {enabled: true, server_name: $hy_sni, insecure: false, certificate_public_key_sha256: [$pk]}};
         def awg($s; $tag): {type: "hysteria2", tag: $tag, server: $s, server_port: $hy_port, password: $auth,
@@ -2217,7 +2537,8 @@ client_json() {
                standby_outbounds: ([range(0; $sb | length) as $i | vless_out($sb[$i]; "reality-standby" + ($i + 1 | tostring))]
                  + [urltest("Veiltrium-auto-reality"; ["reality"] + numbered("reality"))])} else {} end)) end),
          trusttunnel: (if $tt == "" then null else ({link: $tt}
-           + (if ($tt_sb | length) > 0 then {standby_links: $tt_sb} else {} end)) end)}'
+           + (if ($tt_sb | length) > 0 then {standby_links: $tt_sb} else {} end)) end),
+         traffic: $traffic}'
 }
 
 # The clients of the node as JSON (no secrets).
@@ -2226,10 +2547,12 @@ clients_json() {
     {
         printf 'main\t\n'
         for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do printf '%s\t%s\n' "${CL_NAMES[i]}" "${CL_CREATED[i]}"; done
-    } | jq -R -s --arg label "${LABEL}" --arg server "${PUBLIC_IP}" --arg auth "${H_AUTH}" '
+    } | jq -R -s --arg label "${LABEL}" --arg server "${PUBLIC_IP}" --arg auth "${H_AUTH}" \
+        --argjson tr "$(traffic_doc | jq -c '.clients')" '
         split("\n") | map(select(length > 0) | split("\t")) |
         {schema: "veiltrium-clients/1", node_name: $label, server: $server, hysteria_auth: $auth,
-         clients: map({name: .[0], main: (.[0] == "main"), created: (if (.[1] // "") == "" then null else .[1] end)})}'
+         clients: map({name: .[0], main: (.[0] == "main"), created: (if (.[1] // "") == "" then null else .[1] end),
+            traffic: ($tr[.[0]] // {up: 0, down: 0, last_seen: null, by_protocol: {}})})}'
 }
 
 # Server load as a JSON object: load averages (1/5/15 min) and CPU count, memory and the
@@ -2258,7 +2581,7 @@ server_load_json() {
 
 # A fast overview of the node: no network tests, no secrets.
 status_json() {
-    local svc st="" vh vx vt os report n scan ru
+    local svc st="" vh vx vt os report n scan ru tr
     for svc in hysteria-server xray trusttunnel; do
         st+="${svc}=$(systemctl is-active "${svc}" 2>/dev/null || true)"$'\n'
     done
@@ -2268,6 +2591,7 @@ status_json() {
     os="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}" || true)"
     report="$(jq -c '{generated_at, mode, reality: .reality.vps, hysteria2: .hysteria2.vps,
         trusttunnel_h2: .trusttunnel.h2.vps, trusttunnel_h3: .trusttunnel.h3.vps}' "${REPORT_FILE}" 2>/dev/null || true)"
+    tr="$(traffic_totals_json 2>/dev/null || true)"
     n="$(count_clients)"
     ru="$(jq -c '{verdict, checked_at, networks, bad_streak: (.bad_streak // 0), previous_verdict, icmp: (.icmp | {ok, total}),
         tcp_reality: (.tcp_reality | if . then {ok, total, port} else null end),
@@ -2285,7 +2609,7 @@ status_json() {
         --arg h_sni "${H_SNI}" --arg h_port "${HY2_PORT}" --arg h_mts "$(mts_status hysteria2 "${H_SNI:-none}")" \
         --arg t_sni "${T_SNI}" --arg t_port "${TT_PORT}" --arg t2 "$(mts_status tt_h2 "${T_SNI:-none}")" \
         --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" --argjson ru "${ru:-null}" \
-        --arg globalping "${GLOBALPING}" --arg standby "${N_STANDBY}" --argjson resources "$(server_load_json)" '
+        --arg globalping "${GLOBALPING}" --arg standby "${N_STANDBY}" --argjson resources "$(server_load_json)" --argjson traffic "${tr:-null}" '
         {schema: "veiltrium-status/1", generated_at: $now, script_version: $version, node_name: $label,
          server: $server, standby: ($standby | split(",") | map(select(length > 0))),
          os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
@@ -2299,7 +2623,7 @@ status_json() {
            {hostname: $t_sni, port: ($t_port | tonumber), home_network_h2: $t2, home_network_h3: $t3} end),
          protection: {firewall: ($fw == "1"), ssh_ports: ($ssh | split(" ") | map(select(length > 0) | tonumber)),
            scanner_networks: ($scan | tonumber), fail2ban: $f2b},
-         last_install_check: $report, russia: $ru, globalping: ($globalping == "1")}'
+         last_install_check: $report, russia: $ru, globalping: ($globalping == "1"), traffic: $traffic}'
 }
 
 # ---- Adding and removing clients ---------------------------------------------
@@ -2351,6 +2675,7 @@ clients_change() {
         gone_auth="${name}:${CL_HPASS[i]}"; gone_uuid="${CL_UUID[i]}"
     fi
     install -d -m 700 "${CLIENTS_DIR}"
+    traffic_collect   # the services restart below and lose their counters
     txn_begin hysteria hysteria-server.service "${HY2_CONFIG}" "${HY2_STATE}" "${reg}"
     if (( HAVE_REALITY == 1 )); then txn_begin reality xray.service "${XRAY_DIR}/config.json"; fi
     if (( HAVE_TT == 1 )); then txn_begin trusttunnel trusttunnel.service "${TT_DIR}/credentials.toml"; fi
@@ -2439,6 +2764,7 @@ clients_change() {
     if (( HAVE_REALITY == 1 )); then txn_commit reality; fi
     if (( HAVE_TT == 1 )); then txn_commit trusttunnel; fi
     txn_commit hysteria
+    if [[ "${mode}" == "remove" ]]; then traffic_forget "${name}"; fi
 
     TT_URL=""
     if (( HAVE_TT == 1 )); then
@@ -2631,7 +2957,10 @@ read_passphrase() {
 env_value_ok() {
     local v="$2" p
     case "$1" in
-        H_PASSWORD|T_PASS|C_HY2_PASS|C_TT_PASS) [[ "${v}" =~ ^[0-9a-f]{48}$ ]] ;;
+        H_PASSWORD|T_PASS|C_HY2_PASS|C_TT_PASS|H_STATS_SECRET) [[ "${v}" =~ ^[0-9a-f]{48}$ ]] ;;
+        H_STATS_PORT|R_STATS_PORT|T_STATS_PORT)   # loopback ports of the statistics endpoints
+            [[ "${v}" =~ ^[0-9]{1,5}$ ]] || return 1
+            p=$((10#${v})); (( p >= 1024 && p <= 65535 )) ;;
         H_SNI|T_SNI) [[ "${v}" =~ ${DOMAIN_RE} ]] ;;
         R_SITE) [[ -z "${v}" || "${v}" =~ ${DOMAIN_RE} ]] ;;
         H_PORT)
@@ -2737,9 +3066,9 @@ export_tree_ok() {
         f="${d}/${rel}"
         case "${rel}" in
             meta|MANIFEST) ;;
-            hysteria/node.env) env_file_ok "${f}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH" || { echo "bad ${rel}"; return 1; } ;;
-            reality/reality.env) env_file_ok "${f}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "" || { echo "bad ${rel}"; return 1; } ;;
-            trusttunnel/node.env) env_file_ok "${f}" "T_USER T_PASS T_SNI" "T_IPV6" || { echo "bad ${rel}"; return 1; } ;;
+            hysteria/node.env) env_file_ok "${f}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET" || { echo "bad ${rel}"; return 1; } ;;
+            reality/reality.env) env_file_ok "${f}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT" || { echo "bad ${rel}"; return 1; } ;;
+            trusttunnel/node.env) env_file_ok "${f}" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/node.env) env_file_ok "${f}" "" "N_NAME N_GLOBALPING" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/probe.env) env_file_ok "${f}" "PROBE_KEY PROBE_SERVER" "" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/reality-candidates)
@@ -3762,6 +4091,9 @@ while (( $# )); do
         --uninstall) MODE="uninstall" ;;
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
+        --traffic) MODE="traffic" ;;
+        --traffic-reset) MODE="traffic-reset" ;;
+        --collect-traffic) MODE="collect-traffic" ;;   # internal: veiltrium-traffic.timer
         --check-russia) MODE="check-russia" ;;
         --watch) MODE="watch" ;;
         --test-alert) MODE="test-alert" ;;
@@ -3800,6 +4132,12 @@ fi
 if [[ "${MODE}" == "helper" ]]; then
     LIGHT=1
     helper_main
+    exit 0
+fi
+# The traffic timer: its own lock only (never the installer lock), so it cannot hold up a change.
+if [[ "${MODE}" == "collect-traffic" ]]; then
+    LIGHT=1
+    traffic_collect
     exit 0
 fi
 
@@ -3927,6 +4265,16 @@ if [[ "${MODE}" != "install" ]]; then
             russia_check force
             if [[ -n "${JSON_OUT}" ]]; then
                 if [[ -s "${TMPD}/russia.json" ]]; then json_emit < "${TMPD}/russia.json"; else echo '{"verdict":"unchecked"}' | json_emit; fi
+            fi
+            exit 0 ;;
+        traffic|traffic-reset)
+            command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."
+            [[ -n "${H_PASSWORD}" ]] || die "this server has no installed node yet: run the installer once (bash $0) first."
+            if [[ "${MODE}" == "traffic" ]]; then
+                traffic_show
+            else
+                traffic_reset
+                ok "All traffic counters are zero now."
             fi
             exit 0 ;;
         status)
@@ -4767,6 +5115,8 @@ fi
 step 8 "Hysteria ${HY2_VERSION} and Xray ${XRAY_VERSION} (pinned, SHA-256 verified)"
 # A service restarts only when its binary, unit, config or certificate changed
 # (or it is not running): a re-run does not drop the clients' connections.
+# A restart resets the proxies' traffic counters: take them now, before anything changes.
+traffic_collect
 RESTART_HY2=0; RESTART_XRAY=0; RESTART_TT=0
 unit_sum() { sha256sum "/etc/systemd/system/$1.service" 2>/dev/null | cut -c1-64 || true; }
 UNIT_HY2_BEFORE="$(unit_sum hysteria-server)"
@@ -4946,6 +5296,8 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
     [[ "${R_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ && \
        "${R_PRIV}" =~ ^[A-Za-z0-9_-]{43}$ && "${R_PUB}" =~ ^[A-Za-z0-9_-]{43}$ && \
        "${R_SID}" =~ ^[0-9a-f]{16}$ ]] || die "Xray produced keys in an unexpected format."
+    # Traffic counters: the statistics API listens on a loopback port of its own (kept between runs).
+    R_STATS_PORT="$(stats_port_pick "${R_STATS_PORT}" xray "${REALITY_PORT}" "${HY2_PORT}" "${TT_PORT}" "${PANEL_PORT}" "${H_STATS_PORT}")"
     systemctl enable xray.service >/dev/null 2>&1
 
     if [[ -n "${PREV_SITE}" && "${REALITY_RESELECT}" != "1" && ( -z "${REALITY_SNI}" || "${REALITY_SNI}" == "${PREV_SITE}" ) ]]; then
@@ -5118,6 +5470,9 @@ chown root:hysteria "${HY2_KEY}" "${HY2_CERT}"
 chmod 640 "${HY2_KEY}"
 chmod 644 "${HY2_CERT}"
 
+# Traffic counters: the statistics API on a loopback port with a secret, both kept between runs.
+H_STATS_PORT="$(stats_port_pick "${H_STATS_PORT}" hysteria "${HY2_PORT}" "${REALITY_PORT}" "${TT_PORT}" "${PANEL_PORT}" "${R_STATS_PORT}")"
+[[ "${H_STATS_SECRET}" =~ ^[0-9a-f]{48}$ ]] || H_STATS_SECRET="$(openssl rand -hex 24)"
 install -m 640 -o root -g hysteria /dev/null "${HY2_CONFIG}.new"
 hy2_server_yaml "${HY2_CONFIG}.new"
 HY2_RESTART=1
@@ -5221,6 +5576,7 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
     chown root:trusttunnel "${TT_DIR}/key.pem" "${TT_DIR}/cert.pem"
     chmod 640 "${TT_DIR}/key.pem"
     chmod 644 "${TT_DIR}/cert.pem"
+    T_STATS_PORT="$(stats_port_pick "${T_STATS_PORT}" trusttunnel_end "${TT_PORT}" "${HY2_PORT}" "${REALITY_PORT}" "${PANEL_PORT}" "${R_STATS_PORT}" "${H_STATS_PORT}")"
     TT_IPV6="${T_IPV6:-}"
     if [[ "${TT_IPV6}" != "true" && "${TT_IPV6}" != "false" ]]; then
         TT_IPV6=false
@@ -5270,6 +5626,10 @@ message_queue_capacity = 4096
 [forward_protocol]
 direct = {}
 EOF
+    if [[ -n "${T_STATS_PORT}" ]]; then
+        # per-user counters (TrustTunnel v1.1.0: /clients with per_client_metrics), loopback only
+        printf '\n[metrics]\naddress = "127.0.0.1:%s"\nper_client_metrics = true\n' "${T_STATS_PORT}" >> "${TT_DIR}/vpn.toml.new"
+    fi
     mv -f "${TT_DIR}/vpn.toml.new" "${TT_DIR}/vpn.toml"
     install -m 640 -o root -g trusttunnel /dev/null "${TT_DIR}/hosts.toml.new"
     cat > "${TT_DIR}/hosts.toml.new" <<EOF
@@ -5285,6 +5645,7 @@ EOF
     mv -f "${TT_DIR}/credentials.toml.new" "${TT_DIR}/credentials.toml"
     install -m 600 /dev/null "${TT_STATE}.new"
     printf 'T_USER=%q\nT_PASS=%q\nT_SNI=%q\nT_IPV6=%q\n' "${T_USER}" "${T_PASS}" "${T_SNI}" "${TT_IPV6}" > "${TT_STATE}.new"
+    if [[ -n "${T_STATS_PORT}" ]]; then printf 'T_STATS_PORT=%q\n' "${T_STATS_PORT}" >> "${TT_STATE}.new"; fi
     mv -f "${TT_STATE}.new" "${TT_STATE}"
     TT_SUM_AFTER="$(cat "${TT_DIR}/vpn.toml" "${TT_DIR}/hosts.toml" "${TT_DIR}/credentials.toml" "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" | sha256sum)"
 
@@ -5343,6 +5704,7 @@ step 12 "Verification"
 CHECK_FAIL=0
 if (( ${#ROLLBACKS[@]} )); then CHECK_FAIL=1; fi   # a requested change did not happen
 ok "Hysteria listens on ${HY2_PORT}/UDP"
+traffic_endpoints_check
 
 # Isolation: root can reach SSH, the proxy services cannot
 PROXY_USERS=(hysteria)
@@ -5530,6 +5892,45 @@ if (( A_ENABLED == 1 )); then
 else
     systemctl disable --now veiltrium-watch.timer >/dev/null 2>&1 || true
 fi
+
+# ---- Traffic counters: read every 5 minutes (the installed copy, its own lock) ------
+cat > "${TMPD}/traffic.service" <<EOF
+# veiltrium: read the per-client traffic counters of the proxies
+[Unit]
+Description=Read the traffic counters of the proxies (Veiltrium)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=/bin/bash ${PANEL_LIB}/veiltrium.sh --collect-traffic
+EOF
+cat > "${TMPD}/traffic.timer" <<'EOF'
+# veiltrium: read the per-client traffic counters of the proxies
+[Unit]
+Description=Read the traffic counters every 5 minutes (Veiltrium)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+TC_CHANGED=0
+for u in service timer; do
+    if ! cmp -s "${TMPD}/traffic.${u}" "/etc/systemd/system/veiltrium-traffic.${u}"; then
+        install -m 644 "${TMPD}/traffic.${u}" "/etc/systemd/system/veiltrium-traffic.${u}"
+        TC_CHANGED=1
+    fi
+done
+(( TC_CHANGED == 0 )) || systemctl daemon-reload
+systemctl enable veiltrium-traffic.timer >/dev/null 2>&1 || true
+if (( TC_CHANGED == 1 )); then systemctl restart veiltrium-traffic.timer >/dev/null 2>&1 || true
+else systemctl start veiltrium-traffic.timer >/dev/null 2>&1 || true; fi
+info "Traffic per client is counted (read every 5 minutes): bash $0 --traffic"
 
 # =============================================================================
 step 13 "Web panel"

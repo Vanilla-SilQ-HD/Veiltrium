@@ -205,6 +205,7 @@ The installer also writes a short command, `/usr/local/bin/veiltrium`, which run
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
 
+<<<<<<< HEAD
 ### Resetting a client's credentials
 
 `--reset-client NAME` gives an added client a new VLESS UUID, a new Hysteria password and a new TrustTunnel password under the same name, for example after a phone was lost. It runs the same transaction as adding or removing a client: the three server configs change together, the services restart, and real clients check that the new credentials work, the old Hysteria and VLESS ones no longer do, and the main client still works. Otherwise the previous settings come back. The details in `/root/veiltrium/clients/NAME.txt` are rewritten and printed; send them to the client. `main` cannot be reset this way: `VT_RECONFIGURE=1 bash veiltrium.sh` replaces the secrets of the whole node, the added clients included. The panel's root helper accepts the request as well (`reset-client NAME`).
@@ -232,6 +233,21 @@ bash /root/veiltrium.sh --audit          # the last 50 lines
 bash /root/veiltrium.sh --audit 200
 bash /root/veiltrium.sh --audit --json - # a JSON array
 ```
+208d
+## Traffic counters
+
+The installer counts the traffic of every client, per protocol: bytes up (from the client), bytes down (to it) and when it was last seen.
+
+```bash
+bash /root/veiltrium.sh --traffic            # a table; --json - for JSON
+bash /root/veiltrium.sh --traffic-reset      # all counters to zero
+```
+
+- The proxies count themselves; nothing sits in the data path. Hysteria (`trafficStats`), Xray (`StatsService`) and TrustTunnel (`per_client_metrics`) each expose a statistics endpoint on `127.0.0.1` only, with a port of its own (Hysteria also a secret), saved in the protocol's state file. The firewall keeps the proxies away from the server's own addresses, so clients cannot reach these endpoints through the tunnel.
+- `veiltrium-traffic.timer` reads them every 5 minutes and right before any restart of a service (a restart resets the proxies' own counters), and adds the numbers to `/var/lib/veiltrium/traffic.json` (root only): totals per client and protocol, and per day for the last 90 days. No secrets and no client addresses are stored there. A client that is removed takes its counters with it.
+- The clients' JSON (`--list-clients`, `--show-client` with `--json -`) carries `traffic` per client, and `--status` the totals.
+- A node installed before this feature gets the endpoints on its next run of the installer: Hysteria, Xray and TrustTunnel restart once for that, then re-runs change nothing again. Traffic before that run is not counted.
+- Not counted: what moved between the last reading and a crash or a reboot (at most 5 minutes).
 
 ## Web panel
 
