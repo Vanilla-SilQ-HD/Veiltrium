@@ -176,6 +176,21 @@ bash /root/veiltrium.sh --remove-client anna
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
 
+## Traffic counters
+
+The installer counts the traffic of every client, per protocol: bytes up (from the client), bytes down (to it) and when it was last seen.
+
+```bash
+bash /root/veiltrium.sh --traffic            # a table; --json - for JSON
+bash /root/veiltrium.sh --traffic-reset      # all counters to zero
+```
+
+- The proxies count themselves; nothing sits in the data path. Hysteria (`trafficStats`), Xray (`StatsService`) and TrustTunnel (`per_client_metrics`) each expose a statistics endpoint on `127.0.0.1` only, with a port of its own (Hysteria also a secret), saved in the protocol's state file. The firewall keeps the proxies away from the server's own addresses, so clients cannot reach these endpoints through the tunnel.
+- `veiltrium-traffic.timer` reads them every 5 minutes and right before any restart of a service (a restart resets the proxies' own counters), and adds the numbers to `/var/lib/veiltrium/traffic.json` (root only): totals per client and protocol, and per day for the last 90 days. No secrets and no client addresses are stored there. A client that is removed takes its counters with it.
+- The clients' JSON (`--list-clients`, `--show-client` with `--json -`) carries `traffic` per client, and `--status` the totals.
+- A node installed before this feature gets the endpoints on its next run of the installer: Hysteria, Xray and TrustTunnel restart once for that, then re-runs change nothing again. Traffic before that run is not counted.
+- Not counted: what moved between the last reading and a crash or a reboot (at most 5 minutes).
+
 ## Web panel
 
 Every node gets a small web panel: an overview of the node and its protocols, and the clients with their links, QR codes and the AWG Manager JSON; clients can be added and revoked there.
