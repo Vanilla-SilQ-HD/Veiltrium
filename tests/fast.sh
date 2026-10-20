@@ -69,6 +69,7 @@ if have jq && have openssl; then
     run bash tests/unit-maint.sh
     run bash tests/unit-traffic.sh
     run bash tests/unit-limits.sh
+    run bash tests/unit-bundle.sh
 else
     SKIPPED+=("unit tests (need jq and openssl)")
 fi

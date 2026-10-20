@@ -126,7 +126,7 @@
   "cl.imp.subHint": "For v2rayNG, v2rayN, Happ: add a subscription from the clipboard.",
   "cl.imp.subQr": "QR code of the subscription",
   "cl.imp.profile": "sing-box profile",
-  "cl.imp.profileHint": "For Hiddify, NekoBox, Karing, sing-box SFA/SFI: import from the clipboard or a file. The Hysteria certificate pin is checked.",
+  "cl.imp.profileHint": "For Hiddify, NekoBox, Karing, sing-box SFA/SFI (sing-box 1.12 or newer): import from the clipboard or a file. The Hysteria certificate pin is checked.",
   "cl.imp.profileCopy": "sing-box profile (JSON)",
   "cl.imp.profileDownload": "Download",
   "cl.imp.hints": "Which app takes what",

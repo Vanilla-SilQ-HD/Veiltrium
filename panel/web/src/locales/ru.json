@@ -126,7 +126,7 @@
   "cl.imp.subHint": "Для v2rayNG, v2rayN, Happ: добавьте подписку из буфера обмена.",
   "cl.imp.subQr": "QR-код подписки",
   "cl.imp.profile": "Профиль sing-box",
-  "cl.imp.profileHint": "Для Hiddify, NekoBox, Karing, sing-box SFA/SFI: импортируйте из буфера обмена или файла. Отпечаток сертификата Hysteria проверяется.",
+  "cl.imp.profileHint": "Для Hiddify, NekoBox, Karing, sing-box SFA/SFI (sing-box 1.12 и новее): импортируйте из буфера обмена или файла. Отпечаток сертификата Hysteria проверяется.",
   "cl.imp.profileCopy": "Профиль sing-box (JSON)",
   "cl.imp.profileDownload": "Скачать",
   "cl.imp.hints": "Что в какое приложение",

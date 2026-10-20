@@ -2078,7 +2078,7 @@ phones_section_text() {
 ${num}) Phones and apps
 ${files}
    - Apps built on sing-box (Hiddify, NekoBox, Karing, sing-box SFA/SFI): import the sing-box
-     profile; the Hysteria certificate pin is checked there.
+     profile (sing-box 1.12 or newer); the Hysteria certificate pin is checked there.
    - Apps built on Xray (v2rayNG, v2rayN, Happ): paste the subscription (base64) or the links.
      Hysteria 2 support and its certificate pin vary by app: prefer VLESS Reality there.
    - Keenetic router (AWG Manager): VLESS and TrustTunnel by link; Hysteria only as the
