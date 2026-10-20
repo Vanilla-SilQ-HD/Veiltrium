@@ -144,6 +144,21 @@ bash /root/veiltrium.sh --check-russia        # do Russian networks reach this s
 bash /root/veiltrium.sh --help
 ```
 
+## Moving to a new server
+
+If the address of a server gets blocked, move the node with all its secrets: every client keeps working after changing only the server address in its link.
+
+```bash
+bash veiltrium.sh --export /root/node.vt        # old server; asks for a passphrase (12+ characters)
+scp /root/node.vt root@NEW_IP:/root/
+bash veiltrium.sh --import /root/node.vt        # new server; a normal install that starts from the export
+```
+
+- The export holds the Hysteria, Reality and TrustTunnel keys, passwords and certificates, the server names, the added clients and the probe key. It is a tar of a fixed list of files encrypted with `openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256` (the file is plain openssl output, mode 600, never overwritten). Anyone with the file and the passphrase owns the node: keep them apart and delete the file afterwards.
+- Without a terminal give the passphrase in `VT_EXPORT_PASSPHRASE` / `VT_IMPORT_PASSPHRASE` (the script removes it from its environment at once).
+- The import checks the file name by name (regular files from the fixed list only, sizes, SHA-256 manifest, the exact format of every state file, certificate and key pairs) before it places anything. It runs only on a server with no node, or with the same node (a standby copy being refreshed); a different node is refused.
+- The new server gets a new web panel password and detects its country name again. Ports of the old node are kept unless you set `REALITY_PORT` / `TT_PORT` yourself.
+
 ## Clients
 
 The first client, `main`, is created by the installer (`/root/veiltrium/client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID and a TrustTunnel login. Revoking one never affects the others.

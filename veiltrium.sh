@@ -52,6 +52,9 @@
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
 #    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
 #    bash veiltrium.sh --panel-password    a new web panel password (signs everybody out)
+#    bash veiltrium.sh --export FILE       pack this node (all secrets, encrypted with a passphrase)
+#    bash veiltrium.sh --import FILE       install on a new server with the same secrets (links differ
+#                                                   only by the address)
 #    bash veiltrium.sh --help
 #
 #  To regenerate everything:  VT_RECONFIGURE=1 bash veiltrium.sh
@@ -102,10 +105,12 @@ REALITY_RESELECT="${REALITY_RESELECT:-0}"      # 1: re-evaluate the Reality site
 HY2_SNI="${HY2_SNI:-}"                         # Hysteria SNI; saved; "auto": a candidate other than the Reality site
 HY2_MASQUERADE_URL="${HY2_MASQUERADE_URL:-}"   # saved; "auto": https://<Hysteria SNI>
 TT_SNI="${TT_SNI:-}"                           # TrustTunnel hostname; saved; "auto": a candidate other than Reality/Hysteria
+REALITY_ENABLE_GIVEN="${REALITY_ENABLE:+1}"    # given explicitly: wins over an imported node's setting
 REALITY_ENABLE="${REALITY_ENABLE:-1}"          # 0: no VLESS Reality
 REALITY_PORT_GIVEN="${REALITY_PORT:+1}"       # given explicitly: change the port; else keep the node's
 REALITY_PORT="${REALITY_PORT:-443}"
 REALITY_FP="${REALITY_FP:-chrome}"             # TLS client fingerprint (uTLS)
+TT_ENABLE_GIVEN="${TT_ENABLE:+1}"
 TT_ENABLE="${TT_ENABLE:-1}"                    # 0: no TrustTunnel
 TT_PORT_GIVEN="${TT_PORT:+1}"
 TT_PORT="${TT_PORT:-8443}"                     # TrustTunnel listens on TCP and UDP on this port
@@ -2291,6 +2296,448 @@ EOF
     return 0
 }
 
+# ---- Moving a node to a new server (--export / --import) ---------------------
+# An export is a tar of a fixed list of state files, encrypted with a passphrase
+# (openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256; the file is pure openssl
+# output). It holds every secret of the node: on a new server the keys stay the same and
+# the links differ only by the address. The import validates everything before a single
+# file is placed.
+EXPORT_FORMAT="veiltrium-export/1"
+EXPORT_ITER=600000
+EXPORT_DIRS="hysteria reality trusttunnel veiltrium clients"
+EXPORT_COMMENT_RE='^# veiltrium: [A-Za-z0-9 ().,;<>_/-]{0,120}$'
+VT_PASS=""
+IMPORTED=0; IMPORT_FRESH=0; IMPORT_OLD_IP=""
+
+# Is $1 (relative to the archive root) a name an export may contain?
+export_name_ok() {
+    local n
+    case "$1" in
+        meta|MANIFEST|hysteria/node.env|hysteria/server.crt|hysteria/server.key|reality/reality.env|\
+        trusttunnel/node.env|trusttunnel/cert.pem|trusttunnel/key.pem|\
+        veiltrium/node.env|veiltrium/probe.env|veiltrium/reality-candidates) return 0 ;;
+        clients/*.env)
+            n="${1#clients/}"; n="${n%.env}"
+            if [[ "${n}" =~ ${CLIENT_RE} && "${n}" != "main" ]]; then return 0; fi ;;
+    esac
+    return 1
+}
+
+# Where the file with the relative name $1 lives on this server.
+export_path() {
+    case "$1" in
+        hysteria/node.env) printf '%s' "${HY2_STATE}" ;;
+        hysteria/server.crt) printf '%s' "${HY2_CERT}" ;;
+        hysteria/server.key) printf '%s' "${HY2_KEY}" ;;
+        reality/reality.env) printf '%s' "${XRAY_STATE}" ;;
+        trusttunnel/node.env) printf '%s' "${TT_STATE}" ;;
+        trusttunnel/cert.pem) printf '%s' "${TT_DIR}/cert.pem" ;;
+        trusttunnel/key.pem) printf '%s' "${TT_DIR}/key.pem" ;;
+        veiltrium/node.env) printf '%s' "${NODE_ENV}" ;;
+        veiltrium/probe.env) printf '%s' "${PROBE_ENV}" ;;
+        veiltrium/reality-candidates) printf '%s' "${CANDIDATES_FILE}" ;;
+        clients/*.env) printf '%s' "${CLIENTS_DIR}/${1#clients/}" ;;
+    esac
+    return 0
+}
+
+# Passphrase: $1 = name of the environment variable that may hold it, $2 = new (asked
+# twice, at least 12 characters) or old. Sets VT_PASS. Read from the terminal, never
+# from a command line; the variable is removed from the environment at once.
+read_passphrase() {
+    local envname="$1" mode="$2" p1="" p2=""
+    VT_PASS=""
+    if [[ -n "${!envname:-}" ]]; then
+        p1="${!envname}"
+        unset "${envname}"
+    else
+        { : </dev/tty; } 2>/dev/null || die "no terminal to ask for the passphrase; set ${envname} instead."
+        printf 'Passphrase: ' >/dev/tty
+        read -rs p1 </dev/tty || die "no passphrase was entered."
+        printf '\n' >/dev/tty
+        if [[ "${mode}" == "new" ]]; then
+            printf 'Again: ' >/dev/tty
+            read -rs p2 </dev/tty || die "no passphrase was entered."
+            printf '\n' >/dev/tty
+            [[ "${p1}" == "${p2}" ]] || die "the two passphrases differ; nothing was written."
+        fi
+    fi
+    [[ -n "${p1}" ]] || die "the passphrase is empty."
+    if [[ "${mode}" == "new" ]] && (( ${#p1} < 12 )); then
+        die "the passphrase is too short (12 characters at least); nothing was written."
+    fi
+    VT_PASS="${p1}"
+    return 0
+}
+
+# Is the decoded value $2 acceptable for the key $1? These are the only keys the state files use.
+env_value_ok() {
+    local v="$2" p
+    case "$1" in
+        H_PASSWORD|T_PASS|C_HY2_PASS|C_TT_PASS) [[ "${v}" =~ ^[0-9a-f]{48}$ ]] ;;
+        H_SNI|T_SNI) [[ "${v}" =~ ${DOMAIN_RE} ]] ;;
+        R_SITE) [[ -z "${v}" || "${v}" =~ ${DOMAIN_RE} ]] ;;
+        H_PORT)
+            [[ "${v}" =~ ^[0-9]{1,5}$ ]] || return 1
+            p=$((10#${v})); (( p >= 1 && p <= 65535 )) ;;
+        H_MASQ) [[ "${v}" == "auto" || "${v}" =~ ^https?://[A-Za-z0-9._~:/?#@\&+,=%-]+$ ]] ;;
+        H_AUTH) [[ "${v}" == "password" || "${v}" == "userpass" ]] ;;
+        R_UUID|C_UUID) [[ "${v}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ;;
+        R_PRIV|R_PUB) [[ "${v}" =~ ^[A-Za-z0-9_-]{43}$ ]] ;;
+        R_SID) [[ "${v}" =~ ^[0-9a-f]{16}$ ]] ;;
+        T_USER) [[ "${v}" =~ ^[A-Za-z0-9_-]{1,32}$ ]] ;;
+        T_IPV6) [[ -z "${v}" || "${v}" == "true" || "${v}" == "false" ]] ;;
+        N_NAME) [[ -z "${v}" || "${v}" =~ ${NAME_RE} ]] ;;
+        N_GLOBALPING) [[ "${v}" == "0" || "${v}" == "1" ]] ;;
+        PROBE_KEY) [[ "${v}" =~ ^[0-9a-f]{64}$ ]] ;;
+        PROBE_SERVER) [[ -z "${v}" || "${v}" =~ ^[0-9.]{7,15}$ ]] ;;
+        C_NAME) [[ "${v}" =~ ${CLIENT_RE} ]] ;;
+        C_CREATED) [[ "${v}" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}|\?)$ ]] ;;
+        *) return 1 ;;
+    esac
+}
+
+# $1 = file, $2 = required keys, $3 = optional keys (space-separated). The file is later
+# sourced by root, so every line must be what the save_* functions write: KEY=value from
+# printf %q, the value made of plain characters or backslash-escaped ones (never $'...',
+# quotes, $( ), backticks or an unescaped ; or space), a key allowed for this file, once,
+# with a value that is valid for the key. A "# veiltrium: ..." comment line is fine.
+env_file_ok() {
+    local f="$1" req="$2" opt="$3" line key raw val seen=" " k
+    local re_val='^([A-Za-z0-9._:/@+=,%~-]|\\[^[:alnum:][:cntrl:]])+$'
+    local LC_ALL=C
+    [[ -f "${f}" && ! -L "${f}" && -s "${f}" ]] || return 1
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        if [[ "${line}" =~ ${EXPORT_COMMENT_RE} ]]; then continue; fi
+        [[ "${line}" =~ ^([A-Z][A-Z0-9_]*)=(.*)$ ]] || return 1
+        key="${BASH_REMATCH[1]}"; raw="${BASH_REMATCH[2]}"
+        [[ " ${req} ${opt} " == *" ${key} "* && "${seen}" != *" ${key} "* ]] || return 1
+        seen+="${key} "
+        if [[ "${raw}" == "''" ]]; then
+            val=""
+        else
+            [[ "${raw}" =~ ${re_val} ]] || return 1
+            val="$(printf '%s' "${raw}" | sed -E 's/\\(.)/\1/g')"
+        fi
+        env_value_ok "${key}" "${val}" || return 1
+    done < "${f}"
+    for k in ${req}; do
+        [[ "${seen}" == *" ${k} "* ]] || return 1
+    done
+    return 0
+}
+
+# First value of KEY ($2) in the state file $1 (raw text; plain characters in a validated file).
+env_get() { sed -n "s/^$2=//p" "$1" | head -n 1; }
+
+# $1 = certificate, $2 = key, $3 = name the certificate must be valid for (optional).
+cert_pair_ok() {
+    local pub
+    [[ -s "$1" && -s "$2" ]] || return 1
+    pub="$(openssl x509 -in "$1" -noout -pubkey 2>/dev/null)" || return 1
+    [[ -n "${pub}" && "${pub}" == "$(openssl pkey -in "$2" -pubout 2>/dev/null)" ]] || return 1
+    if [[ -n "${3:-}" ]]; then
+        [[ "$(openssl x509 -in "$1" -noout -checkhost "$3" 2>/dev/null)" == *"does match"* ]] || return 1
+    fi
+    return 0
+}
+
+# meta: exactly these lines, in this order.
+export_meta_ok() {
+    local f="$1" i=0 line k v p
+    local -a keys=(format version created ip reality_port tt_port reality_enabled tt_enabled)
+    local LC_ALL=C
+    [[ -f "${f}" && ! -L "${f}" ]] || return 1
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        (( i < ${#keys[@]} )) || return 1
+        k="${keys[i]}"
+        [[ "${line}" == "${k}="* ]] || return 1
+        v="${line#"${k}="}"
+        case "${k}" in
+            format) [[ "${v}" == "${EXPORT_FORMAT}" ]] || return 1 ;;
+            version) [[ "${v}" =~ ^[0-9][0-9.-]{0,30}$ ]] || return 1 ;;
+            created) [[ "${v}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1 ;;
+            ip) [[ "${v}" =~ ^([0-9]{1,3}(\.[0-9]{1,3}){3}|unknown)$ ]] || return 1 ;;
+            reality_port|tt_port)
+                [[ "${v}" =~ ^[0-9]{1,5}$ ]] || return 1
+                p=$((10#${v})); (( p >= 1 && p <= 65535 )) || return 1 ;;
+            *) [[ "${v}" == "0" || "${v}" == "1" ]] || return 1 ;;
+        esac
+        i=$((i + 1))
+    done < "${f}"
+    (( i == ${#keys[@]} ))
+}
+
+# Checks the files of an export tree ($1): each one for what it is, and the set as a whole.
+# Used on the source before packing and on the target after unpacking. Prints the reason
+# on failure.
+export_tree_ok() {
+    local d="$1" f rel n sni cnt line want
+    local -a files=()
+    while IFS= read -r -d '' f; do files+=("${f#"${d}/"}"); done < <(find "${d}" -type f -print0)
+    for rel in "${files[@]}"; do
+        export_name_ok "${rel}" || { echo "unexpected file ${rel}"; return 1; }
+        f="${d}/${rel}"
+        case "${rel}" in
+            meta|MANIFEST) ;;
+            hysteria/node.env) env_file_ok "${f}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH" || { echo "bad ${rel}"; return 1; } ;;
+            reality/reality.env) env_file_ok "${f}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "" || { echo "bad ${rel}"; return 1; } ;;
+            trusttunnel/node.env) env_file_ok "${f}" "T_USER T_PASS T_SNI" "T_IPV6" || { echo "bad ${rel}"; return 1; } ;;
+            veiltrium/node.env) env_file_ok "${f}" "" "N_NAME N_GLOBALPING" || { echo "bad ${rel}"; return 1; } ;;
+            veiltrium/probe.env) env_file_ok "${f}" "PROBE_KEY PROBE_SERVER" "" || { echo "bad ${rel}"; return 1; } ;;
+            veiltrium/reality-candidates)
+                cnt=0
+                while IFS= read -r line || [[ -n "${line}" ]]; do
+                    if [[ -z "${line}" || "${line}" =~ ${EXPORT_COMMENT_RE} ]]; then continue; fi
+                    [[ "${line}" =~ ${DOMAIN_RE} ]] || { echo "bad ${rel}"; return 1; }
+                    cnt=$((cnt + 1))
+                done < "${f}"
+                (( cnt > 0 )) || { echo "bad ${rel}"; return 1; } ;;
+            clients/*.env)
+                env_file_ok "${f}" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED" || { echo "bad ${rel}"; return 1; }
+                n="$(env_get "${f}" C_NAME)"
+                [[ "clients/${n}.env" == "${rel}" ]] || { echo "the client name in ${rel} does not match its file name"; return 1; } ;;
+        esac
+    done
+    for rel in hysteria/node.env hysteria/server.crt hysteria/server.key meta; do
+        [[ -f "${d}/${rel}" ]] || { echo "${rel} is missing"; return 1; }
+    done
+    export_meta_ok "${d}/meta" || { echo "bad meta"; return 1; }
+    sni="$(env_get "${d}/hysteria/node.env" H_SNI)"
+    cert_pair_ok "${d}/hysteria/server.crt" "${d}/hysteria/server.key" "${sni}" \
+        || { echo "the Hysteria certificate and key are not a pair for ${sni}"; return 1; }
+    want=0
+    if [[ -e "${d}/trusttunnel/node.env" || -e "${d}/trusttunnel/cert.pem" || -e "${d}/trusttunnel/key.pem" ]]; then
+        want=1
+        [[ -f "${d}/trusttunnel/node.env" ]] || { echo "trusttunnel/node.env is missing"; return 1; }
+        sni="$(env_get "${d}/trusttunnel/node.env" T_SNI)"
+        cert_pair_ok "${d}/trusttunnel/cert.pem" "${d}/trusttunnel/key.pem" "${sni}" \
+            || { echo "the TrustTunnel certificate and key are not a pair for ${sni}"; return 1; }
+    fi
+    [[ "$(sed -n 's/^tt_enabled=//p' "${d}/meta")" == "${want}" ]] || { echo "meta and files disagree about TrustTunnel"; return 1; }
+    want=0
+    if [[ -e "${d}/reality/reality.env" ]]; then want=1; fi
+    [[ "$(sed -n 's/^reality_enabled=//p' "${d}/meta")" == "${want}" ]] || { echo "meta and files disagree about Reality"; return 1; }
+    return 0
+}
+
+# $1 = output file. Needs TMPD (a private directory).
+export_node() {
+    local out="$1" d="${TMPD}/export" rel f why
+    local -a files=() sorted=()
+    [[ -s "${HY2_STATE}" && -s "${HY2_CERT}" && -s "${HY2_KEY}" ]] \
+        || die "no installed node found on this server; nothing to export."
+    [[ ! -e "${out}" && ! -L "${out}" ]] || die "${out} already exists; choose a new file name (nothing was changed)."
+    [[ -d "$(dirname -- "${out}")" ]] || die "the folder of ${out} does not exist."
+    read_passphrase VT_EXPORT_PASSPHRASE new
+    install -d -m 700 "${d}"
+    for rel in hysteria/node.env hysteria/server.crt hysteria/server.key reality/reality.env \
+               trusttunnel/node.env trusttunnel/cert.pem trusttunnel/key.pem \
+               veiltrium/node.env veiltrium/probe.env veiltrium/reality-candidates; do
+        if [[ -s "$(export_path "${rel}")" ]]; then files+=("${rel}"); fi
+    done
+    for f in "${CLIENTS_DIR}"/*.env; do
+        [[ -f "${f}" ]] || continue
+        rel="clients/${f##*/}"
+        export_name_ok "${rel}" || die "the client file ${f} has an unexpected name; nothing was exported."
+        files+=("${rel}")
+    done
+    for rel in "${files[@]}"; do
+        install -d -m 700 "${d}/${rel%/*}"
+        install -m 600 "$(export_path "${rel}")" "${d}/${rel}"
+    done
+    printf 'format=%s\nversion=%s\ncreated=%s\nip=%s\nreality_port=%s\ntt_port=%s\nreality_enabled=%s\ntt_enabled=%s\n' \
+        "${EXPORT_FORMAT}" "${SCRIPT_VERSION}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PUBLIC_IP:-unknown}" \
+        "${REALITY_PORT}" "${TT_PORT}" "$([[ -s "${XRAY_STATE}" ]] && echo 1 || echo 0)" \
+        "$([[ -s "${TT_STATE}" ]] && echo 1 || echo 0)" > "${d}/meta"
+    chmod 600 "${d}/meta"
+    why="$(export_tree_ok "${d}")" || die "the node's files did not pass the check (${why}); nothing was exported."
+    files+=(meta)
+    mapfile -t sorted < <(printf '%s\n' "${files[@]}" | LC_ALL=C sort)
+    (cd "${d}" && sha256sum -- "${sorted[@]}" > MANIFEST)
+    chmod 600 "${d}/MANIFEST"
+    LC_ALL=C tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime='UTC 1970-01-01' \
+        -cf "${TMPD}/export.tar" -C "${d}" MANIFEST "${sorted[@]}" || die "could not pack the files."
+    # The file is created exclusively and for root only before anything is written to it.
+    ( set -C; umask 077; : > "${out}" ) 2>/dev/null || die "could not create ${out} (it may exist already)."
+    if ! openssl enc -aes-256-cbc -pbkdf2 -iter "${EXPORT_ITER}" -salt -md sha256 -pass fd:3 \
+            -in "${TMPD}/export.tar" -out "${out}" 3< <(printf '%s\n' "${VT_PASS}") 2>/dev/null; then
+        rm -f -- "${out}"
+        die "encryption failed; nothing was written."
+    fi
+    chmod 600 "${out}"
+    VT_PASS=""
+    rm -rf -- "${d}" "${TMPD}/export.tar"
+    printf '\nExported this node to %s (%s bytes, mode 600; AES-256-CBC, PBKDF2).\n' "${out}" "$(stat -c %s -- "${out}")"
+    printf '  Hysteria%s: keys, passwords, server names, certificates, %s added client(s).\n' \
+        "$([[ -s "${XRAY_STATE}" ]] && echo ", Reality")$([[ -s "${TT_STATE}" ]] && echo ", TrustTunnel")" "$(count_clients)"
+    printf '\nNext:\n'
+    printf '  1. copy the file to the new server, e.g.  scp %s root@NEW_IP:/root/\n' "${out}"
+    printf '  2. on the new server, as root:  bash veiltrium.sh --import /root/%s\n' "${out##*/}"
+    printf '  3. the links stay the same except the server address. Delete the file afterwards.\n'
+    printf '  The passphrase is the only protection of this file: keep the two apart.\n'
+    return 0
+}
+
+# Decrypts $1 into $2 with VT_PASS. A wrong passphrase and a damaged file look the same.
+export_decrypt() {
+    local in="$1" out="$2" size
+    [[ -f "${in}" && ! -L "${in}" ]] || die "${in} is not a readable file; nothing was changed."
+    size="$(stat -c %s -- "${in}")"
+    (( size > 0 && size <= 20000000 )) || die "${in} has an unexpected size; nothing was changed."
+    if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter "${EXPORT_ITER}" -md sha256 -pass fd:3 \
+            -in "${in}" -out "${out}" 3< <(printf '%s\n' "${VT_PASS}") 2>/dev/null; then
+        rm -f -- "${out}"
+        die "could not decrypt ${in}: wrong passphrase or a damaged file; nothing was changed."
+    fi
+    return 0
+}
+
+# Lists the tar $1 first: only plain files, names from the fixed list, sane sizes. Then
+# unpacks it into the new directory $2 and checks the manifest and every file.
+export_unpack() {
+    local tarf="$1" dest="$2" line n=0 size name seen=" " mlist=" " f rel why
+    local re='^-[-rwxsStT]{9} [^[:space:]/]+/[^[:space:]/]+ +([0-9]+) [0-9-]+ [0-9:]+ (.+)$'
+    local LC_ALL=C
+    tar -tvf "${tarf}" --quoting-style=literal > "${dest}.list" 2>/dev/null \
+        || die "this is not a valid export (or the passphrase was wrong); nothing was changed."
+    while IFS= read -r line; do
+        [[ "${line}" =~ ${re} ]] || die "the export contains something that is not a plain file; nothing was changed."
+        size="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"
+        export_name_ok "${name}" || die "the export contains an unexpected file name; nothing was changed."
+        [[ "${seen}" != *" ${name} "* ]] || die "the export lists a file twice; nothing was changed."
+        seen+="${name} "
+        (( 10#${size} <= 65536 )) || die "the export contains an oversized file; nothing was changed."
+        n=$((n + 1))
+        (( n <= 300 )) || die "the export contains too many files; nothing was changed."
+    done < "${dest}.list"
+    rm -f "${dest}.list"
+    (( n >= 5 )) || die "the export is incomplete; nothing was changed."
+    install -d -m 700 "${dest}"
+    ( umask 077; tar -xf "${tarf}" -C "${dest}" --no-same-owner --no-same-permissions ) 2>/dev/null \
+        || die "could not unpack the export; nothing was changed."
+    # what was really unpacked: the listed plain files and the fixed folders, nothing else
+    while IFS= read -r -d '' f; do
+        rel="${f#"${dest}/"}"
+        if [[ -L "${f}" ]]; then
+            die "the export unpacked a link; nothing was changed."
+        elif [[ -d "${f}" ]]; then
+            [[ " ${EXPORT_DIRS} " == *" ${rel} "* ]] || die "the export unpacked an unexpected folder; nothing was changed."
+        elif [[ -f "${f}" ]]; then
+            [[ "${seen}" == *" ${rel} "* ]] || die "the export unpacked an unexpected file; nothing was changed."
+        else
+            die "the export unpacked something that is not a plain file; nothing was changed."
+        fi
+    done < <(find "${dest}" -mindepth 1 -print0)
+    # manifest: a sha256 of every file except itself, and no file missing from it
+    [[ -f "${dest}/MANIFEST" ]] || die "the export has no manifest; nothing was changed."
+    while IFS= read -r line; do
+        [[ "${line}" =~ ^[0-9a-f]{64}\ \ (.+)$ ]] || die "the export manifest is damaged; nothing was changed."
+        name="${BASH_REMATCH[1]}"
+        [[ "${name}" != "MANIFEST" && "${seen}" == *" ${name} "* && "${mlist}" != *" ${name} "* ]] \
+            || die "the export manifest does not match its files; nothing was changed."
+        mlist+="${name} "
+    done < "${dest}/MANIFEST"
+    for name in ${seen}; do
+        [[ "${name}" == "MANIFEST" || "${mlist}" == *" ${name} "* ]] \
+            || die "the export manifest does not match its files; nothing was changed."
+    done
+    (cd "${dest}" && sha256sum -c --quiet --strict MANIFEST >/dev/null 2>&1) \
+        || die "a file of the export was changed (checksum mismatch); nothing was changed."
+    why="$(export_tree_ok "${dest}")" || die "the export did not pass the check (${why}); nothing was changed."
+    return 0
+}
+
+# The export in $1 may replace the state here only if this server has no node, or runs the
+# same one (same Hysteria password, same Reality UUID): a standby copy being refreshed.
+# Sets IMPORT_FRESH (1: no node here).
+import_identity_ok() {
+    local d="$1" have=0 f
+    for f in "${HY2_STATE}" "${XRAY_STATE}" "${TT_STATE}" "${HY2_CONFIG}"; do
+        if [[ -e "${f}" ]]; then have=1; fi
+    done
+    IMPORT_FRESH=1
+    if (( have == 0 )); then return 0; fi
+    IMPORT_FRESH=0
+    if [[ -s "${HY2_STATE}" && "$(env_get "${HY2_STATE}" H_PASSWORD)" == "$(env_get "${d}/hysteria/node.env" H_PASSWORD)" ]]; then
+        if [[ -e "${XRAY_STATE}" ]]; then
+            if [[ ! -f "${d}/reality/reality.env" || "$(env_get "${XRAY_STATE}" R_UUID)" != "$(env_get "${d}/reality/reality.env" R_UUID)" ]]; then
+                die "this server already runs a different node; nothing was changed."
+            fi
+        fi
+        return 0
+    fi
+    die "this server already runs a different node; nothing was changed."
+}
+
+# Installs one file: $1 source, $2 target, $3 final mode, $4 group (used once that group
+# exists; before that the file is root-only and the normal install steps set the final owner).
+import_put() {
+    local mode=600
+    local -a own=()
+    if (( EUID == 0 )) && [[ -n "${4:-}" ]] && getent group "$4" >/dev/null 2>&1; then own=(-o root -g "$4"); mode="$3"; fi
+    install -m "${mode}" "${own[@]+"${own[@]}"}" "$1" "$2.new"
+    mv -f "$2.new" "$2"
+}
+
+# Places the validated tree $1. The N_NAME of the old server is dropped (the country is
+# detected again here); no panel password is part of an export.
+import_place() {
+    local d="$1" f
+    for f in "${HY2_DIR}" "${XRAY_DIR}" "${TT_DIR}" "${SCANNER_DIR}" "${CLIENTS_DIR}"; do
+        [[ -d "${f}" ]] || install -d -m 700 "${f}"
+    done
+    import_put "${d}/hysteria/node.env" "${HY2_STATE}" 600 ""
+    import_put "${d}/hysteria/server.crt" "${HY2_CERT}" 644 hysteria
+    import_put "${d}/hysteria/server.key" "${HY2_KEY}" 640 hysteria
+    if [[ -f "${d}/reality/reality.env" ]]; then import_put "${d}/reality/reality.env" "${XRAY_STATE}" 600 ""; fi
+    if [[ -f "${d}/trusttunnel/node.env" ]]; then
+        import_put "${d}/trusttunnel/node.env" "${TT_STATE}" 600 ""
+        import_put "${d}/trusttunnel/cert.pem" "${TT_DIR}/cert.pem" 644 trusttunnel
+        import_put "${d}/trusttunnel/key.pem" "${TT_DIR}/key.pem" 640 trusttunnel
+    fi
+    if [[ -f "${d}/veiltrium/node.env" ]]; then
+        grep -v '^N_NAME=' "${d}/veiltrium/node.env" > "${d}/node.env.tmp" || true
+        import_put "${d}/node.env.tmp" "${NODE_ENV}" 600 ""
+    fi
+    if [[ -f "${d}/veiltrium/probe.env" ]]; then import_put "${d}/veiltrium/probe.env" "${PROBE_ENV}" 600 ""; fi
+    if [[ -f "${d}/veiltrium/reality-candidates" ]]; then import_put "${d}/veiltrium/reality-candidates" "${CANDIDATES_FILE}" 600 ""; fi
+    # the clients of the export are the clients: a refreshed copy drops those that were removed
+    for f in "${CLIENTS_DIR}"/*.env; do
+        if [[ -f "${f}" && ! -e "${d}/clients/${f##*/}" ]]; then rm -f -- "${f}"; fi
+    done
+    for f in "${d}"/clients/*.env; do
+        [[ -f "${f}" ]] || continue
+        import_put "${f}" "${CLIENTS_DIR}/${f##*/}" 600 ""
+    done
+    return 0
+}
+
+# Install mode with --import FILE: unpack, validate, place; before any state is read.
+import_node() {
+    local file="$1" imp="${TMPD}/import" v
+    [[ -f "${file}" && ! -L "${file}" ]] || die "${file} is not a readable file; nothing was changed."
+    read_passphrase VT_IMPORT_PASSPHRASE old
+    install -d -m 700 "${imp}"
+    export_decrypt "${file}" "${imp}/export.tar"
+    VT_PASS=""
+    export_unpack "${imp}/export.tar" "${imp}/tree"
+    import_identity_ok "${imp}/tree"
+    import_place "${imp}/tree"
+    IMPORTED=1
+    IMPORT_OLD_IP="$(sed -n 's/^ip=//p' "${imp}/tree/meta")"
+    # the ports and switches of the old node, unless they are given explicitly
+    v="$(sed -n 's/^reality_port=//p' "${imp}/tree/meta")"
+    if [[ -z "${REALITY_PORT_GIVEN}" ]]; then REALITY_PORT="${v}"; REALITY_PORT_GIVEN=1; fi
+    v="$(sed -n 's/^tt_port=//p' "${imp}/tree/meta")"
+    if [[ -z "${TT_PORT_GIVEN}" ]]; then TT_PORT="${v}"; TT_PORT_GIVEN=1; fi
+    if [[ -z "${REALITY_ENABLE_GIVEN}" ]]; then REALITY_ENABLE="$(sed -n 's/^reality_enabled=//p' "${imp}/tree/meta")"; fi
+    if [[ -z "${TT_ENABLE_GIVEN}" ]]; then TT_ENABLE="$(sed -n 's/^tt_enabled=//p' "${imp}/tree/meta")"; fi
+    rm -rf -- "${imp}"
+    ok "Imported the node of ${IMPORT_OLD_IP} (keys, passwords, server names and clients kept; the node name is detected again)"
+    return 0
+}
+
 usage() {
     banner
     printf '\n'
@@ -2309,6 +2756,8 @@ Settings (environment variables, saved where noted):
                                     to Globalping probes; saved; default 1)
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
+  VT_EXPORT_PASSPHRASE / VT_IMPORT_PASSPHRASE   passphrase for --export / --import without a
+                                    terminal (otherwise it is asked for; 12+ characters on export)
   The full list (ports, TT_ENABLE, SCANNER_BLOCK, RU_BLOCKLISTS, PUBLIC_IP, ...) is in README.md.
 
 Options:
@@ -2357,6 +2806,8 @@ trap cleanup EXIT
 MODE="install"
 CLIENT_ARG=""
 IMPORT_FILE=""
+EXPORT_FILE=""
+NODE_IMPORT_FILE=""
 TRIAL_SITES=""
 JSON_OUT=""
 while (( $# )); do
@@ -2375,6 +2826,8 @@ while (( $# )); do
         --status) MODE="status" ;;
         --check-russia) MODE="check-russia" ;;
         --panel-password) MODE="panel-password" ;;
+        --export) MODE="export"; EXPORT_FILE="${2:-}"; [[ -n "${EXPORT_FILE}" ]] || die "--export needs a file name"; shift ;;
+        --import) NODE_IMPORT_FILE="${2:-}"; [[ -n "${NODE_IMPORT_FILE}" ]] || die "--import needs the file made by --export"; shift ;;
         --helper) MODE="helper" ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option: $1 (see --help)" ;;
@@ -2382,6 +2835,10 @@ while (( $# )); do
     shift
 done
 [[ "${REALITY_RESELECT}" == "0" || "${REALITY_RESELECT}" == "1" ]] || die "REALITY_RESELECT must be 0 or 1."
+if [[ -n "${NODE_IMPORT_FILE}" ]]; then
+    [[ "${MODE}" == "install" ]] || die "--import is an installation: it cannot be combined with another mode."
+    [[ "${VT_RECONFIGURE}" != "1" ]] || die "--import keeps the secrets of the old node; it cannot be combined with VT_RECONFIGURE=1."
+fi
 [[ "${MTS_MAX_AGE_DAYS}" =~ ^[0-9]{1,3}$ ]] || die "MTS_MAX_AGE_DAYS must be a number of days."
 
 # ---- Preliminary checks (before any changes) --------------------------------
@@ -2446,6 +2903,9 @@ if [[ "${MODE}" != "install" ]]; then
     PUBLIC_IP="${PUBLIC_IP:-${PROBE_SERVER}}"
     if [[ -n "${H_PORT}" ]]; then HY2_PORT="${H_PORT}"; fi
     case "${MODE}" in
+        export)
+            export_node "${EXPORT_FILE}"
+            exit 0 ;;
         import-mts)
             mts_import "${IMPORT_FILE}" || die "no usable results for this server in ${IMPORT_FILE}."
             exit 0 ;;
@@ -2801,6 +3261,9 @@ case "${ARCH}" in
     *) die "architecture ${ARCH} is not supported (amd64 or arm64 required)." ;;
 esac
 migrate_old_layout
+# --import: the state of the old server is validated and put in place here, before any
+# state is read below (a new server then continues as a new node with the same secrets).
+if [[ -n "${NODE_IMPORT_FILE}" ]]; then import_node "${NODE_IMPORT_FILE}"; fi
 load_ports
 [[ "${HY2_PORT}" =~ ^[0-9]{1,5}$ ]] && (( HY2_PORT >= 1 && HY2_PORT <= 65535 )) \
     || die "HY2_PORT must be a number from 1 to 65535."
@@ -2847,6 +3310,8 @@ load_node_name
 # A node that already works is never rebooted by a re-run (clients would drop).
 NODE_EXISTED=0
 if [[ -s "${HY2_STATE}" || -s "${XRAY_STATE}" || -s "${TT_STATE}" ]]; then NODE_EXISTED=1; fi
+# A server that only received an imported node is a new server (no clients are connected to it).
+if (( IMPORT_FRESH == 1 )); then NODE_EXISTED=0; fi
 if [[ -n "${H_PORT}" && "${H_PORT}" != "${HY2_PORT}" ]]; then
     info "The node is already configured on port ${H_PORT}/UDP; using it."
     HY2_PORT="${H_PORT}"
@@ -3594,7 +4059,7 @@ install -d -m 750 -o root -g hysteria "${HY2_DIR}"
 # A node that exists on disk is changed as a transaction: if the new settings do not
 # work (or the run is cut off), the previous files come back.
 HY2_TXN=0
-if [[ -e "${HY2_CONFIG}" || -e "${HY2_CERT}" ]]; then
+if (( IMPORT_FRESH == 0 )) && [[ -e "${HY2_CONFIG}" || -e "${HY2_CERT}" ]]; then
     txn_begin hysteria hysteria-server.service "${HY2_CERT}" "${HY2_KEY}" "${HY2_CONFIG}" "${HY2_STATE}"
     HY2_TXN=1
 fi
@@ -3684,7 +4149,7 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
     load_tt_state
     # An existing endpoint is changed as a transaction, like Hysteria.
     TT_TXN=0
-    if [[ -e "${TT_DIR}/vpn.toml" || -e "${TT_DIR}/cert.pem" ]]; then
+    if (( IMPORT_FRESH == 0 )) && [[ -e "${TT_DIR}/vpn.toml" || -e "${TT_DIR}/cert.pem" ]]; then
         txn_begin trusttunnel trusttunnel.service "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" "${TT_DIR}/vpn.toml" \
             "${TT_DIR}/hosts.toml" "${TT_DIR}/credentials.toml" "${TT_STATE}"
         TT_TXN=1
@@ -4144,6 +4609,12 @@ info "Hysteria 2: SNI ${HY2_SNI}, own self-signed certificate (pinned); server c
 info "  masquerade (HTTP/3 page for probers): ${HY2_MASQ_URL}"
 if [[ "${TT_ENABLE}" == "1" ]]; then
     info "TrustTunnel: hostname ${T_SNI}, own self-signed certificate (in the link); server check: HTTP/2 ${TT_VPS_H2}, HTTP/3 ${TT_VPS_H3}"
+fi
+if (( IMPORTED == 1 )); then
+    printf '\n\033[1mImported from the node at %s:\033[0m\n' "${IMPORT_OLD_IP}"
+    info "same keys, passwords, UUIDs, certificates and server names: every link differs from the old one only by the"
+    info "server address (${IMPORT_OLD_IP} -> ${PUBLIC_IP}); the name in the apps may differ if the country differs."
+    info "The web panel password is new (the old one is not part of an export)."
 fi
 if (( ${#CHANGES[@]} )); then
     printf '\n\033[1mChanged in this run:\033[0m\n'
