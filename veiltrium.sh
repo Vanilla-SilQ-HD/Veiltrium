@@ -95,7 +95,7 @@ fi
 set -Eeuo pipefail
 umask 022
 
-SCRIPT_VERSION="2026-10-20.3"
+SCRIPT_VERSION="2026-10-20.4"
 
 # ---- Pinned versions (change only together with the checksums) -------------
 HY2_VERSION="v2.13.0"
@@ -114,9 +114,9 @@ TT_SHA256_ARM64="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b968
 
 # Veiltrium web panel: this repository's own release, SHA-256 pinned like the proxies.
 # Empty sums: no release pinned yet (the panel is skipped unless PANEL_BINARY is given).
-PANEL_VERSION="panel-v0.1.4"
-PANEL_SHA256_AMD64="5b1f1e82a27eda40a52c1a97a7dc104545880d3b4663110d4cbe8422ffa04d5b"
-PANEL_SHA256_ARM64="97d017da4a978a1b058a413872ca9063d93f89c4edf588e687d886c263aeea72"
+PANEL_VERSION="panel-v0.1.5"
+PANEL_SHA256_AMD64="eb6e68cb4ab7fed74e428f170fd6af37e273792207922b000b37966e9f3b54b8"
+PANEL_SHA256_ARM64="f5d69536b157b20c4abea4c796764917d38273186f97e8fd305f2f0b0bb4fc74"
 
 # ---- Settings (can be overridden with environment variables) ---------------
 HY2_PORT="${HY2_PORT:-443}"
