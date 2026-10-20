@@ -198,7 +198,7 @@ bash /root/veiltrium.sh --remove-client anna
 bash /root/veiltrium.sh --reset-client anna    # new credentials, same name
 ```
 
-The installer also writes a short command, `/usr/local/bin/veiltrium`, which runs the installed copy of the script: `veiltrium status`, `clients`, `add NAME`, `remove NAME`, `show NAME`, `qr NAME`, `export FILE`, `russia`, `traffic`, `reset NAME`, `audit [N]`, `test-alert`, `check-update`, `update`, `uninstall`, `diagnose`, `panel-password`, `install` (the same as re-running the installer) and `help` (all modes and settings). Any installer option works too, for example `veiltrium --dry-run`. `veiltrium qr NAME` prints terminal QR codes of the client's links (including standby servers); it writes to the terminal only, because the links hold secrets.
+The installer also writes a short command, `/usr/local/bin/veiltrium`, which runs the installed copy of the script: `veiltrium status`, `clients`, `add NAME`, `remove NAME`, `show NAME`, `qr NAME`, `export FILE`, `russia`, `traffic`, `reset NAME`, `limit NAME ...`, `disable NAME`, `enable NAME`, `audit [N]`, `test-alert`, `check-update`, `update`, `uninstall`, `diagnose`, `panel-password`, `install` (the same as re-running the installer) and `help` (all modes and settings). Any installer option works too, for example `veiltrium --dry-run`. `veiltrium qr NAME` prints terminal QR codes of the client's links (including standby servers); it writes to the terminal only, because the links hold secrets.
 
 - Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `main` is the first client.
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
@@ -208,6 +208,27 @@ The installer also writes a short command, `/usr/local/bin/veiltrium`, which run
 ### Resetting a client's credentials
 
 `--reset-client NAME` gives an added client a new VLESS UUID, a new Hysteria password and a new TrustTunnel password under the same name, for example after a phone was lost. It runs the same transaction as adding or removing a client: the three server configs change together, the services restart, and real clients check that the new credentials work, the old Hysteria and VLESS ones no longer do, and the main client still works. Otherwise the previous settings come back. The details in `/root/veiltrium/clients/NAME.txt` are rewritten and printed; send them to the client. `main` cannot be reset this way: `VT_RECONFIGURE=1 bash veiltrium.sh` replaces the secrets of the whole node, the added clients included. The panel's root helper accepts the request as well (`reset-client NAME`).
+
+### Limits and expiry
+
+An added client (never `main`) can have a traffic limit, an expiry date and a periodic reset, and can be switched off without being deleted.
+
+```bash
+bash veiltrium.sh --set-client anna --limit 50G --expires 2027-01-31 --reset monthly
+bash veiltrium.sh --set-client anna --limit none --expires none --reset none
+bash veiltrium.sh --disable-client anna        # its credentials stop working; the client stays
+bash veiltrium.sh --enable-client anna
+bash veiltrium.sh --enforce                    # apply limits and expiry now
+veiltrium limit anna --limit 50G               # the short command: limit, disable, enable
+```
+
+- `--limit SIZE|none`: plain bytes or a number with `K`, `M`, `G` or `T`; decimal units (`1G` = 10^9 bytes); at most 10^15. What counts is upload plus download of all three protocols in the current period.
+- `--expires YYYY-MM-DD|none`: a real calendar date (UTC); the client works through the end of that day.
+- `--reset none|daily|weekly|monthly`: when the usage starts again from zero (UTC: every day, every Monday, the 1st of the month). With `none` the usage is counted from the moment a limit is set.
+- A client that is disabled is left out of the Xray, Hysteria and TrustTunnel configs; its details file in `/root/veiltrium/clients/` stays with a `DISABLED (reason)` line at the top. The reason is `manual`, `quota` or `expired`. `--list-clients` shows state, limit, expiry and reset; the JSON of `--list-clients` and `--show-client` has `state`, `reason`, `limit`, `expires`, `reset`, `period_start` and `period_bytes`.
+- The traffic timer (every 5 minutes) reads the counters and, only when some client must change, runs `--enforce`: it stops clients that reached their quota or expired, and brings back clients that were stopped by a quota or expiry that no longer applies (a new period, a higher limit, a later date). All changes of one run are one change: configs, restart, then real clients check that the main client works, every client that should work does, and every stopped client no longer connects; otherwise the previous settings come back (the timer then waits an hour before trying again). A manual `--disable-client` is never lifted by the timer; `--enable-client` refuses while the quota is used up or the date has passed and tells you what to change. Nothing runs during a Reality trial or an interrupted change.
+- Each state change is written to the audit log (`client-disabled`, `client-enabled`) and sent to the alert channels, for example `client anna disabled: quota 50 GB reached`. Changing only the settings of a client that stays in its state restarts nothing.
+- The panel's root helper accepts `set-client NAME limit=<bytes|none> expires=<YYYY-MM-DD|none> reset=<none|daily|weekly|monthly>` (all three, in this order), `disable-client NAME` and `enable-client NAME`.
 
 ## Uninstalling
 
@@ -221,7 +242,7 @@ It never touches what protects the server by itself: the SSH settings (`/etc/ssh
 
 ## Audit log
 
-Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `panel-password`, `traffic-reset`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
+Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `set-client`, `disable-client`, `enable-client`, `enforce`, `client-disabled`, `client-enabled`, `panel-password`, `traffic-reset`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
 
 ```
 2026-10-20T09:14:02Z source=panel action=add-client target=anna result=ok

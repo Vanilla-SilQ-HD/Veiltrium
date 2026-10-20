@@ -90,6 +90,8 @@ bash tests/unit-standby.sh --gen "${HEAD_REF}" > "${TMPD}/before.txt" 2>&1
 bash tests/unit-standby.sh --gen ./veiltrium.sh none > "${TMPD}/after.txt" 2>&1
 bash tests/unit-standby.sh --gen ./veiltrium.sh > "${TMPD}/after-empty.txt" 2>&1
 strip_traffic "${TMPD}/before.txt"; strip_traffic "${TMPD}/after.txt"; strip_traffic "${TMPD}/after-empty.txt"
+# the per-client limit fields (state, reason, limit, expires, reset, period_*) are a later feature too: one line each
+for f in before after after-empty; do grep -vE '^  "(state|reason|limit|expires|reset|period_start|period_bytes)": ' "${TMPD}/${f}.txt" > "${TMPD}/${f}.txt.s"; mv -f "${TMPD}/${f}.txt.s" "${TMPD}/${f}.txt"; done
 cmp -s "${TMPD}/after.txt" "${TMPD}/after-empty.txt"; check $? 0 "STANDBY_HOSTS=none gives the same output as unset"
 check "$(wc -c < "${TMPD}/before.txt" | tr -d ' ')" "$(wc -c < "${TMPD}/after.txt" | tr -d ' ')" "no standby: same size as before"
 if cmp -s "${TMPD}/before.txt" "${TMPD}/after.txt"; then check 1 1 "no standby: client files and JSON are byte-identical"

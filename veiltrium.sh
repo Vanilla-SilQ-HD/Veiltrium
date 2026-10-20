@@ -52,6 +52,11 @@
 #    bash veiltrium.sh --add-client NAME   a new client: own credentials for all protocols
 #    bash veiltrium.sh --remove-client NAME   revoke a client
 #    bash veiltrium.sh --reset-client NAME new credentials for a client (the old ones stop working)
+#    bash veiltrium.sh --set-client NAME [--limit SIZE|none] [--expires YYYY-MM-DD|none] [--reset none|daily|weekly|monthly]
+#                                          traffic limit, expiry date and periodic reset of an added client
+#    bash veiltrium.sh --disable-client NAME   stop accepting a client (kept; --enable-client brings it back)
+#    bash veiltrium.sh --enable-client NAME    accept a disabled client again
+#    bash veiltrium.sh --enforce           apply limits and expiry now (the traffic timer does it every 5 minutes)
 #    bash veiltrium.sh --list-clients      the clients of this node
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --qr NAME           terminal QR codes of a client's links (main: the first one)
@@ -194,6 +199,7 @@ RUSSIA_FILE="${STATE_DIR}/russia.json"         # the last check from Russian net
 TRAFFIC_FILE="${STATE_DIR}/traffic.json"       # per-client traffic counters (see traffic_collect)
 TRAFFIC_LOCK="/run/veiltrium-traffic.lock"     # its own lock: the timer and an install must not write at once
 TXN_DIR="${STATE_DIR}/txn"                     # backups of changes in progress (see txn_begin)
+ENFORCE_FAILED="${STATE_DIR}/enforce-failed"      # set while a timer-started --enforce runs; left behind if it fails
 RECOVER_BIN="/usr/local/sbin/veiltrium-recover"
 CLI_BIN="/usr/local/bin/veiltrium"            # the short command (cli_wrapper_text)
 WATCHDOG_UNIT="veiltrium-watchdog"
@@ -247,6 +253,10 @@ HAVE_PSP=0
 # Added clients (sorted by name; see load_clients). The first client, "main", keeps
 # the credentials in the protocol state files.
 CL_NAMES=(); CL_UUID=(); CL_HPASS=(); CL_TPASS=(); CL_CREATED=()
+# Optional limits of an added client: bytes per period ("" = none), last day (UTC, "" = never),
+# period reset (none|daily|weekly|monthly), state (active|disabled) and why (manual|quota|expired).
+CL_LIMIT=(); CL_EXPIRES=(); CL_RESET=(); CL_STATE=(); CL_REASON=()
+CLIENT_LIMIT_MAX=1000000000000000
 H_AUTH=""; HY2_AUTH_MAIN=""
 # Loopback statistics endpoints of the proxies (traffic counters); empty on a node from before them.
 H_STATS_PORT=""; H_STATS_SECRET=""; R_STATS_PORT=""; T_STATS_PORT=""
@@ -405,6 +415,7 @@ hy2_server_yaml() {
     if [[ "${H_AUTH}" == "userpass" ]]; then
         auth="  type: userpass"$'\n'"  userpass:"$'\n'"    main: $(yaml_sq "${H_PASSWORD}")"
         for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+            if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then continue; fi
             auth+=$'\n'"    $(yaml_sq "${CL_NAMES[i]}"): $(yaml_sq "${CL_HPASS[i]}")"
         done
     else
@@ -443,6 +454,8 @@ hy2_link() {
 # ---- Node name and added clients ----------------------------------------------
 NAME_RE='^[A-Za-z0-9]([A-Za-z0-9-]{0,14}[A-Za-z0-9])?$'
 CLIENT_RE='^[a-z0-9][a-z0-9_-]{0,31}$'
+# The panel helper's whole line for --set-client (one regex for the line: name, bytes or none, date or none, mode).
+HELPER_SET_RE='^set-client ([a-z0-9][a-z0-9_-]{0,31}) limit=(none|[0-9]{1,16}) expires=(none|[0-9]{4}-[0-9]{2}-[0-9]{2}) reset=(none|daily|weekly|monthly)$'
 
 # The saved node name. Sets N_NAME (may be empty), N_SAVED (1: a choice was saved) and LABEL.
 load_node_name() {
@@ -518,39 +531,87 @@ save_node_name() {   # $1 = 1: the name is a choice (explicit, detected or "none
 }
 
 # Added clients, sorted by name (C locale: the configs are the same text on every run).
-# Sets CL_NAMES, CL_UUID, CL_HPASS, CL_TPASS, CL_CREATED. A damaged file stops the run.
+# Sets CL_NAMES, CL_UUID, CL_HPASS, CL_TPASS, CL_CREATED and the limit arrays (CL_LIMIT ...).
+# A damaged file stops the run.
 load_clients() {
-    local f C_NAME C_UUID C_HY2_PASS C_TT_PASS C_CREATED
+    local f C_NAME C_UUID C_HY2_PASS C_TT_PASS C_CREATED C_LIMIT C_EXPIRES C_RESET C_STATE C_REASON
     CL_NAMES=(); CL_UUID=(); CL_HPASS=(); CL_TPASS=(); CL_CREATED=()
+    CL_LIMIT=(); CL_EXPIRES=(); CL_RESET=(); CL_STATE=(); CL_REASON=()
     [[ -d "${CLIENTS_DIR}" ]] || return 0
     while IFS= read -r f; do
         [[ -f "${f}" ]] || continue
         C_NAME=""; C_UUID=""; C_HY2_PASS=""; C_TT_PASS=""; C_CREATED=""
+        C_LIMIT=""; C_EXPIRES=""; C_RESET=""; C_STATE=""; C_REASON=""
         # shellcheck disable=SC1090
         source "${f}"
         if [[ "${C_NAME}.env" != "${f##*/}" || ! "${C_NAME}" =~ ${CLIENT_RE} || "${C_NAME}" == "main" || \
               ! "${C_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ || \
-              ! "${C_HY2_PASS}" =~ ^[0-9a-f]{48}$ || ! "${C_TT_PASS}" =~ ^[0-9a-f]{48}$ ]]; then
+              ! "${C_HY2_PASS}" =~ ^[0-9a-f]{48}$ || ! "${C_TT_PASS}" =~ ^[0-9a-f]{48}$ ]] || \
+           ! client_limit_fields_ok "${C_LIMIT}" "${C_EXPIRES}" "${C_RESET}" "${C_STATE}" "${C_REASON}"; then
             die "the client file ${f} is damaged; nothing was changed. Fix or delete it, then run again."
         fi
         CL_NAMES+=("${C_NAME}"); CL_UUID+=("${C_UUID}"); CL_HPASS+=("${C_HY2_PASS}")
         CL_TPASS+=("${C_TT_PASS}"); CL_CREATED+=("${C_CREATED:-?}")
+        CL_LIMIT+=("${C_LIMIT}"); CL_EXPIRES+=("${C_EXPIRES}"); CL_RESET+=("${C_RESET:-none}")
+        CL_STATE+=("${C_STATE:-active}")
+        if [[ "${C_STATE}" == "disabled" ]]; then CL_REASON+=("${C_REASON:-manual}"); else CL_REASON+=(""); fi
     done < <(printf '%s\n' "${CLIENTS_DIR}"/*.env | LC_ALL=C sort)
     return 0
 }
 
-write_client_env() {   # $1 = file, then name, UUID, Hysteria password, TrustTunnel password, created
+# $1 = file, then name, UUID, Hysteria password, TrustTunnel password, created and, optional,
+# limit (bytes), expires (date), reset, state, reason. A key is written only when it is set, so
+# a client without limits gets exactly the file earlier versions wrote.
+write_client_env() {
     install -m 600 /dev/null "$1.new"
-    printf 'C_NAME=%q\nC_UUID=%q\nC_HY2_PASS=%q\nC_TT_PASS=%q\nC_CREATED=%q\n' "$2" "$3" "$4" "$5" "$6" > "$1.new"
+    {
+        printf 'C_NAME=%q\nC_UUID=%q\nC_HY2_PASS=%q\nC_TT_PASS=%q\nC_CREATED=%q\n' "$2" "$3" "$4" "$5" "$6"
+        if [[ -n "${7:-}" && "${7}" != "0" ]]; then printf 'C_LIMIT=%q\n' "$7"; fi
+        if [[ -n "${8:-}" ]]; then printf 'C_EXPIRES=%q\n' "$8"; fi
+        if [[ -n "${9:-}" && "${9}" != "none" ]]; then printf 'C_RESET=%q\n' "$9"; fi
+        if [[ "${10:-}" == "disabled" ]]; then printf 'C_STATE=disabled\nC_REASON=%q\n' "${11:-manual}"; fi
+    } > "$1.new"
     mv -f "$1.new" "$1"
 }
 
-# VT_RECONFIGURE=1: the added clients get new secrets too (names and dates stay).
+# A real calendar date, YYYY-MM-DD.
+date_ok() {
+    [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+    [[ "$(date -u -d "$1" +%F 2>/dev/null || true)" == "$1" ]]
+}
+
+# Are the optional limit fields of a client file valid? (limit, expires, reset, state, reason)
+client_limit_fields_ok() {
+    local l="$1" e="$2" r="$3" s="$4" w="$5"
+    if [[ -n "${l}" ]]; then
+        [[ "${l}" =~ ^[1-9][0-9]{0,15}$ ]] && (( 10#${l} <= CLIENT_LIMIT_MAX )) || return 1
+    fi
+    if [[ -n "${e}" ]]; then date_ok "${e}" || return 1; fi
+    case "${r}" in ""|none|daily|weekly|monthly) ;; *) return 1 ;; esac
+    case "${s}" in ""|active|disabled) ;; *) return 1 ;; esac
+    case "${w}" in ""|manual|quota|expired) ;; *) return 1 ;; esac
+    return 0
+}
+
+# Rewrites the file of the added client at index $1 with its own credentials, but a new
+# state ($2, $3 = reason) and/or new limits ($4 limit, $5 expires, $6 reset; "-" keeps the current).
+# $7 = the target file.
+write_client_env_i() {
+    local i="$1" st="$2" rs="$3" lim="$4" ex="$5" rst="$6"
+    [[ "${lim}" != "-" ]] || lim="${CL_LIMIT[i]}"
+    [[ "${ex}" != "-" ]] || ex="${CL_EXPIRES[i]}"
+    [[ "${rst}" != "-" ]] || rst="${CL_RESET[i]}"
+    write_client_env "$7" "${CL_NAMES[i]}" "${CL_UUID[i]}" "${CL_HPASS[i]}" "${CL_TPASS[i]}" "${CL_CREATED[i]}" \
+        "${lim}" "${ex}" "${rst}" "${st}" "${rs}"
+}
+
+# VT_RECONFIGURE=1: the added clients get new secrets too (names, dates, limits and state stay).
 renew_client_secrets() {
     local i
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
         write_client_env "${CLIENTS_DIR}/${CL_NAMES[i]}.env" "${CL_NAMES[i]}" "$(cat /proc/sys/kernel/random/uuid)" \
-            "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "${CL_CREATED[i]}"
+            "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "${CL_CREATED[i]}" \
+            "${CL_LIMIT[i]}" "${CL_EXPIRES[i]}" "${CL_RESET[i]}" "${CL_STATE[i]}" "${CL_REASON[i]}"
     done
     load_clients
     return 0
@@ -579,6 +640,7 @@ tt_credentials_toml() {
     {
         printf '[[client]]\nusername = "%s"\npassword = "%s"\n' "${T_USER}" "${T_PASS}"
         for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+            if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then continue; fi
             printf '\n[[client]]\nusername = "%s"\npassword = "%s"\n' "${CL_NAMES[i]}" "${CL_TPASS[i]}"
         done
     } > "$1"
@@ -801,6 +863,7 @@ reality_server_json() {
     # the main client first (as earlier versions wrote it), then the added ones by name
     clients="{\"id\": \"${R_UUID}\", \"flow\": \"xtls-rprx-vision\"${main_email}}"
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+        if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then continue; fi
         clients+=", {\"id\": \"${CL_UUID[i]}\", \"flow\": \"xtls-rprx-vision\", \"email\": \"${CL_NAMES[i]}\"}"
     done
     cat > "${out}" <<EOF
@@ -1925,7 +1988,11 @@ standby_outbounds_text() {   # $1 = hy2 | reality, $2 = main tag, $3 = JSON-esca
 # $1 = client ("main" or an added one), $2 = its tt:// link ("" = none), $3 = its file.
 client_details() {
     local name="$1" tt="$2" file="$3" hy_user hy_pass uuid auth jauth reality_text="" tt_text="" foot
-    local hy2_obj vless_obj awg_entries hy2_sb_links="" vless_sb_links="" tt_sb_links="" awg_end="" i l
+    local hy2_obj vless_obj awg_entries hy2_sb_links="" vless_sb_links="" tt_sb_links="" awg_end="" i l dis_text=""
+    i="$(client_index "${name}")"
+    if [[ -n "${i}" && "${CL_STATE[i]:-}" == "disabled" ]]; then
+        dis_text="$(client_disabled_line "${name}" "${CL_REASON[i]}")"$'\n'
+    fi
     client_creds "${name}"
     hy_user="${CC_USER}"; hy_pass="${CC_PASS}"; uuid="${CC_UUID}"; auth="${CC_AUTH}"
     jauth="$(json_escape "${auth}")"
@@ -2006,7 +2073,7 @@ EOF
         foot="Revoke this client on the server:  bash veiltrium.sh --remove-client ${name}"
     fi
     cat <<EOF
-Veiltrium connection details: node ${LABEL}, client ${name} ($(date '+%Y-%m-%d %H:%M %Z'))
+${dis_text}Veiltrium connection details: node ${LABEL}, client ${name} ($(date '+%Y-%m-%d %H:%M %Z'))
 Keep this secret: the links and configs contain passwords and keys.
 
 Server:   ${HOST}
@@ -2061,7 +2128,7 @@ tt_standby_links() {
 # ${CLIENT_FILES_DIR}) and removes the files of clients that no longer exist.
 # TT_URL = the main client's tt:// link ("" = no TrustTunnel).
 write_client_files() {
-    local i f n tt
+    local i f n tt l
     install -d -m 700 "${VT_ROOT_DIR}"
     install -m 600 /dev/null "${CLIENT_FILE}.new"
     tt_standby_links "${T_USER}" "${TT_URL}"
@@ -2071,11 +2138,20 @@ write_client_files() {
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
         tt=""
         f="${CLIENT_FILES_DIR}/${CL_NAMES[i]}.txt"
-        if [[ -n "${TT_URL}" ]]; then
-            tt="$(tt_export_link "${CL_NAMES[i]}")"
-            if [[ -z "${tt}" ]]; then tt="$(grep -m1 '^tt://' "${f}" 2>/dev/null || true)"; fi
+        if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then
+            # not in the TrustTunnel credentials: the endpoint cannot build its link; keep the old ones
+            tt="$(grep -m1 '^tt://' "${f}" 2>/dev/null || true)"
+            TT_STANDBY_LINKS=()
+            if [[ -n "${tt}" ]]; then
+                while IFS= read -r l; do TT_STANDBY_LINKS+=("${l}"); done < <(grep '^tt://' "${f}" | tail -n +2 || true)
+            fi
+        else
+            if [[ -n "${TT_URL}" ]]; then
+                tt="$(tt_export_link "${CL_NAMES[i]}")"
+                if [[ -z "${tt}" ]]; then tt="$(grep -m1 '^tt://' "${f}" 2>/dev/null || true)"; fi
+            fi
+            tt_standby_links "${CL_NAMES[i]}" "${tt}"
         fi
-        tt_standby_links "${CL_NAMES[i]}" "${tt}"
         install -m 600 /dev/null "${f}.new"
         client_details "${CL_NAMES[i]}" "${tt}" "${f}" > "${f}.new"
         mv -f "${f}.new" "${f}"
@@ -2348,9 +2424,17 @@ def known: with_entries(select(.key | IN($known[])));
         ($e.value.up | num) as $u | ($e.value.down | num) as $d
         | if $u + $d == 0 then . else
             .[$e.key] = ((.[$e.key] // {}) as $cl | ($cl.by_protocol // {}) as $bp
-                | {up: (($cl.up | num) + $u), down: (($cl.down | num) + $d), last_seen: $now,
+                | $cl + {up: (($cl.up | num) + $u), down: (($cl.down | num) + $d), last_seen: $now,
                    by_protocol: ($bp + {($p.key): ud($bp[$p.key]; {up: $u, down: $d})})})
           end))) as $clients
+| (reduce ($ARGS.named.periods // {} | to_entries[]) as $p ($clients;
+    $p.key as $n | $p.value as $ps
+    | (.[$n] // {up: 0, down: 0, last_seen: null, by_protocol: {}}) as $cl
+    | ($delta[$n] // {up: 0, down: 0}) as $d
+    | (($d.up | num) + ($d.down | num)) as $add
+    | (if $ps != "" and ($cl.period_start // "") != $ps then 0 else ($cl.period_bytes | num) end) as $base
+    | .[$n] = ($cl + {period_start: (if $ps == "" then ($cl.period_start // $today) else $ps end),
+                      period_bytes: ($base + $add)}))) as $clients
 | (($c.daily // {}) | map_values(known)
     | if ($delta | length) > 0 then .[$today] = (reduce ($delta | to_entries[]) as $e ((.[$today] // {}); .[$e.key] = ud(.[$e.key]; $e.value))) else . end
     | with_entries(select(.key >= $cutoff and (.value | length) > 0))) as $daily
@@ -2369,7 +2453,7 @@ traffic_collect() {
     return 0
 }
 traffic_collect_locked() {
-    local h x t cur="{}" now today cutoff known new
+    local h x t cur="{}" now today cutoff known new periods
     traffic_state
     [[ -n "${TS_H_PORT}${TS_R_PORT}${TS_T_PORT}" ]] || return 0
     h="$(traffic_fetch_hysteria)"; x="$(traffic_fetch_xray)"; t="$(traffic_fetch_trusttunnel)"
@@ -2378,8 +2462,9 @@ traffic_collect_locked() {
     now="$(date -u +%FT%TZ)"; today="${now%%T*}"
     cutoff="$(date -u -d "${TRAFFIC_KEEP_DAYS} days ago" +%F)"
     known="$(traffic_known_names | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    periods="$(client_periods_json "${today}")"
     new="$(jq -n --argjson cur "${cur}" --argjson h "${h:-null}" --argjson x "${x:-null}" --argjson t "${t:-null}" \
-        --argjson known "${known}" --arg now "${now}" --arg today "${today}" --arg cutoff "${cutoff}" \
+        --argjson known "${known}" --argjson periods "${periods}" --arg now "${now}" --arg today "${today}" --arg cutoff "${cutoff}" \
         "${TRAFFIC_MERGE_JQ}")" || return 0
     traffic_write_file "${new}"
     return 0
@@ -2518,6 +2603,7 @@ client_json() {
         --arg vless "${vless}" --arg uuid "${CC_UUID}" --arg r_site "${R_SITE}" --argjson r_port "${REALITY_PORT}" \
         --arg fp "${REALITY_FP}" --arg pbk "${R_PUB}" --arg sid "${R_SID}" --arg tt "$2" \
         --argjson sb "${sb}" --argjson hy_sb "${hy_sb}" --argjson vless_sb "${vless_sb}" --argjson tt_sb "${tt_sb}" \
+        --argjson lim "$(client_limits_json "$1")" \
         --argjson traffic "$(traffic_client_json "$1")" '
         def hy_out($s; $tag): {type: "hysteria2", tag: $tag, server: $s, server_port: $hy_port, password: $auth,
             tls: {enabled: true, server_name: $hy_sni, insecure: false, certificate_public_key_sha256: [$pk]}};
@@ -2533,6 +2619,7 @@ client_json() {
         {schema: "veiltrium-client/1", name: $name, main: ($name == "main"),
          created: (if $created == "" then null else $created end), node_name: $label, server: $server}
          + (if ($sb | length) > 0 then {standby: $sb} else {} end)
+         + $lim
          + {hysteria2: ({link: $hy_link, auth: $auth, sni: $hy_sni, port: $hy_port, pin_sha256: $cert,
            outbound: hy_out($server; "hy2"),
            awg_group: ([awg($server; "Veiltrium")]
@@ -2552,16 +2639,34 @@ client_json() {
 
 # The clients of the node as JSON (no secrets).
 clients_json() {
-    local i
+    local i trc
+    trc="$(traffic_doc | jq -c '.clients')"
     {
-        printf 'main\t\n'
-        for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do printf '%s\t%s\n' "${CL_NAMES[i]}" "${CL_CREATED[i]}"; done
+        printf 'main\t\t%s\n' "$(client_limits_json main "${trc}")"
+        for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+            printf '%s\t%s\t%s\n' "${CL_NAMES[i]}" "${CL_CREATED[i]}" "$(client_limits_json "${CL_NAMES[i]}" "${trc}")"
+        done
     } | jq -R -s --arg label "${LABEL}" --arg server "${PUBLIC_IP}" --arg auth "${H_AUTH}" \
-        --argjson tr "$(traffic_doc | jq -c '.clients')" '
+        --argjson tr "${trc}" '
         split("\n") | map(select(length > 0) | split("\t")) |
         {schema: "veiltrium-clients/1", node_name: $label, server: $server, hysteria_auth: $auth,
          clients: map({name: .[0], main: (.[0] == "main"), created: (if (.[1] // "") == "" then null else .[1] end),
-            traffic: ($tr[.[0]] // {up: 0, down: 0, last_seen: null, by_protocol: {}})})}'
+            traffic: ($tr[.[0]] // {up: 0, down: 0, last_seen: null, by_protocol: {}})} + (.[2] | fromjson))}'
+}
+
+# State and limits of client $1 as JSON (no secrets): state, reason, limit (bytes), expires,
+# reset, period_start and period_bytes (null without a limit or reset). $2 = the "clients" object
+# of the traffic document, if the caller has it. "main" is always active and has none.
+client_limits_json() {
+    local i st="active" rs="" lim="" ex="" rst="none" trc="${2:-}"
+    i="$(client_index "$1")"
+    if [[ -n "${i}" ]]; then st="${CL_STATE[i]:-active}"; rs="${CL_REASON[i]:-}"; lim="${CL_LIMIT[i]:-}"; ex="${CL_EXPIRES[i]:-}"; rst="${CL_RESET[i]:-none}"; fi
+    if [[ -z "${trc}" ]]; then trc="$(traffic_doc | jq -c '.clients')"; fi
+    jq -nc --argjson tr "${trc}" --arg n "$1" --arg st "${st}" --arg rs "${rs}" --arg lim "${lim}" --arg ex "${ex}" --arg rst "${rst}" '
+        {state: $st, reason: (if $rs == "" then null else $rs end), limit: (if $lim == "" then null else ($lim | tonumber) end),
+         expires: (if $ex == "" then null else $ex end), reset: $rst,
+         period_start: (if $lim != "" or $rst != "none" then ($tr[$n].period_start // null) else null end),
+         period_bytes: (if $lim != "" or $rst != "none" then ($tr[$n].period_bytes // 0) else null end)}'
 }
 
 # Server load as a JSON object: load averages (1/5/15 min) and CPU count, memory and the
@@ -2656,12 +2761,24 @@ node_context() {
     return 0
 }
 
+# One indented line under a client in --list-clients: its state and limits (nothing for a plain client).
+client_limits_line() {   # $1 = index
+    local i="$1" txt=""
+    if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then txt="DISABLED (${CL_REASON[i]:-manual}); "; fi
+    if [[ -n "${CL_LIMIT[i]:-}" ]]; then txt+="limit $(size_dec "${CL_LIMIT[i]}"); "; fi
+    if [[ -n "${CL_EXPIRES[i]:-}" ]]; then txt+="expires ${CL_EXPIRES[i]}; "; fi
+    if [[ "${CL_RESET[i]:-none}" != "none" ]]; then txt+="resets ${CL_RESET[i]}; "; fi
+    if [[ -n "${txt}" ]]; then printf '    %s\n' "${txt%; }"; fi
+    return 0
+}
+
 clients_list() {
     local i
     printf '\nClients of %s (%s):\n' "${LABEL}" "${PUBLIC_IP}"
     printf '  %-24s %-18s %s\n' main "first client" "${CLIENT_FILE}"
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
         printf '  %-24s %-18s %s\n' "${CL_NAMES[i]}" "added ${CL_CREATED[i]}" "${CLIENT_FILES_DIR}/${CL_NAMES[i]}.txt"
+        client_limits_line "${i}"
     done
     if [[ "${H_AUTH}" == "userpass" ]]; then
         info "Hysteria: a password per client (user:password)."
@@ -2676,25 +2793,57 @@ clients_list() {
 # change as one: the services restart (connected clients reconnect within seconds), real
 # clients check the result, and on any failure the previous files come back.
 clients_change() {
-    local mode="$1" name="$2" reg="${CLIENTS_DIR}/$2.env" old_auth="${H_AUTH}" i ok=1
-    local new_auth="" new_uuid="" gone_auth="" gone_uuid=""
+    local mode="$1" name="$2" reg="${CLIENTS_DIR}/$2.env" old_auth="${H_AUTH}" i j k f a u ok=1
+    local -a new_auths=() new_uuids=() gone_auths=() gone_uuids=() regs=("${reg}") staged=() old_st=()
     if [[ "${mode}" == "remove" || "${mode}" == "reset" ]]; then
         i="$(client_index "${name}")"
         [[ -n "${i}" ]] || die "no client ${name}."
-        gone_auth="${name}:${CL_HPASS[i]}"; gone_uuid="${CL_UUID[i]}"
+        gone_auths+=("${name}:${CL_HPASS[i]}"); gone_uuids+=("${CL_UUID[i]}")
+    fi
+    if [[ "${mode}" == "apply" ]]; then
+        # ${TMPD}/apply/NAME.env: the new files of the clients whose state changes (see clients_apply_plan)
+        regs=()
+        for f in "${TMPD}/apply"/*.env; do
+            [[ -f "${f}" ]] || continue
+            staged+=("${f##*/}"); regs+=("${CLIENTS_DIR}/${f##*/}")
+            a="${f##*/}"; j="$(client_index "${a%.env}")"
+            [[ -n "${j}" ]] || die "no client ${a%.env}."
+            old_st+=("${CL_STATE[j]}")
+        done
+        (( ${#staged[@]} )) || die "nothing to apply."
     fi
     install -d -m 700 "${CLIENTS_DIR}"
     traffic_collect   # the services restart below and lose their counters
-    txn_begin hysteria hysteria-server.service "${HY2_CONFIG}" "${HY2_STATE}" "${reg}"
+    txn_begin hysteria hysteria-server.service "${HY2_CONFIG}" "${HY2_STATE}" "${regs[@]}"
     if (( HAVE_REALITY == 1 )); then txn_begin reality xray.service "${XRAY_DIR}/config.json"; fi
     if (( HAVE_TT == 1 )); then txn_begin trusttunnel trusttunnel.service "${TT_DIR}/credentials.toml"; fi
-    if [[ "${mode}" == "add" || "${mode}" == "reset" ]]; then mv -f "${TMPD}/client.env" "${reg}"; else rm -f "${reg}"; fi
+    case "${mode}" in
+        add|reset) mv -f "${TMPD}/client.env" "${reg}" ;;
+        apply) for f in "${staged[@]}"; do mv -f "${TMPD}/apply/${f}" "${CLIENTS_DIR}/${f}"; done ;;
+        *) rm -f "${reg}" ;;
+    esac
     load_clients
     H_AUTH="userpass"; set_hy2_auth_main
     if [[ "${mode}" == "add" || "${mode}" == "reset" ]]; then
         i="$(client_index "${name}")"
         [[ -n "${i}" ]] || die "the new client ${name} was not saved."
-        new_auth="${name}:${CL_HPASS[i]}"; new_uuid="${CL_UUID[i]}"
+        if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then   # a reset client that is disabled stays out
+            gone_auths+=("${name}:${CL_HPASS[i]}"); gone_uuids+=("${CL_UUID[i]}")
+        else
+            new_auths+=("${name}:${CL_HPASS[i]}"); new_uuids+=("${CL_UUID[i]}")
+        fi
+    fi
+    if [[ "${mode}" == "apply" ]]; then
+        for (( k = 0; k < ${#staged[@]}; k++ )); do
+            j="$(client_index "${staged[k]%.env}")"
+            [[ -n "${j}" ]] || die "the client ${staged[k]%.env} was not saved."
+            if [[ "${CL_STATE[j]}" == "${old_st[k]}" ]]; then continue; fi
+            if [[ "${CL_STATE[j]}" == "disabled" ]]; then
+                gone_auths+=("${CL_NAMES[j]}:${CL_HPASS[j]}"); gone_uuids+=("${CL_UUID[j]}")
+            else
+                new_auths+=("${CL_NAMES[j]}:${CL_HPASS[j]}"); new_uuids+=("${CL_UUID[j]}")
+            fi
+        done
     fi
     step_mark write
     install -m 640 -o root -g hysteria /dev/null "${HY2_CONFIG}.new"
@@ -2720,33 +2869,38 @@ clients_change() {
     if (( HAVE_REALITY == 1 )); then systemctl restart xray.service || true; fi
     if (( HAVE_TT == 1 )); then systemctl restart trusttunnel.service || true; fi
 
-    # Real clients: the main client still works, the new one works, a removed one does not.
+    # Real clients: the main client still works, every client that should work does, every
+    # client that should not (removed, disabled, the previous credentials of a reset one) does not.
     step_mark check-hysteria
     if ! wait_listening -Hulpn "${HY2_PORT}" hysteria; then ok=0; warn "Hysteria did not start"; fi
     if (( ok == 1 )); then
         hy2_client_test "${HY2_SNI}" "${CERT_SHA}"
         if (( HY2_E2E != 0 )); then ok=0; warn "Hysteria: the main client does not work"; fi
     fi
-    if (( ok == 1 )) && [[ -n "${new_auth}" ]]; then
-        hy2_client_test "${HY2_SNI}" "${CERT_SHA}" "${new_auth}"
-        if (( HY2_E2E != 0 )); then ok=0; warn "Hysteria: the new client does not work"; fi
-    fi
-    if (( ok == 1 )) && [[ -n "${gone_auth}" ]]; then   # (remove: the client's; reset: its previous password)
-        hy2_client_test "${HY2_SNI}" "${CERT_SHA}" "${gone_auth}"
-        if (( HY2_E2E == 0 )); then ok=0; warn "Hysteria: the removed client still connects"; fi
-    fi
+    for a in "${new_auths[@]+"${new_auths[@]}"}"; do
+        (( ok == 1 )) || break
+        hy2_client_test "${HY2_SNI}" "${CERT_SHA}" "${a}"
+        if (( HY2_E2E != 0 )); then ok=0; warn "Hysteria: the client ${a%%:*} does not work"; fi
+    done
+    for a in "${gone_auths[@]+"${gone_auths[@]}"}"; do
+        (( ok == 1 )) || break
+        hy2_client_test "${HY2_SNI}" "${CERT_SHA}" "${a}"
+        if (( HY2_E2E == 0 )); then ok=0; warn "Hysteria: the client ${a%%:*} (removed or disabled) still connects"; fi
+    done
     if (( ok == 1 && HAVE_REALITY == 1 )); then
         step_mark check-reality
         reality_verify_production "${R_SITE}"
         if [[ "${RP_STATUS}" != "ok" ]]; then ok=0; warn "VLESS Reality: the main client does not work"; fi
-        if (( ok == 1 )) && [[ -n "${new_uuid}" ]]; then
-            RC_UUID="${new_uuid}" reality_verify_production "${R_SITE}"
-            if [[ "${RP_STATUS}" != "ok" ]]; then ok=0; warn "VLESS Reality: the new client does not work"; fi
-        fi
-        if (( ok == 1 )) && [[ -n "${gone_uuid}" ]]; then
-            RC_UUID="${gone_uuid}" RP_TRIES=1 reality_verify_production "${R_SITE}"
-            if [[ "${RP_STATUS}" == "ok" ]]; then ok=0; warn "VLESS Reality: the removed client still connects"; fi
-        fi
+        for u in "${new_uuids[@]+"${new_uuids[@]}"}"; do
+            (( ok == 1 )) || break
+            RC_UUID="${u}" reality_verify_production "${R_SITE}"
+            if [[ "${RP_STATUS}" != "ok" ]]; then ok=0; warn "VLESS Reality: a client that should work does not"; fi
+        done
+        for u in "${gone_uuids[@]+"${gone_uuids[@]}"}"; do
+            (( ok == 1 )) || break
+            RC_UUID="${u}" RP_TRIES=1 reality_verify_production "${R_SITE}"
+            if [[ "${RP_STATUS}" == "ok" ]]; then ok=0; warn "VLESS Reality: a removed or disabled client still connects"; fi
+        done
     fi
     if (( ok == 1 && HAVE_TT == 1 )); then
         step_mark check-trusttunnel
@@ -2799,6 +2953,10 @@ clients_change() {
         if (( HAVE_REALITY == 1 )); then checked+=", VLESS Reality"; fi
         ok "Client ${name} reset: new credentials work, the previous ones no longer do (checked with real clients: ${checked}; TrustTunnel: its password list was rewritten and the service answers)."
         info "Send ${name} the new details: ${CLIENT_FILES_DIR}/${name}.txt  (bash $0 --show-client ${name})"
+    elif [[ "${mode}" == "apply" ]]; then
+        local checked="Hysteria"
+        if (( HAVE_REALITY == 1 )); then checked+=", VLESS Reality"; fi
+        ok "Client changes applied: ${#new_auths[@]} now accepted, ${#gone_auths[@]} now refused (checked with real clients: ${checked}; TrustTunnel: its password list was rewritten and the service answers)."
     else
         ok "Client ${name} removed: its credentials no longer work."
     fi
@@ -2808,6 +2966,298 @@ clients_change() {
         warn "${CLIENT_FILE}; a copy of ${PROBE_PROFILE} on the router too). VLESS Reality and TrustTunnel"
         warn "links of the main client stay the same."
     fi
+    return 0
+}
+
+# ---- Client limits: traffic quota, expiry, periodic reset, disable / enable -----------
+# Only added clients have them (never "main"). State of a client lives in its env file
+# (C_LIMIT, C_EXPIRES, C_RESET, C_STATE, C_REASON); the usage of the current period in
+# TRAFFIC_FILE (period_start, period_bytes per client, kept by traffic_collect). A disabled
+# client is left out of all three proxy configs; --enforce (also run by the traffic timer
+# when something changes) moves clients between active and disabled in ONE clients_change.
+# Weeks start on Monday, months on the 1st, days at 00:00, all UTC; an expiry date is valid
+# through the end of that day.
+
+# SIZE: plain bytes or a K/M/G/T suffix (decimal: 1G = 10^9). Prints the bytes; fails if invalid
+# (not a positive integer, or more than CLIENT_LIMIT_MAX = 10^15): nothing is printed, and it
+# still returns 0 (it runs inside $( ), where a failing status would fire the ERR trap).
+parse_size() {
+    local n mult=1
+    [[ "$1" =~ ^([1-9][0-9]{0,15})([KkMmGgTt]?)$ ]] || return 0
+    n="${BASH_REMATCH[1]}"
+    case "${BASH_REMATCH[2]}" in
+        K|k) mult=1000 ;; M|m) mult=1000000 ;; G|g) mult=1000000000 ;; T|t) mult=1000000000000 ;;
+    esac
+    (( 10#${n} <= CLIENT_LIMIT_MAX / mult )) || return 0
+    printf '%s' "$(( 10#${n} * mult ))"
+}
+
+# 50000000000 -> "50 GB" (decimal units, as the limit is given)
+size_dec() {
+    awk -v b="${1:-0}" 'BEGIN { split("B KB MB GB TB PB", u, " "); i = 1
+        while (b >= 1000 && i < 6) { b /= 1000; i++ }
+        if (b == int(b)) printf "%d %s", b, u[i]; else printf "%.1f %s", b, u[i] }'
+}
+
+# First day of the period that contains day $2 (YYYY-MM-DD) for the reset mode $1; nothing for none.
+period_start_of() {
+    local dow
+    case "$1" in
+        daily) printf '%s' "$2" ;;
+        weekly) dow="$(date -u -d "$2" +%u)"; date -u -d "$2 -$(( dow - 1 )) days" +%F ;;
+        monthly) printf '%s-01' "${2:0:7}" ;;
+    esac
+    return 0
+}
+
+# {name: period start or ""} of the added clients that have a limit or a reset (for the traffic
+# merge). Reads the client files itself: the caller may not have loaded them.
+client_periods_json() {   # $1 = today
+    local out
+    out="$( (
+        load_clients
+        for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+            if [[ -n "${CL_LIMIT[i]}" || "${CL_RESET[i]}" != "none" ]]; then
+                printf '%s\t%s\n' "${CL_NAMES[i]}" "$(period_start_of "${CL_RESET[i]}" "$1")"
+            fi
+        done
+    ) 2>/dev/null | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t"))
+        | map({key: .[0], value: (.[1] // "")}) | from_entries' 2>/dev/null || true)"
+    if [[ "${out}" == "{"* ]]; then printf '%s' "${out}"; else printf '{}'; fi
+    return 0
+}
+
+# The usage of the current period, by client name (from TRAFFIC_FILE). "-" = no period recorded.
+declare -A PU_START=() PU_BYTES=()
+PU_OK=0   # 1: the counters were read (a missing or unreadable file proves nothing: no quota is lifted by it)
+traffic_load_period_usage() {
+    local name st b
+    PU_START=(); PU_BYTES=(); PU_OK=0
+    [[ -s "${TRAFFIC_FILE}" ]] && command -v jq >/dev/null 2>&1 || return 0
+    jq -e 'type == "object"' "${TRAFFIC_FILE}" >/dev/null 2>&1 || return 0
+    PU_OK=1
+    while IFS=$'\t' read -r name st b; do
+        PU_START["${name}"]="${st}"; PU_BYTES["${name}"]="${b}"
+    done < <(jq -r '(.clients // {}) | to_entries[]
+        | [.key, (.value.period_start // "-"), (.value.period_bytes | if type == "number" and . > 0 then floor else 0 end | tostring)] | @tsv' \
+        "${TRAFFIC_FILE}" 2>/dev/null || true)
+    return 0
+}
+
+# Bytes counted against the limit of client $1 (reset mode $2) on day $3: the recorded usage,
+# or 0 when the record is of an earlier period (the collector has not rolled it over yet).
+# Sets PB_NOW.
+client_period_bytes() {
+    local s="${PU_START[$1]:--}" b="${PU_BYTES[$1]:-0}" want
+    PB_NOW=0
+    [[ "${b}" =~ ^[0-9]{1,16}$ ]] || return 0
+    if [[ -n "$2" && "$2" != "none" ]]; then
+        want="$(period_start_of "$2" "$3")"
+        [[ "${s}" == "${want}" ]] || return 0
+    fi
+    PB_NOW="${b}"
+    return 0
+}
+
+# What a client should be, given: state, reason, limit, expires, bytes of the period, today.
+# Prints "active" or "disabled <manual|quota|expired>". A manual disable stays until it is
+# lifted by hand; a quota or expiry disable lasts only while the condition holds.
+client_decision() {
+    local st="$1" rs="$2" lim="$3" ex="$4" pb="$5" today="$6" viol=""
+    if [[ "${st}" == "disabled" && ( "${rs}" == "manual" || -z "${rs}" ) ]]; then
+        printf 'disabled manual'; return 0
+    fi
+    if [[ -n "${ex}" ]] && (( 10#${today//-/} > 10#${ex//-/} )); then viol="expired"
+    elif [[ -n "${lim}" ]] && (( 10#${pb:-0} >= 10#${lim} )); then viol="quota"; fi
+    if [[ -n "${viol}" ]]; then printf 'disabled %s' "${viol}"; else printf 'active'; fi
+    return 0
+}
+
+# The changes to make: parallel arrays; PLAN_LIMIT / PLAN_EXPIRES / PLAN_RESET hold the new
+# settings ("-" = keep); PLAN_TEXT is the message for a change of state ("" = settings only).
+PLAN_NAMES=(); PLAN_STATE=(); PLAN_REASON=(); PLAN_LIMIT=(); PLAN_EXPIRES=(); PLAN_RESET=(); PLAN_TEXT=()
+plan_reset() {
+    PLAN_NAMES=(); PLAN_STATE=(); PLAN_REASON=(); PLAN_LIMIT=(); PLAN_EXPIRES=(); PLAN_RESET=(); PLAN_TEXT=()
+    return 0
+}
+plan_add() {   # name, state, reason, limit, expires, reset, text
+    PLAN_NAMES+=("$1"); PLAN_STATE+=("$2"); PLAN_REASON+=("$3"); PLAN_LIMIT+=("$4")
+    PLAN_EXPIRES+=("$5"); PLAN_RESET+=("$6"); PLAN_TEXT+=("$7")
+    return 0
+}
+
+# The message of a change of client $1 to state $2 (reason $3); limit $4 and expiry $5 in force.
+client_change_text() {
+    if [[ "$2" == "active" ]]; then printf 'client %s re-enabled' "$1"; return 0; fi
+    case "$3" in
+        quota) printf 'client %s disabled: quota %s reached' "$1" "$(size_dec "$4")" ;;
+        expired) printf 'client %s disabled: expired on %s' "$1" "$5" ;;
+        *) printf 'client %s disabled manually' "$1" ;;
+    esac
+    return 0
+}
+
+# Fills PLAN_* with the clients whose state or reason must change now (CL_* loaded, counters
+# current). $1 = today (YYYY-MM-DD, default: today UTC).
+enforce_plan() {
+    local today="${1:-$(date -u +%F)}" i dec want rs
+    plan_reset
+    traffic_load_period_usage
+    for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+        client_period_bytes "${CL_NAMES[i]}" "${CL_RESET[i]}" "${today}"
+        dec="$(client_decision "${CL_STATE[i]}" "${CL_REASON[i]}" "${CL_LIMIT[i]}" "${CL_EXPIRES[i]}" "${PB_NOW}" "${today}")"
+        want="${dec%% *}"; rs=""
+        if [[ "${dec}" == *" "* ]]; then rs="${dec#* }"; fi
+        if [[ "${want}" == "${CL_STATE[i]}" && "${rs}" == "${CL_REASON[i]}" ]]; then continue; fi
+        # no readable counters: a client stopped for its quota stays stopped
+        if (( PU_OK == 0 )) && [[ "${want}" == "active" && "${CL_REASON[i]}" == "quota" ]]; then continue; fi
+        if [[ "${want}" == "${CL_STATE[i]}" ]]; then
+            plan_add "${CL_NAMES[i]}" "${want}" "${rs}" - - - ""
+        else
+            plan_add "${CL_NAMES[i]}" "${want}" "${rs}" - - - \
+                "$(client_change_text "${CL_NAMES[i]}" "${want}" "${rs}" "${CL_LIMIT[i]}" "${CL_EXPIRES[i]}")"
+        fi
+    done
+    return 0
+}
+
+# The traffic timer asks: does any client need a state change? (own subshell: a damaged
+# client file only means "no")
+enforce_needed() {
+    ( load_clients; enforce_plan; (( ${#PLAN_NAMES[@]} > 0 )) ) 2>/dev/null
+}
+
+# After a failed (rolled back) run from the timer, it does not try again for an hour: every
+# attempt restarts the proxies.
+enforce_backoff_ok() {
+    [[ ! -f "${ENFORCE_FAILED}" ]] || (( $(date +%s) - $(stat -c %Y "${ENFORCE_FAILED}" 2>/dev/null || echo 0) > 3600 ))
+}
+
+# The header line of a disabled client's details file.
+client_disabled_line() {   # name, reason
+    printf 'DISABLED (%s): the server does not accept this client until it is enabled again (bash veiltrium.sh --enable-client %s).' "$2" "$1"
+}
+# Puts the header on (or takes it off) the details file of client $1, without rewriting the rest.
+client_file_mark() {
+    local f="${CLIENT_FILES_DIR}/$1.txt" i
+    i="$(client_index "$1")"
+    [[ -f "${f}" && -n "${i}" ]] || return 0
+    install -m 600 /dev/null "${f}.new"
+    {
+        if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then client_disabled_line "$1" "${CL_REASON[i]}"; printf '\n'; fi
+        sed '1{/^DISABLED (/d}' "${f}"
+    } > "${f}.new"
+    mv -f "${f}.new" "${f}"
+    return 0
+}
+
+# Applies PLAN_*: the files of the changed clients are staged in ${TMPD}/apply; a change of
+# state goes through clients_change apply (configs, restart, real-client checks, rollback);
+# settings or reasons alone only rewrite the files (nothing restarts). Then, for every change of
+# state: the message, an alert and, with $1 = audit, an audit line of its own.
+clients_apply_plan() {
+    local k i f cfg=0
+    (( ${#PLAN_NAMES[@]} )) || return 0
+    install -d -m 700 "${TMPD}/apply"
+    rm -f "${TMPD}/apply"/*.env
+    for (( k = 0; k < ${#PLAN_NAMES[@]}; k++ )); do
+        i="$(client_index "${PLAN_NAMES[k]}")"
+        [[ -n "${i}" ]] || die "no client ${PLAN_NAMES[k]}."
+        write_client_env_i "${i}" "${PLAN_STATE[k]}" "${PLAN_REASON[k]}" "${PLAN_LIMIT[k]}" "${PLAN_EXPIRES[k]}" \
+            "${PLAN_RESET[k]}" "${TMPD}/apply/${PLAN_NAMES[k]}.env"
+        if [[ "${PLAN_STATE[k]}" != "${CL_STATE[i]}" ]]; then cfg=1; fi
+    done
+    if (( cfg == 1 )); then
+        clients_change apply ""
+    else
+        for f in "${TMPD}/apply"/*.env; do mv -f "${f}" "${CLIENTS_DIR}/${f##*/}"; done
+        load_clients
+        for (( k = 0; k < ${#PLAN_NAMES[@]}; k++ )); do client_file_mark "${PLAN_NAMES[k]}"; done
+    fi
+    for (( k = 0; k < ${#PLAN_NAMES[@]}; k++ )); do
+        [[ -n "${PLAN_TEXT[k]}" ]] || continue
+        info "${PLAN_TEXT[k]}"
+        alert_notify client "${PLAN_TEXT[k]}"
+        if [[ "${1:-}" == "audit" ]]; then
+            if [[ "${PLAN_STATE[k]}" == "active" ]]; then audit_append client-enabled "${PLAN_NAMES[k]}" ok
+            else audit_append client-disabled "${PLAN_NAMES[k]}" ok; fi
+        fi
+    done
+    return 0
+}
+
+# Forgets the period usage of client $1 (it starts again from zero when a limit or reset is set).
+traffic_period_clear() {
+    traffic_edit 'if .clients[$n] then .clients[$n] |= del(.period_start, .period_bytes) else . end' --arg n "$1"
+}
+
+# --set-client / --disable-client / --enable-client / --enforce (node_context done, clients loaded).
+# $1 = mode, $2 = client name; SET_LIMIT / SET_EXPIRES / SET_RESET: what --set-client was given
+# ("" = not given, "none", bytes / a date / a reset mode). Sets RESULT_EXTRA (JSON for --json).
+client_limits_main() {
+    local mode="$1" name="$2" i today lim ex rst old_had new_had dec want rs pb
+    today="$(date -u +%F)"
+    RESULT_EXTRA='{}'
+    plan_reset
+    traffic_collect
+    if [[ "${mode}" == "enforce" ]]; then
+        enforce_plan "${today}"
+        if (( ${#PLAN_NAMES[@]} == 0 )); then info "No client needs a change."; return 0; fi
+        if [[ -n "${VEILTRIUM_TIMER:-}" ]]; then install -d -m 700 "${STATE_DIR}"; : > "${ENFORCE_FAILED}"; fi
+        clients_apply_plan audit
+        rm -f "${ENFORCE_FAILED}"
+        RESULT_EXTRA="$(jq -nc '$ARGS.positional' --args "${PLAN_NAMES[@]}" | jq -c '{changed: .}')"
+        return 0
+    fi
+    i="$(client_index "${name}")"
+    [[ -n "${i}" ]] || die "no client ${name} (see --list-clients)."
+    lim="${CL_LIMIT[i]}"; ex="${CL_EXPIRES[i]}"; rst="${CL_RESET[i]}"
+    case "${mode}" in
+        set-client)
+            case "${SET_LIMIT}" in "") ;; none) lim="" ;; *) lim="${SET_LIMIT}" ;; esac
+            case "${SET_EXPIRES}" in "") ;; none) ex="" ;; *) ex="${SET_EXPIRES}" ;; esac
+            if [[ -n "${SET_RESET}" ]]; then rst="${SET_RESET}"; fi
+            old_had=0; new_had=0
+            if [[ -n "${CL_LIMIT[i]}" || "${CL_RESET[i]}" != "none" ]]; then old_had=1; fi
+            if [[ -n "${lim}" || "${rst}" != "none" ]]; then new_had=1; fi
+            # counting starts when a limit or reset first appears, and stops when both are gone
+            if (( old_had != new_had || new_had == 0 )); then traffic_period_clear "${name}"; fi
+            traffic_load_period_usage
+            client_period_bytes "${name}" "${rst}" "${today}"
+            dec="$(client_decision "${CL_STATE[i]}" "${CL_REASON[i]}" "${lim}" "${ex}" "${PB_NOW}" "${today}")"
+            want="${dec%% *}"; rs=""
+            if [[ "${dec}" == *" "* ]]; then rs="${dec#* }"; fi
+            if [[ "${want}" == "${CL_STATE[i]}" ]]; then
+                plan_add "${name}" "${want}" "${rs}" "${lim}" "${ex}" "${rst}" ""
+            else
+                plan_add "${name}" "${want}" "${rs}" "${lim}" "${ex}" "${rst}" "$(client_change_text "${name}" "${want}" "${rs}" "${lim}" "${ex}")"
+            fi
+            clients_apply_plan audit
+            ok "Client ${name}: limit $([[ -n "${lim}" ]] && size_dec "${lim}" || echo none), expires ${ex:-never}, reset ${rst}."
+            ;;
+        disable-client)
+            if [[ "${CL_STATE[i]:-}" == "disabled" && "${CL_REASON[i]}" == "manual" ]]; then
+                info "Client ${name} is already disabled."; return 0
+            fi
+            plan_add "${name}" disabled manual - - - "$(client_change_text "${name}" disabled manual 0 "")"
+            clients_apply_plan
+            ok "Client ${name} disabled: its credentials no longer work (--enable-client ${name} brings it back)."
+            ;;
+        enable-client)
+            if [[ "${CL_STATE[i]}" != "disabled" ]]; then info "Client ${name} is already active."; return 0; fi
+            traffic_load_period_usage
+            client_period_bytes "${name}" "${rst}" "${today}"
+            pb="${PB_NOW}"
+            dec="$(client_decision active "" "${lim}" "${ex}" "${pb}" "${today}")"
+            case "${dec}" in
+                "disabled quota") die "client ${name} has used its quota ($(size_dec "${pb}") of $(size_dec "${lim}")); raise it first: bash $0 --set-client ${name} --limit SIZE" ;;
+                "disabled expired") die "client ${name} expired on ${ex}; set a new date first: bash $0 --set-client ${name} --expires YYYY-MM-DD" ;;
+            esac
+            plan_add "${name}" active "" - - - "$(client_change_text "${name}" active "" 0 "")"
+            clients_apply_plan
+            ok "Client ${name} enabled: its credentials work again."
+            ;;
+    esac
     return 0
 }
 
@@ -2829,6 +3279,7 @@ helper_relay() {
 
 helper_main() {
     local line="" verb arg="" d rc=0 wait=90
+    local -a cargs=()
     trap '' PIPE     # the panel going away must not cut a change short: it runs to the end
     IFS= read -r -t 10 line || true
     line="${line%$'\r'}"
@@ -2838,7 +3289,11 @@ helper_main() {
         status|list-clients|check-russia) [[ -z "${arg}" ]] || verb="" ;;
         audit) [[ -z "${arg}" ]] || verb=""; arg=20 ;;
         show-client) [[ "${arg}" == "main" || "${arg}" =~ ${CLIENT_RE} ]] || verb="" ;;
-        add-client|remove-client|reset-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
+        add-client|remove-client|reset-client|disable-client|enable-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
+        set-client)   # one line, checked as a whole: set-client NAME limit=<bytes|none> expires=<date|none> reset=<mode>
+            if [[ "${line}" =~ ${HELPER_SET_RE} && "${BASH_REMATCH[1]}" != "main" ]]; then
+                cargs=("${BASH_REMATCH[1]}" --limit "${BASH_REMATCH[2]}" --expires "${BASH_REMATCH[3]}" --reset "${BASH_REMATCH[4]}")
+            else verb=""; fi ;;
         *) verb="" ;;
     esac
     if [[ -z "${verb}" ]]; then
@@ -2846,12 +3301,13 @@ helper_main() {
         return 0
     fi
     case "${verb}" in status|list-clients|show-client|check-russia|audit) wait=10 ;; esac
+    if (( ${#cargs[@]} == 0 )) && [[ -n "${arg}" ]]; then cargs=("${arg}"); fi
     d="$(mktemp -d /run/veiltrium-helper.XXXXXX 2>/dev/null || mktemp -d)"   # /run: root-only tmpfs; tests run without root
     # stdout (the JSON) to the file, stderr (human text, progress) through the relay
     # stdin is the socket: the child must never wait on it
     # PIPE is ignored here and would stay ignored in the child: restore its default
     { env --default-signal=PIPE VEILTRIUM_PROGRESS=1 VEILTRIUM_SOURCE=panel VEILTRIUM_LOCK_WAIT="${wait}" NEEDRESTART_SUSPEND=1 \
-        bash "${SCRIPT_PATH}" "--${verb}" ${arg:+"${arg}"} --json - \
+        bash "${SCRIPT_PATH}" "--${verb}" "${cargs[@]+"${cargs[@]}"}" --json - \
         2>&1 > "${d}/out" </dev/null || printf '%s' "$?" > "${d}/rc"; } | helper_relay
     rc="$(cat "${d}/rc" 2>/dev/null || echo 0)"
     printf '::json %s\n' "$(jq -c . "${d}/out" 2>/dev/null || echo null)" 2>/dev/null || true
@@ -2991,6 +3447,11 @@ env_value_ok() {
         PROBE_SERVER) [[ -z "${v}" || "${v}" =~ ^[0-9.]{7,15}$ ]] ;;
         C_NAME) [[ "${v}" =~ ${CLIENT_RE} ]] ;;
         C_CREATED) [[ "${v}" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}|\?)$ ]] ;;
+        C_LIMIT) [[ "${v}" =~ ^[1-9][0-9]{0,15}$ ]] && (( 10#${v} <= CLIENT_LIMIT_MAX )) ;;
+        C_EXPIRES) date_ok "${v}" ;;
+        C_RESET) [[ "${v}" == "daily" || "${v}" == "weekly" || "${v}" == "monthly" ]] ;;
+        C_STATE) [[ "${v}" == "disabled" ]] ;;
+        C_REASON) [[ "${v}" == "manual" || "${v}" == "quota" || "${v}" == "expired" ]] ;;
         *) return 1 ;;
     esac
 }
@@ -3092,7 +3553,7 @@ export_tree_ok() {
                 done < "${f}"
                 (( cnt > 0 )) || { echo "bad ${rel}"; return 1; } ;;
             clients/*.env)
-                env_file_ok "${f}" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED" || { echo "bad ${rel}"; return 1; }
+                env_file_ok "${f}" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED C_LIMIT C_EXPIRES C_RESET C_STATE C_REASON" || { echo "bad ${rel}"; return 1; }
                 n="$(env_get "${f}" C_NAME)"
                 [[ "clients/${n}.env" == "${rel}" ]] || { echo "the client name in ${rel} does not match its file name"; return 1; } ;;
         esac
@@ -3355,6 +3816,9 @@ Usage: veiltrium COMMAND [NAME|FILE]
   add NAME         add a client (own credentials for all protocols)
   remove NAME      revoke a client
   reset NAME       new credentials for a client (the old ones stop working)
+  limit NAME ...   traffic limit, expiry and reset of a client: --limit 50G --expires 2027-01-31 --reset monthly
+  disable NAME     stop accepting a client (kept; enable brings it back)
+  enable NAME      accept a disabled client again
   show NAME        connection details of a client (main: the first one)
   qr NAME          QR codes of a client's links
   traffic          traffic per client
@@ -3382,6 +3846,9 @@ case "${cmd}" in
     add)            set -- --add-client "$@" ;;
     remove)         set -- --remove-client "$@" ;;
     reset)          set -- --reset-client "$@" ;;
+    limit)          set -- --set-client "$@" ;;
+    disable)        set -- --disable-client "$@" ;;
+    enable)         set -- --enable-client "$@" ;;
     show)           set -- --show-client "$@" ;;
     qr)             set -- --qr "$@" ;;
     traffic)        set -- --traffic "$@" ;;
@@ -4107,6 +4574,7 @@ NODE_IMPORT_FILE=""
 TRIAL_SITES=""
 JSON_OUT=""
 AUDIT_N=50
+SET_LIMIT=""; SET_EXPIRES=""; SET_RESET=""; RESULT_EXTRA="{}"
 while (( $# )); do
     case "$1" in
         --diagnose) MODE="diagnose" ;;
@@ -4117,8 +4585,22 @@ while (( $# )); do
         --trial-minutes) TRIAL_MINUTES="${2:-}"; shift ;;
         --trial-stop) MODE="trial-stop" ;;
         --json) JSON_OUT="${2:-}"; [[ -n "${JSON_OUT}" ]] || die "--json needs a file name"; shift ;;
-        --add-client|--remove-client|--show-client|--reset-client|--qr)
+        --add-client|--remove-client|--show-client|--reset-client|--qr|--set-client|--disable-client|--enable-client)
             MODE="${1#--}"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "$1 needs a client name"; shift ;;
+        --enforce) MODE="enforce" ;;
+        --limit)
+            [[ -n "${2:-}" ]] || die "--limit needs a size (for example 50G, or none)"
+            if [[ "$2" == "none" ]]; then SET_LIMIT="none"
+            else SET_LIMIT="$(parse_size "$2")"
+                [[ -n "${SET_LIMIT}" ]] || die "--limit: '$2' is not a size: whole bytes or a number with K, M, G or T (1G = 10^9), at most 10^15, or none."; fi
+            shift ;;
+        --expires)
+            [[ -n "${2:-}" ]] || die "--expires needs a date YYYY-MM-DD (or none)"
+            if [[ "$2" != "none" ]] && ! date_ok "$2"; then die "--expires: '$2' is not a date (YYYY-MM-DD, or none)."; fi
+            SET_EXPIRES="$2"; shift ;;
+        --reset)
+            case "${2:-}" in none|daily|weekly|monthly) SET_RESET="$2" ;; *) die "--reset needs none, daily, weekly or monthly." ;; esac
+            shift ;;
         --audit) MODE="audit"; if [[ "${2:-}" =~ ^[0-9]{1,5}$ ]]; then AUDIT_N="$2"; shift; fi ;;
         --uninstall) MODE="uninstall" ;;
         --list-clients) MODE="list-clients" ;;
@@ -4142,6 +4624,15 @@ while (( $# )); do
 done
 if [[ "${MODE}" == "reset-client" && "${CLIENT_ARG}" == "main" ]]; then
     die "the main client's credentials are the node's own: to replace them (and those of every added client) run  VT_RECONFIGURE=1 bash $0"
+fi
+case "${MODE}" in
+    set-client|disable-client|enable-client)
+        [[ "${CLIENT_ARG}" != "main" ]] || die "the main client has no limits and cannot be disabled; add a client for that (--add-client NAME)." ;;
+esac
+if [[ "${MODE}" == "set-client" ]]; then
+    [[ -n "${SET_LIMIT}${SET_EXPIRES}${SET_RESET}" ]] || die "--set-client needs at least one of --limit SIZE|none, --expires YYYY-MM-DD|none, --reset none|daily|weekly|monthly."
+elif [[ -n "${SET_LIMIT}${SET_EXPIRES}${SET_RESET}" ]]; then
+    die "--limit, --expires and --reset belong to --set-client NAME."
 fi
 [[ "${REALITY_RESELECT}" == "0" || "${REALITY_RESELECT}" == "1" ]] || die "REALITY_RESELECT must be 0 or 1."
 if [[ -n "${NODE_IMPORT_FILE}" ]]; then
@@ -4170,6 +4661,11 @@ fi
 if [[ "${MODE}" == "collect-traffic" ]]; then
     LIGHT=1
     traffic_collect
+    # a client over its quota or past its expiry (or back within it): the state change runs as a normal
+    # maintenance mode under the installer lock, with a short wait (a busy lock: the next tick tries again)
+    if enforce_needed && enforce_backoff_ok; then
+        exec env VEILTRIUM_TIMER=1 VEILTRIUM_LOCK_WAIT=5 NEEDRESTART_SUSPEND=1 bash "${SCRIPT_PATH}" --enforce
+    fi
     exit 0
 fi
 
@@ -4186,6 +4682,7 @@ else
     LOCK_WAIT="${VEILTRIUM_LOCK_WAIT:-90}"
     [[ "${LOCK_WAIT}" =~ ^[1-9][0-9]{0,2}$ ]] || LOCK_WAIT=90
     if ! flock -w "${LOCK_WAIT}" 9; then
+        if [[ -n "${VEILTRIUM_TIMER:-}" ]]; then exit 0; fi
         DIE_CODE=75   # a busy lock, not a failure of the request
         die "the script is already running (an install, or a client change from the panel); wait for it to finish and try again."
     fi
@@ -4199,7 +4696,8 @@ case "${MODE}" in
     install)
         if [[ -n "${NODE_IMPORT_FILE}" ]]; then AUDIT_ACTION="import"; AUDIT_TARGET="${NODE_IMPORT_FILE##*/}"
         else AUDIT_ACTION="install"; fi ;;
-    add-client|remove-client|reset-client) AUDIT_ACTION="${MODE}"; AUDIT_TARGET="${CLIENT_ARG}" ;;
+    add-client|remove-client|reset-client|set-client|disable-client|enable-client) AUDIT_ACTION="${MODE}"; AUDIT_TARGET="${CLIENT_ARG}" ;;
+    enforce) AUDIT_ACTION="enforce" ;;
     export) AUDIT_ACTION="export"; AUDIT_TARGET="${EXPORT_FILE##*/}" ;;
     panel-password|uninstall|traffic-reset) AUDIT_ACTION="${MODE}" ;;
 esac
@@ -4229,7 +4727,7 @@ if [[ "${MODE}" != "install" ]]; then
     chmod 700 "${TMPD}"
     # An interrupted change first: its half-written files must not be read as "damaged".
     if txn_pending; then
-        if [[ "${MODE}" == "watch" ]]; then exit 0; fi
+        if [[ "${MODE}" == "watch" || -n "${VEILTRIUM_TIMER:-}" ]]; then exit 0; fi
         if [[ "${MODE}" == "diagnose" || "${MODE}" == "dry-run" || "${MODE}" == "status" ]]; then
             die "an interrupted change is pending; it is restored automatically within a minute (or by the next install run). Try again then."
         fi
@@ -4242,7 +4740,7 @@ if [[ "${MODE}" != "install" ]]; then
     load_tt_state
     load_probe_env
     load_ports
-    case "${MODE}" in list-clients|show-client|qr|add-client|remove-client|reset-client|trial) load_clients ;; esac
+    case "${MODE}" in list-clients|show-client|qr|add-client|remove-client|reset-client|set-client|disable-client|enable-client|enforce|trial) load_clients ;; esac
     load_node_name
     set_hy2_auth_main
     PUBLIC_IP="${PUBLIC_IP:-${PROBE_SERVER}}"
@@ -4325,7 +4823,7 @@ if [[ "${MODE}" != "install" ]]; then
                      else empty end)'
             fi
             exit 0 ;;
-        list-clients|show-client|qr|add-client|remove-client|reset-client)
+        list-clients|show-client|qr|add-client|remove-client|reset-client|set-client|disable-client|enable-client|enforce)
             [[ -n "${H_PASSWORD}" && -n "${PUBLIC_IP}" && -s "${CLIENT_FILE}" ]] \
                 || die "this server has no installed node yet: run the installer once (bash $0) first."
             node_context
@@ -4374,7 +4872,8 @@ if [[ "${MODE}" != "install" ]]; then
                         if [[ "${MODE}" == "reset-client" ]]; then
                             i="$(client_index "${CLIENT_ARG}")"
                             write_client_env "${TMPD}/client.env" "${CLIENT_ARG}" "$(cat /proc/sys/kernel/random/uuid)" \
-                                "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "${CL_CREATED[i]}"
+                                "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "${CL_CREATED[i]}" \
+                                "${CL_LIMIT[i]}" "${CL_EXPIRES[i]}" "${CL_RESET[i]}" "${CL_STATE[i]}" "${CL_REASON[i]}"
                             clients_change reset "${CLIENT_ARG}"
                             if [[ -z "${JSON_OUT}" ]]; then
                                 printf '\n'
@@ -4390,6 +4889,26 @@ if [[ "${MODE}" != "install" ]]; then
                         jq -n --arg action "${MODE%-client}" --arg name "${CLIENT_ARG}" --arg before "${AUTH_BEFORE}" \
                             '{schema: "veiltrium-result/1", ok: true, action: $action, name: $name,
                               main_hysteria_link_changed: ($before != "userpass")}' | json_emit
+                    fi ;;
+                set-client|disable-client|enable-client|enforce)
+                    if [[ "${MODE}" != "enforce" ]]; then
+                        [[ "${CLIENT_ARG}" =~ ${CLIENT_RE} && "${CLIENT_ARG}" != "main" ]] \
+                            || die "a client name is 1-32 characters: a-z, 0-9, _ and - (not \"main\")."
+                    fi
+                    [[ -x "${RECOVER_BIN}" ]] || die "run the installer once (bash $0) first."
+                    if trial_active; then
+                        if [[ -n "${VEILTRIUM_TIMER:-}" ]]; then exit 0; fi
+                        die "a Reality trial is running; end it first: bash $0 --trial-stop"
+                    fi
+                    command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."
+                    if [[ -z "${VEILTRIUM_TIMER:-}" ]]; then banner; fi
+                    AUTH_BEFORE="${H_AUTH}"
+                    client_limits_main "${MODE}" "${CLIENT_ARG}"
+                    step_mark finished
+                    if [[ -n "${JSON_OUT}" ]]; then
+                        jq -n --arg action "${MODE%-client}" --arg name "${CLIENT_ARG}" --argjson extra "${RESULT_EXTRA}" \
+                            '{schema: "veiltrium-result/1", ok: true, action: $action, name: $name,
+                              main_hysteria_link_changed: false} + $extra' | json_emit
                     fi ;;
             esac
             exit 0 ;;

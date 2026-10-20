@@ -52,7 +52,7 @@ mknode() {   # $1 = root, $2 = Hysteria password
     printf 'PROBE_KEY=%q\nPROBE_SERVER=%q\n' "$(printf 'd%.0s' {1..64})" "192.0.2.10" > "${PROBE_ENV}"
     printf '# veiltrium: Reality mask site candidates (REALITY_CANDIDATES), one per line\nwww.yahoo.com\nwww.sony.com\n' > "${CANDIDATES_FILE}"
     write_client_env "${CLIENTS_DIR}/anna.env" anna 11111111-2222-4333-8444-555555555552 "${a48}" "${b48}" 2026-10-13
-    write_client_env "${CLIENTS_DIR}/bob_2.env" bob_2 11111111-2222-4333-8444-555555555553 "${b48}" "${a48}" '?'
+    write_client_env "${CLIENTS_DIR}/bob_2.env" bob_2 11111111-2222-4333-8444-555555555553 "${b48}" "${a48}" '?' 50000000000 2027-01-31 monthly disabled quota
     PUBLIC_IP="192.0.2.10"; REALITY_PORT=443; TT_PORT=8443
 }
 
@@ -108,7 +108,8 @@ badnode "a command after a semicolon" '8.8.8.8;id'
 badnode "a command substitution" '$(id)'
 badnode "an empty list entry" '8.8.8.8\,\,1.1.1.1'
 badnode "the word none (never saved)" 'none'
-check "$(env_file_ok "${CLIENTS_DIR}/bob_2.env" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED"; echo $?)" 0 "validator: a client file passes"
+check "$(env_file_ok "${CLIENTS_DIR}/bob_2.env" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED C_LIMIT C_EXPIRES C_RESET C_STATE C_REASON"; echo $?)" 0 "validator: a client file with limits and a disabled state passes"
+check "$(env_file_ok "${CLIENTS_DIR}/anna.env" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED C_LIMIT C_EXPIRES C_RESET C_STATE C_REASON"; echo $?)" 0 "validator: a client file without limits passes"
 
 bad() {   # name, content (a state file that must be refused)
     printf '%b' "$2" > "${T}/bad.env"
@@ -179,6 +180,8 @@ check "$(ls -A "${T}/w2")" "" "import: the temporary files are removed"
 ( setpaths "${T}/dst"; VT_RECONFIGURE=0; CLIENT_FILE="${T}/none"; load_reality_state; load_hy2_state; load_tt_state; load_clients
   echo "${R_UUID} ${H_PASSWORD} ${H_SNI} ${H_PORT} ${T_USER} ${T_SNI} ${CL_NAMES[*]} ${H_MASQ}" ) > "${T}/out.txt" 2>&1
 check "$(cat "${T}/out.txt")" "11111111-2222-4333-8444-555555555551 ${a48} www.sony.com 443 u1234abcd www.nvidia.com anna bob_2 https://www.sony.com/page?x=1&y=2" "the imported state loads with the installer's loaders"
+( setpaths "${T}/dst"; load_clients; echo "${CL_LIMIT[0]}|${CL_STATE[0]}|${CL_LIMIT[1]}|${CL_EXPIRES[1]}|${CL_RESET[1]}|${CL_STATE[1]}|${CL_REASON[1]}" ) > "${T}/out.txt" 2>&1
+check "$(cat "${T}/out.txt")" "|active|50000000000|2027-01-31|monthly|disabled|quota" "round trip: limits, expiry, reset and the disabled state survive the move"
 
 # explicit settings win over the old node's ports and switches
 imp_given() {
@@ -280,6 +283,14 @@ fresh_evil; sed -i 's/^C_NAME=anna/C_NAME=Anna/' "${T}/evil/clients/anna.env"
 attack "a client name that breaks CLIENT_RE inside the file" "bad clients/anna.env"
 fresh_evil; sed -i 's/^C_NAME=bob_2/C_NAME=main/' "${T}/evil/clients/bob_2.env"
 attack "a client called main inside a client file" "does not match its file name"
+for hostile in 'C_LIMIT=0' 'C_LIMIT=5G' 'C_LIMIT=1000000000000001' 'C_LIMIT=1;id' 'C_LIMIT=$(id)' 'C_EXPIRES=2027-02-30' 'C_EXPIRES=2027-01-31;id' \
+               'C_EXPIRES=$(id)' 'C_RESET=hourly' 'C_RESET=none' 'C_RESET=daily;id' 'C_STATE=active' 'C_STATE=disabled;id' 'C_REASON=bored' 'C_REASON=`id`'; do
+    fresh_evil; sed -i '/^C_STATE=\|^C_REASON=\|^C_LIMIT=\|^C_EXPIRES=\|^C_RESET=/d' "${T}/evil/clients/bob_2.env"
+    printf '%s\n' "${hostile}" >> "${T}/evil/clients/bob_2.env"
+    attack "a client file with ${hostile}" "bad clients/bob_2.env"
+done
+fresh_evil; printf 'C_LIMIT=5\nC_LIMIT=6\n' >> "${T}/evil/clients/anna.env"
+attack "a client file with a repeated limit key" "bad clients/anna.env"
 fresh_evil; printf 'H_PASSWORD=%s\nH_SNI=www.sony.com\nH_PORT=443\nH_MASQ=$(touch %s/pwned)\n' "${a48}" "${T}" > "${T}/evil/hysteria/node.env"
 attack "a state file with \$(...)" "bad hysteria/node.env"
 fresh_evil; printf 'R_UUID=11111111-2222-4333-8444-555555555551\nR_PRIV=%s\nR_PUB=%s\nR_SID=0123456789abcdef\nR_SITE=`touch %s/pwned`\n' "${key43}" "${pub43}" "${T}" > "${T}/evil/reality/reality.env"

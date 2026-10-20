@@ -36,6 +36,9 @@ check "$(W diagnose)" "ARGS:--diagnose" "wrapper: diagnose"
 check "$(W panel-password)" "ARGS:--panel-password" "wrapper: panel-password"
 check "$(W traffic)" "ARGS:--traffic" "wrapper: traffic"
 check "$(W reset anna)" "ARGS:--reset-client anna" "wrapper: reset NAME"
+check "$(W limit anna --limit 50G --reset monthly)" "ARGS:--set-client anna --limit 50G --reset monthly" "wrapper: limit NAME ..."
+check "$(W disable anna)" "ARGS:--disable-client anna" "wrapper: disable NAME"
+check "$(W enable anna)" "ARGS:--enable-client anna" "wrapper: enable NAME"
 check "$(W uninstall)" "ARGS:--uninstall" "wrapper: uninstall"
 check "$(W audit)" "ARGS:--audit" "wrapper: audit"
 check "$(W audit 200)" "ARGS:--audit 200" "wrapper: audit N"
@@ -82,6 +85,7 @@ grep -q '^#    bash veiltrium.sh --qr NAME' veiltrium.sh; check $? 0 "modes head
 # every user-facing mode of the parser is in the modes header (printed by --help), once
 for m in --update --check-update --reselect-reality --dry-run --trial-reality --trial-stop --add-client --remove-client --reset-client \
          --list-clients --show-client --qr --traffic --traffic-reset --status --diagnose --check-russia --import-mts --test-alert \
+         --set-client --disable-client --enable-client --enforce \
          --audit --panel-password --export --import --uninstall; do
     check "$(grep -cE -- "^#    bash veiltrium.sh ${m}( |$)" veiltrium.sh)" 1 "help lists ${m} once"
 done
