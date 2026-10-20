@@ -377,9 +377,11 @@ sec_g() {
     must 'Hysteria 2' "$W/qr2.txt"
     if sudo "$VT" qr nobody > "$W/qr3.txt" 2>&1; then fail "qr of a missing client"; fi
     sudo "$VT" help > "$W/help.txt" 2>&1 || { cat "$W/help.txt"; fail "veiltrium help failed"; }
-    must 'Usage: veiltrium COMMAND' "$W/help.txt"
-    sudo "$VT" bogus > "$W/bogus.txt" 2>&1 || rc=$?
+    must 'Modes:' "$W/help.txt"   # help = the installer's full --help
+    if grep -x '#' "$W/help.txt" >/dev/null; then fail "stray '#' lines in --help"; fi
+    rc=0; sudo "$VT" bogus > "$W/bogus.txt" 2>&1 || rc=$?
     [ "$rc" = 2 ] || { cat "$W/bogus.txt"; fail "an unknown command ended with $rc, not 2"; }
+    must 'Usage: veiltrium COMMAND' "$W/bogus.txt"   # an unknown word: the wrapper's own usage
 }
 # ======================================================================================
 sec_e() {

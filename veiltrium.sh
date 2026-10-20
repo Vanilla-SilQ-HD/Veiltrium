@@ -4467,7 +4467,7 @@ uninstall_main() {
 usage() {
     banner
     printf '\n'
-    sed -n '/^#  Modes:/,/^#  Without VLESS/p' "$0" | sed 's/^#  \{0,1\}//'
+    sed -n '/^#  Modes:/,/^#  Without VLESS/p' "$0" | sed -e 's/^#$//' -e 's/^#  \{0,1\}//'
     cat <<'EOF'
 
 Settings (environment variables, saved where noted):
