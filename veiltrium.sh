@@ -5442,6 +5442,12 @@ if [[ -z "${PUBLIC_IP}" ]]; then
     [[ -n "${PUBLIC_IP}" ]] || die "could not detect the server's public IPv4; set it manually: PUBLIC_IP=x.x.x.x bash $0"
     is_public_ipv4 "${PUBLIC_IP}" || warn "The server has no public IPv4 of its own (${PUBLIC_IP}); if it is behind NAT, set PUBLIC_IP."
 fi
+# A saved list may name this server itself (a standby deployed from an export of the
+# main node): drop it quietly; an explicit STANDBY_HOSTS with our own address stays an error.
+if [[ -z "${STANDBY_HOSTS}" && ",${N_STANDBY}," == *",${PUBLIC_IP},"* ]]; then
+    N_STANDBY="$(tr ',' '\n' <<<"${N_STANDBY}" | grep -vxF -- "${PUBLIC_IP}" | paste -sd, - || true)"
+    info "This server (${PUBLIC_IP}) is not its own standby: removed from the saved standby list"
+fi
 standby_parse "${N_STANDBY}" "${PUBLIC_IP}" || die "${STANDBY_ERR}"
 if (( ${#STANDBY[@]} )); then info "Standby servers in the client links and configs: ${STANDBY[*]} (assumed to use the same ports)"; fi
 # The node name in client apps (Veiltrium-<name>): explicit setting, else the saved one,
