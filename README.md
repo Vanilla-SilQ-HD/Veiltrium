@@ -1,28 +1,145 @@
+English | [Русский](README.ru.md)
+
+<div align="center">
+
 # Veiltrium
 
 **Secure Multi-Protocol VPN Deployment**
 
 Automated, security-focused deployment of Hysteria2, VLESS Reality and TrustTunnel on Ubuntu VPS.
 
-Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved.
+[![release](https://img.shields.io/github/v/tag/Vanilla-SilQ-HD/Veiltrium?filter=v*&label=release&style=flat-square)](https://github.com/Vanilla-SilQ-HD/Veiltrium/tags)
+[![checks](https://img.shields.io/github/actions/workflow/status/Vanilla-SilQ-HD/Veiltrium/fast.yml?branch=main&label=checks&style=flat-square)](https://github.com/Vanilla-SilQ-HD/Veiltrium/actions/workflows/fast.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Ubuntu%2024.04%20%7C%2026.04-lightgrey?style=flat-square)](#supported-systems)
+
+</div>
+
+Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved. Every change to a working node is checked with a real client and rolled back automatically if it fails, and the installer checks from Russian networks whether the server is reachable at all.
 
 The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol **Vt**).
 
----
+## Quick start
+
+On the server, as root:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Vanilla-SilQ-HD/Veiltrium/main/veiltrium.sh && bash veiltrium.sh
+```
+
+Read the script before you run it: it changes the firewall, SSH settings and system updates of the server. The run takes a few minutes and prints the connection details of the first client at the end. Afterwards the short command `veiltrium` is available:
+
+```bash
+veiltrium status         # a fast overview of the node
+veiltrium add anna       # a new client with its own credentials for all protocols
+veiltrium qr anna        # QR codes of the client's links in the terminal
+```
+
+## Contents
+
+- [Features](#features)
+- [How it compares](#how-it-compares)
+- [Architecture](#architecture)
+- [Protocols](#protocols)
+- [Supported systems](#supported-systems)
+- [Using it](#using-it)
+- [Phones and apps](#phones-and-apps)
+- [Moving to a new server and standby servers](#moving-to-a-new-server-and-standby-servers)
+- [Settings](#settings)
+- [Security model](#security-model)
+- [Reference](#reference)
+- [Tests](#tests)
+- [Known limitations](#known-limitations)
+- [Changelog](#changelog)
+- [License](#license)
 
 ## Features
 
-- One non-interactive run as root: system upgrade, automatic security updates, SSH hardening, firewall, fail2ban, kernel tuning, three VPN protocols, end-to-end verification and client links.
-- Each protocol runs as its own system user in a systemd sandbox and cannot reach the server itself, private networks or SMTP.
-- **Separate TLS identities.** Each protocol has its own server name and certificate, kept between runs. Changing one never touches the others.
-- **Measured VLESS Reality site selection.** Candidate sites are checked directly and with a real Reality client on an isolated loopback instance. The choice comes from a reproducible score, with no random picks and no rotation on re-runs.
-- **Transactional changes with automatic rollback.** Every change to a working node is checked with a real client before it is kept. If a run fails, is interrupted, is killed or the server loses power, the previous settings come back without any manual step.
-- **Safe re-runs.** A plain re-run keeps passwords, keys, certificates, links and service configs byte for byte. It restarts no service, drops no client connection and does not reboot a working node.
-- **What Russia sees, checked from the server.** A site on the RKN block list is never chosen as a server name, and Globalping probes in Russian networks (MTS, Rostelecom and others) check that the server's address answers, so a blocked IP shows at install time, not as a dead tunnel later.
-- **Several clients.** `--add-client NAME` gives one more person or device its own credentials for every protocol; `--remove-client NAME` revokes them at once. Each change is checked with real clients and rolled back if it fails.
+**Protocols and TLS identities**
+
+- Hysteria 2, VLESS Reality (Vision) and TrustTunnel from one run; each can be turned off (`REALITY_ENABLE=0`, `TT_ENABLE=0`).
+- Separate TLS identities: each protocol has its own server name and certificate, kept between runs. Changing one never touches the others.
+- Measured Reality site selection: candidates are checked directly and with a real Reality client on an isolated loopback instance. The choice comes from a reproducible score, with no random picks and no rotation on re-runs.
 - Client apps show the node as `Veiltrium-<country>` (for example `Veiltrium-PL`).
-- **A small web panel** on every node: overview and clients (links, QR codes, add, revoke). It listens on `127.0.0.1` only and is reached through an SSH tunnel.
-- A JSON report without secrets (`/var/lib/veiltrium/report.json`), plus `--diagnose` and `--dry-run` modes that change nothing.
+
+**Security and hardening**
+
+- One non-interactive run as root: system upgrade, automatic security updates, SSH hardening, firewall, fail2ban, kernel tuning, three protocols, end-to-end verification and client links.
+- Each proxy runs as its own system user in a systemd sandbox and cannot reach the server itself, private networks or SMTP.
+- nftables table `inet veiltrium`: only SSH and the proxy ports are open; scanner networks (refreshed weekly) never see the proxy ports.
+- Secrets stay in root-only files; connection details never enter the install log.
+
+**Reliability**
+
+- Transactional changes with automatic rollback: backup, pending marker, real-client check, commit. Errors, Ctrl+C, SIGTERM, SIGKILL and power loss all restore the previous settings without a manual step.
+- Idempotent re-runs: a plain re-run keeps passwords, keys, certificates, links and configs byte for byte, restarts no service, drops no connection and does not reboot a working node.
+- `--diagnose` and `--dry-run` change nothing; a JSON report without secrets lives in `/var/lib/veiltrium/report.json`.
+
+**Censorship awareness**
+
+- A server name on the RKN block list is never chosen for Reality, Hysteria or TrustTunnel.
+- [Globalping](https://globalping.io) probes in Russian networks (MTS, Rostelecom and others) check that the server's address answers: at install time, on request, and automatically every 6 hours.
+- TSPU stall detection: the optional router probe reports `stalled` when a tunnel connects but transfers freeze after 16-20 KB.
+- Standby servers: up to 3 more addresses in every link and config, so phones and the router switch by themselves if one address is blocked.
+- Export and import move a node with all its secrets to a new VPS; clients change only the address.
+
+**Clients**
+
+- `main` plus any number of added clients, each with its own Hysteria user and password, VLESS UUID and TrustTunnel login; revoke or reset one without touching the others.
+- Per-client traffic limit, expiry date, periodic reset and a manual disable switch, enforced by a timer.
+- Traffic counters per client and protocol, with no extra software in the data path.
+- For phones: a base64 subscription and a complete sing-box profile for every client, plus terminal QR codes.
+
+**Operations**
+
+- A short command, `veiltrium`, on the server.
+- Alerts to a Telegram bot or a webhook (a service down, no reach from Russia, a rollback).
+- An audit log of every change, `--update` and `--check-update`, and a safe `--uninstall`.
+- A web panel in English and Russian: overview, clients, limits, traffic, links, QR codes, check from Russia.
+
+## How it compares
+
+A comparison with typical one-click VPN install scripts (generic, no project is named).
+
+| | Typical one-click script | Veiltrium |
+|---|---|---|
+| Binaries | latest release or a third-party panel, often via `curl \| sh` | official Hysteria and Xray releases pinned by version and SHA-256; the TrustTunnel endpoint is pinned the same way |
+| Changing a working node | edits in place, a failure leaves a half-configured server | transaction with a real-client check; automatic rollback on error, signal or power loss |
+| Re-running | often regenerates secrets or restarts services | keeps secrets and configs byte for byte, no restarts, no reboot |
+| Service isolation | proxies run as root | own user per proxy, systemd sandbox, egress filter against the server itself, private ranges and port 25 |
+| Admin interface | a public port with a panel | none open: panel on `127.0.0.1`, reached through an SSH tunnel, actions through a root helper with a fixed list of requests |
+| Self-signed TLS | `insecure=true` in the link | certificate pinning in links and sing-box JSON |
+| Reachability from Russia | not checked | RKN list filter, Globalping check at install and every 6 hours, optional probe from a home router |
+| Moving a node | reinstall and re-issue every link | encrypted export and import, only the address changes |
+| Tests | none or a syntax check | FAST checks on every push; FULL end-to-end suite with real clients on Ubuntu 26.04 and 24.04 |
+
+## Architecture
+
+```mermaid
+flowchart TB
+    C["Clients<br/>phones, router, apps"] --> FW["nftables, table inet veiltrium<br/>scanner sets, SSH rate limit"]
+    FW -->|"UDP 443"| H["Hysteria 2"]
+    FW -->|"TCP 443"| R["VLESS Reality (Xray)"]
+    FW -->|"TCP+UDP 8443"| T["TrustTunnel"]
+    H --> E["proxy_egress filter<br/>no server addresses, no private ranges, no port 25"]
+    R --> E
+    T --> E
+    E --> I(("Internet"))
+
+    A["Admin"] -.->|"ssh -N -L 2096:127.0.0.1:2096"| P["Web panel<br/>127.0.0.1:2096"]
+    P -->|"unix socket"| HP["Root helper<br/>fixed list of requests"]
+    HP --> S["veiltrium.sh<br/>--helper"]
+
+    subgraph TM["systemd timers"]
+        direction LR
+        T1["traffic and enforce<br/>5 min"]
+        T2["russia-check<br/>6 h"]
+        T3["watch<br/>5 min, alerts only"]
+        T4["scanner-block<br/>weekly"]
+        T5["recover and watchdog<br/>rollback"]
+    end
+    TM -.-> S
+```
 
 ## Protocols
 
@@ -40,16 +157,133 @@ Xray is intentionally pinned to `v26.3.27`. From `26.9.8` on, the Reality server
 - amd64 and arm64.
 - systemd, nftables and OpenSSH, as shipped with Ubuntu.
 
-## Architecture and security
+## Using it
 
-- **Firewall (nftables, own table `inet veiltrium`).** Only SSH and the proxy ports are reachable from outside. SSH is rate-limited. Scanner networks from public lists (refreshed weekly) see only SSH, never the proxy ports. Other tables (e.g. fail2ban) are left alone.
+The installer writes the short command `/usr/local/bin/veiltrium`, which runs the installed copy of the script. Any installer option works too, for example `veiltrium --dry-run`; `veiltrium help` lists all modes and settings.
+
+| Short command | Full form | What it does |
+|---|---|---|
+| `veiltrium status` | `--status` | fast overview, no tests, no secrets (`--json -` for JSON) |
+| `veiltrium clients` | `--list-clients` | the clients of the node |
+| `veiltrium add NAME` | `--add-client NAME` | a new client; prints details, saves `/root/veiltrium/clients/NAME.txt` |
+| `veiltrium remove NAME` | `--remove-client NAME` | revoke a client |
+| `veiltrium show NAME` | `--show-client NAME` | connection details of a client |
+| `veiltrium qr NAME` | `--qr NAME` | terminal QR codes of the client's links |
+| `veiltrium reset NAME` | `--reset-client NAME` | new credentials, same name |
+| `veiltrium limit NAME ...`, `disable NAME`, `enable NAME` | `--set-client`, `--disable-client`, `--enable-client` | limit, expiry, periodic reset, switch off and on |
+| `veiltrium traffic` | `--traffic` | traffic per client |
+| `veiltrium russia` | `--check-russia` | do Russian networks reach this server? |
+| `veiltrium diagnose` | `--diagnose` | check the node, change nothing |
+| `veiltrium audit [N]` | `--audit [N]` | the last N lines of the audit log |
+| `veiltrium export FILE` | `--export FILE` | pack the node, encrypted |
+| `veiltrium test-alert` | `--test-alert` | test message to the alert channels |
+| `veiltrium check-update`, `update` | `--check-update`, `--update` | look for a newer release, install it |
+| `veiltrium panel-password` | `--panel-password` | new web panel password |
+| `veiltrium uninstall` | `--uninstall` | remove Veiltrium |
+| `veiltrium install` | (no option) | the same as re-running the installer |
+
+Options without a short form: `--reselect-reality`, `--dry-run`, `--trial-reality`, `--trial-stop`, `--enforce`, `--traffic-reset`, `--import`, `--import-mts`.
+
+**Web panel.** Every node gets a small panel on `127.0.0.1:2096`. Open the tunnel and browse to `http://localhost:2096/`:
+
+```bash
+ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP
+```
+
+The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt`. Details are in the [reference](#reference) below.
+
+## Phones and apps
+
+Every client gets two extra files next to its details (`/root/veiltrium/client.*` for `main`, `/root/veiltrium/clients/NAME.*` for the others, root only, none for a disabled client). They are also in `--show-client NAME --json -` as `subscription_base64` and `singbox_profile`, and the panel offers them in its import section.
+
+| File | What it is | For |
+|---|---|---|
+| `.singbox.json` | a complete sing-box profile: TUN inbound, DNS over HTTPS through the proxy, Hysteria 2 and VLESS Reality outbounds, standby servers, a `urltest` group `auto` and a selector `proxy`. The Hysteria certificate pin is checked. Needs sing-box 1.12 or newer | apps built on sing-box: Hiddify, NekoBox, Karing, sing-box SFA/SFI |
+| `.sub` | a base64 subscription: the Hysteria 2 and VLESS links, standby ones included, no TrustTunnel. `--qr NAME` also prints it as a QR code when it fits | apps built on Xray: v2rayNG, v2rayN, Happ. Hysteria 2 support and its pin vary by app there: prefer VLESS Reality |
+
+- If the connection degrades after a few minutes in VPN (TUN) mode on a phone, try the app's proxy mode or turn off sniffing.
+- For Reality keep `fp=chrome`, do not enable TCP Fast Open, do not use `fp=random`.
+- Copy links without passing them through chat apps or Markdown renderers, which break `&` and `_`.
+
+<details>
+<summary>AWG Manager and sing-box compatibility</summary>
+
+- **Hysteria 2.** AWG Manager deliberately drops `pinSHA256` from `hysteria2://` links and imports them with `insecure=true`, i.e. **without any certificate check**. Instead, use section 6 of `/root/veiltrium/client.txt`: a sing-box JSON block with `certificate_public_key_sha256`, imported as a server group (sing-box JSON). The router's sing-box build (`1.15.0-alpha.12-awgm.33`) enforces the pin, including over QUIC; CI checks this with the same build. `keenetic-vpn-probe.sh --check-awg` shows whether the router's config actually pins the key.
+- **VLESS Reality.** The `vless://` link imports as is (`fp=chrome`, `flow=xtls-rprx-vision`).
+- **TrustTunnel.** The `tt://` link carries the certificate. AWG Manager verifies it, but uses HTTP/2 only.
+- **sing-box clients in general.** Use the JSON outbounds from the client file. `certificate_public_key_sha256` is the base64 SHA-256 of the public key (SPKI), which is not the same value as Hysteria's hex `pinSHA256`.
+
+</details>
+
+## Moving to a new server and standby servers
+
+If the address of a server gets blocked, move the node with all its secrets: every client keeps working after changing only the server address in its link.
+
+```bash
+bash veiltrium.sh --export /root/node.vt        # old server; asks for a passphrase (12+ characters)
+scp /root/node.vt root@NEW_IP:/root/
+bash veiltrium.sh --import /root/node.vt        # new server; a normal install that starts from the export
+```
+
+To switch clients automatically instead, deploy the second VPS from an export and set `STANDBY_HOSTS=<its IPv4>` on the first server, then re-run it. Every link and config then also lists the standby server.
+
+<details>
+<summary>Export, import and standby details</summary>
+
+- The export holds the Hysteria, Reality and TrustTunnel keys, passwords and certificates, the server names, the added clients and the probe key. It is a tar of a fixed list of files encrypted with `openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256` (the file is plain openssl output, mode 600, never overwritten). Anyone with the file and the passphrase owns the node: keep them apart and delete the file afterwards.
+- Without a terminal give the passphrase in `VT_EXPORT_PASSPHRASE` / `VT_IMPORT_PASSPHRASE` (the script removes it from its environment at once).
+- The import checks the file name by name (regular files from the fixed list only, sizes, SHA-256 manifest, the exact format of every state file, certificate and key pairs) before it places anything. It runs only on a server with no node, or with the same node (a standby copy being refreshed); a different node is refused.
+- The new server gets a new web panel password and detects its country name again. Ports of the old node are kept unless you set `REALITY_PORT` / `TT_PORT` yourself.
+- `STANDBY_HOSTS` takes up to 3 public IPv4 addresses, comma-separated, saved; `none` clears. The standby servers must be copies of this node using the same ports. Links (hysteria2, vless, tt), sing-box outbounds with a `urltest` group and the AWG Manager server group all list them. Export again after adding or removing clients.
+
+</details>
+
+## Settings
+
+Optional settings are environment variables written before the command: `VAR=value bash veiltrium.sh`. Most are saved, so later runs keep them.
+
+<details>
+<summary>All settings</summary>
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REALITY_CANDIDATES` (old name `MASK_SITES`) | built-in list of 10 sites | Reality candidates; saved; `default` restores the built-in list |
+| `REALITY_SNI` | – | use exactly this Reality site (checked first) |
+| `HY2_SNI` | chosen separately | Hysteria SNI and certificate name; saved; `auto` picks a new independent name |
+| `TT_SNI` | chosen separately | TrustTunnel hostname and certificate name; saved; `auto` as above |
+| `HY2_MASQUERADE_URL` | `auto` (`https://<Hysteria SNI>`) | page served to HTTP/3 probers; saved |
+| `REALITY_ENABLE`, `TT_ENABLE` | `1` | `0` turns VLESS Reality or TrustTunnel off |
+| `HY2_PORT` | `443` | Hysteria UDP port; an existing node keeps its port |
+| `REALITY_PORT`, `TT_PORT` | `443`, `8443` | Reality TCP port, TrustTunnel TCP+UDP port; an existing node keeps its ports unless they are given explicitly |
+| `REALITY_FP` | `chrome` | TLS client fingerprint in the VLESS link |
+| `PUBLIC_IP` | detected | server address for the links (behind NAT) |
+| `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` (saved) |
+| `GLOBALPING` | `1` | `0` turns off the check from Russian networks (it sends the server's address to Globalping); saved |
+| `RU_BLOCKLISTS` | itdoginfo `Categories/block.lst` | URLs of RKN block lists (domains, one per line) |
+| `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
+| `STANDBY_HOSTS` | none | up to 3 standby server addresses; saved; `none` clears (see above) |
+| `SCANNER_BLOCK` | `1` | `0` turns the scanner blocklist off |
+| `ALERT_TG_TOKEN`, `ALERT_TG_CHAT`, `ALERT_WEBHOOK` | none | alert channels; saved; `none` clears (see Alerts) |
+| `VT_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
+| `VT_RECONFIGURE` | `0` | `1` issues new passwords, keys and certificates, for the added clients too (all clients must be updated) |
+| `VT_YES` | – | `1` answers the `--update` question; `uninstall` answers the `--uninstall` question |
+| `MTS_MAX_AGE_DAYS` | `14` | home-network probe results older than this are ignored |
+
+`HY2_RECONFIGURE` and `HY2_AUTO_REBOOT` still work as old names of `VT_RECONFIGURE` and `VT_AUTO_REBOOT`.
+
+</details>
+
+## Security model
+
+- **Firewall (nftables, own table `inet veiltrium`).** Only SSH and the proxy ports are reachable from outside. SSH is rate-limited. Scanner networks from public lists (refreshed weekly) see only SSH, never the proxy ports. Other tables (for example fail2ban) are left alone.
 - **Egress isolation.** The proxy users may not connect to the server's own addresses, private ranges or port 25.
 - **SSH.** Hardened (`MaxAuthTries`, `LoginGraceTime`, `MaxStartups`, verbose logging) **without** disabling password or root login. This is by design; brute force is handled by nftables limits, fail2ban and OpenSSH `PerSourcePenalties`.
 - **Updates.** Unattended security upgrades with a nightly reboot window. `needrestart` is told never to restart the proxies, so a library update does not drop clients.
 - **Secrets.** Root-only state files (`0600`). Connection details are printed to the terminal and saved to `/root/veiltrium/client.txt`, never into the install log. Reports and probe results contain no secrets.
 - **Crash safety.** A change is a transaction: backup, pending marker, real client check, then commit. Rollback happens through the EXIT trap (errors, Ctrl+C, SIGTERM), a systemd watchdog timer (SIGKILL or a hung run), and `veiltrium-recover.service` at boot (power loss).
 
-### Self-signed certificates: what they do and do not give you
+<details>
+<summary>Self-signed certificates: what they do and do not give you</summary>
 
 Without a domain, Hysteria 2 and TrustTunnel use self-signed certificates.
 
@@ -58,7 +292,14 @@ Without a domain, Hysteria 2 and TrustTunnel use self-signed certificates.
 - **A self-signed certificate never looks like the real site it is named after.** An active prober can tell. Only VLESS Reality shows a prober the genuine certificate of a real site. The Hysteria HTTP/3 masquerade page is served behind the self-signed certificate.
 - Hysteria's built-in ACME cannot obtain IP-address certificates (no ACME profile support), and its challenges need port 80 or TCP 443, which Reality uses. So self-signed with pinning is the only supported mode.
 
-## Installation on a fresh VPS
+</details>
+
+## Reference
+
+Long reference material, folded away.
+
+<details>
+<summary>Installing on a fresh VPS</summary>
 
 On the server, as root:
 
@@ -75,44 +316,23 @@ scp Veiltrium/veiltrium.sh root@SERVER_IP:/root/
 ssh root@SERVER_IP "bash /root/veiltrium.sh"
 ```
 
-Read the script before you run it: it changes the firewall, SSH settings and system updates of the server.
-
-The run takes a few minutes. At the end it prints, and saves to `/root/veiltrium/client.txt` (root only):
+At the end the run prints, and saves to `/root/veiltrium/client.txt` (root only):
 
 - a `hysteria2://` link and a sing-box outbound with key pinning;
 - a `vless://` link and a sing-box outbound;
 - a `tt://` link;
-- a sing-box JSON block for AWG Manager (see below).
+- a sing-box JSON block for AWG Manager (section 6).
 
-Copy links without passing them through chat apps or Markdown renderers, which break `&` and `_`. For example, from PowerShell:
+For example, to copy a link from PowerShell:
 
 ```powershell
 ssh root@SERVER_IP "grep -m1 '^vless://' /root/veiltrium/client.txt" | Set-Clipboard
 ```
 
-Optional settings are environment variables:
+</details>
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `REALITY_CANDIDATES` (old name `MASK_SITES`) | built-in list of 10 sites | Reality candidates; saved; `default` restores the built-in list |
-| `REALITY_SNI` | – | use exactly this Reality site (checked first) |
-| `HY2_SNI` | chosen separately | Hysteria SNI and certificate name; saved; `auto` picks a new independent name |
-| `TT_SNI` | chosen separately | TrustTunnel hostname and certificate name; saved; `auto` as above |
-| `HY2_MASQUERADE_URL` | `auto` (`https://<Hysteria SNI>`) | page served to HTTP/3 probers; saved |
-| `REALITY_ENABLE`, `TT_ENABLE` | `1` | `0` turns VLESS Reality or TrustTunnel off |
-| `HY2_PORT` | `443` | Hysteria UDP port; an existing node keeps its port |
-| `REALITY_PORT`, `TT_PORT` | `443`, `8443` | Reality TCP port, TrustTunnel TCP+UDP port; an existing node keeps its ports unless they are given explicitly |
-| `PUBLIC_IP` | detected | server address for the links (behind NAT) |
-| `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` (saved) |
-| `GLOBALPING` | `1` | `0` turns off the check from Russian networks (it sends the server's address to Globalping); saved |
-| `RU_BLOCKLISTS` | itdoginfo `Categories/block.lst` | URLs of RKN block lists (domains, one per line) |
-| `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
-| `STANDBY_HOSTS` | none | up to 3 public IPv4 addresses of standby servers, comma-separated; saved; `none` clears. Every client link and config (hysteria2, vless, tt, sing-box outbounds with a `urltest` group, the AWG Manager server group) then also lists them, so phones and the router switch by themselves if this address is blocked. The standby servers must be copies of this node using the same ports: deploy the second VPS from an export of this node, then set `STANDBY_HOSTS` here and re-run; export again after adding or removing clients |
-| `SCANNER_BLOCK` | `1` | `0` turns the scanner blocklist off |
-| `VT_AUTO_REBOOT`, `AUTO_REBOOT_TIME` | `1`, `01:30` | a **new** node reboots right away if updates need it; nightly reboot time |
-| `VT_RECONFIGURE` | `0` | `1` issues new passwords, keys and certificates, for the added clients too (all clients must be updated) |
-
-## Re-running the installer
+<details>
+<summary>Re-running the installer and migrating from hy2-secure-install</summary>
 
 Re-run the same command to update or repair a node:
 
@@ -129,13 +349,13 @@ A plain re-run:
 
 **Nodes installed by `hy2-secure-install.sh`** (the project's earlier name, up to `v2026.10.13.1`) move to the Veiltrium names on their first run of `veiltrium.sh`:
 
-- `/etc/hy2-secure` → `/etc/veiltrium`, `/var/lib/hy2-secure` → `/var/lib/veiltrium`;
-- root's files → `/root/veiltrium/` (`client.txt`, `clients/`, `probe.env`, `panel.txt`);
-- the firewall table `inet hy2fw` → `inet veiltrium`, the helper units and drop-ins (`veiltrium-scanner-block`, `veiltrium-recover`, sysctl, SSH, fail2ban, needrestart, apt) to their `veiltrium` names;
+- `/etc/hy2-secure` to `/etc/veiltrium`, `/var/lib/hy2-secure` to `/var/lib/veiltrium`;
+- root's files to `/root/veiltrium/` (`client.txt`, `clients/`, `probe.env`, `panel.txt`);
+- the firewall table `inet hy2fw` to `inet veiltrium`, the helper units and drop-ins (`veiltrium-scanner-block`, `veiltrium-recover`, sysctl, SSH, fail2ban, needrestart, apt) to their `veiltrium` names;
 - keys, passwords, certificates, clients and links stay as they are; the three proxy services restart once (the comments in their configs change), so connected clients reconnect within seconds;
-- the old files are removed at the end of the run. `HY2_RECONFIGURE` and `HY2_AUTO_REBOOT` still work as old names of `VT_RECONFIGURE` and `VT_AUTO_REBOOT`; results of an older `keenetic-vpn-probe.sh` are still accepted.
+- the old files are removed at the end of the run. Results of an older `keenetic-vpn-probe.sh` are still accepted.
 
-Maintenance modes. Each takes the same lock as the installer; the first three change nothing on the server.
+Maintenance modes take the same lock as the installer; the first three change nothing on the server.
 
 ```bash
 bash /root/veiltrium.sh --diagnose            # check the node, change nothing
@@ -145,48 +365,10 @@ bash /root/veiltrium.sh --check-russia        # do Russian networks reach this s
 bash /root/veiltrium.sh --help
 ```
 
-## Moving to a new server
+</details>
 
-If the address of a server gets blocked, move the node with all its secrets: every client keeps working after changing only the server address in its link.
-
-```bash
-bash veiltrium.sh --export /root/node.vt        # old server; asks for a passphrase (12+ characters)
-scp /root/node.vt root@NEW_IP:/root/
-bash veiltrium.sh --import /root/node.vt        # new server; a normal install that starts from the export
-```
-
-- The export holds the Hysteria, Reality and TrustTunnel keys, passwords and certificates, the server names, the added clients and the probe key. It is a tar of a fixed list of files encrypted with `openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -md sha256` (the file is plain openssl output, mode 600, never overwritten). Anyone with the file and the passphrase owns the node: keep them apart and delete the file afterwards.
-- Without a terminal give the passphrase in `VT_EXPORT_PASSPHRASE` / `VT_IMPORT_PASSPHRASE` (the script removes it from its environment at once).
-- The import checks the file name by name (regular files from the fixed list only, sizes, SHA-256 manifest, the exact format of every state file, certificate and key pairs) before it places anything. It runs only on a server with no node, or with the same node (a standby copy being refreshed); a different node is refused.
-- The new server gets a new web panel password and detects its country name again. Ports of the old node are kept unless you set `REALITY_PORT` / `TT_PORT` yourself.
-
-## Alerts
-
-Off by default. With a channel set, the server tells you when something breaks; it only sends out, nothing listens.
-
-```bash
-ALERT_TG_TOKEN=123456789:AAH... ALERT_TG_CHAT=123456789 bash veiltrium.sh   # Telegram bot (from @BotFather) and the chat id
-ALERT_WEBHOOK=https://example.com/hook bash veiltrium.sh                     # or a webhook: JSON POST {node, server, event, text, time}
-bash veiltrium.sh --test-alert                                               # a test message; reports per channel
-ALERT_TG_TOKEN=none ALERT_WEBHOOK=none bash veiltrium.sh                     # turn off
-```
-
-- Settings are validated strictly, saved in `/etc/veiltrium/alerts.env` (root only, 600) and kept on later runs. The token is never printed back (only `123456789:****`) and not written to the install log. It reaches `curl` through its config on stdin, so it is not on any command line. Note that a variable typed in the shell stays in your shell history.
-- Events, each sent once per change: a proxy service not active in 2 checks in a row (`veiltrium-watch.timer`, every 5 minutes, exists only while a channel is set) and again when it recovers; the check from Russia reaching `bad_streak` 2 (with the hint to move to a new server or use a standby address) and again when it is reachable; a rollback (an install run or a client change that did not pass its checks and was restored).
-- A failed delivery goes to the journal (`journalctl -t veiltrium-alert`) and never stops anything. The messages hold the node name, the server address and a short hint; no secrets.
-
-## Updates
-
-```bash
-bash veiltrium.sh --check-update      # is a newer release out? (--json - for JSON); no changes
-bash veiltrium.sh --update            # download it, check it, ask, then run it as a normal install
-```
-
-- `--check-update` reads the release feed of this repository (installer tags `vYYYY.MM.DD[.N]` only; panel tags are ignored) and compares it numerically with the installed version.
-- `--update` downloads `veiltrium.sh` of that tag from `raw.githubusercontent.com` into a private file, checks that it is a bash script of exactly that version (`SCRIPT_VERSION` equal to the tag, complete, `bash -n`), shows `current -> new` and asks you to type `yes` (`VT_YES=1` skips the question). It replaces nothing itself: it runs the new script as an ordinary install with your environment, which refreshes the installed copy as usual (keys, passwords and clients are kept).
-- Trust is the same as for the `curl` one-liner: GitHub and HTTPS. There is no signature yet.
-
-## Clients
+<details>
+<summary>Clients, reset, limits and expiry</summary>
 
 The first client, `main`, is created by the installer (`/root/veiltrium/client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID and a TrustTunnel login. Revoking one never affects the others.
 
@@ -198,20 +380,15 @@ bash /root/veiltrium.sh --remove-client anna
 bash /root/veiltrium.sh --reset-client anna    # new credentials, same name
 ```
 
-The installer also writes a short command, `/usr/local/bin/veiltrium`, which runs the installed copy of the script: `veiltrium status`, `clients`, `add NAME`, `remove NAME`, `show NAME`, `qr NAME`, `export FILE`, `russia`, `traffic`, `reset NAME`, `limit NAME ...`, `disable NAME`, `enable NAME`, `audit [N]`, `test-alert`, `check-update`, `update`, `uninstall`, `diagnose`, `panel-password`, `install` (the same as re-running the installer) and `help` (all modes and settings). Any installer option works too, for example `veiltrium --dry-run`. `veiltrium qr NAME` prints terminal QR codes of the client's links (including standby servers); it writes to the terminal only, because the links hold secrets.
-
 - Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `main` is the first client.
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
+- `veiltrium qr NAME` writes to the terminal only, because the links hold secrets.
 
-### Resetting a client's credentials
+**Resetting credentials.** `--reset-client NAME` gives an added client a new VLESS UUID, a new Hysteria password and a new TrustTunnel password under the same name, for example after a phone was lost. It runs the same transaction as adding or removing a client: the three server configs change together, the services restart, and real clients check that the new credentials work, the old Hysteria and VLESS ones no longer do, and the main client still works. Otherwise the previous settings come back. The details in `/root/veiltrium/clients/NAME.txt` are rewritten and printed; send them to the client. `main` cannot be reset this way: `VT_RECONFIGURE=1 bash veiltrium.sh` replaces the secrets of the whole node, the added clients included.
 
-`--reset-client NAME` gives an added client a new VLESS UUID, a new Hysteria password and a new TrustTunnel password under the same name, for example after a phone was lost. It runs the same transaction as adding or removing a client: the three server configs change together, the services restart, and real clients check that the new credentials work, the old Hysteria and VLESS ones no longer do, and the main client still works. Otherwise the previous settings come back. The details in `/root/veiltrium/clients/NAME.txt` are rewritten and printed; send them to the client. `main` cannot be reset this way: `VT_RECONFIGURE=1 bash veiltrium.sh` replaces the secrets of the whole node, the added clients included. The panel's root helper accepts the request as well (`reset-client NAME`).
-
-### Limits and expiry
-
-An added client (never `main`) can have a traffic limit, an expiry date and a periodic reset, and can be switched off without being deleted.
+**Limits and expiry.** An added client (never `main`) can have a traffic limit, an expiry date and a periodic reset, and can be switched off without being deleted.
 
 ```bash
 bash veiltrium.sh --set-client anna --limit 50G --expires 2027-01-31 --reset monthly
@@ -228,33 +405,11 @@ veiltrium limit anna --limit 50G               # the short command: limit, disab
 - A client that is disabled is left out of the Xray, Hysteria and TrustTunnel configs; its details file in `/root/veiltrium/clients/` stays with a `DISABLED (reason)` line at the top. The reason is `manual`, `quota` or `expired`. `--list-clients` shows state, limit, expiry and reset; the JSON of `--list-clients` and `--show-client` has `state`, `reason`, `limit`, `expires`, `reset`, `period_start` and `period_bytes`.
 - The traffic timer (every 5 minutes) reads the counters and, only when some client must change, runs `--enforce`: it stops clients that reached their quota or expired, and brings back clients that were stopped by a quota or expiry that no longer applies (a new period, a higher limit, a later date). All changes of one run are one change: configs, restart, then real clients check that the main client works, every client that should work does, and every stopped client no longer connects; otherwise the previous settings come back (the timer then waits an hour before trying again). A manual `--disable-client` is never lifted by the timer; `--enable-client` refuses while the quota is used up or the date has passed and tells you what to change. Nothing runs during a Reality trial or an interrupted change.
 - Each state change is written to the audit log (`client-disabled`, `client-enabled`) and sent to the alert channels, for example `client anna disabled: quota 50 GB reached`. Changing only the settings of a client that stays in its state restarts nothing.
-- The panel's root helper accepts `set-client NAME limit=<bytes|none> expires=<YYYY-MM-DD|none> reset=<none|daily|weekly|monthly>` (all three, in this order), `disable-client NAME` and `enable-client NAME`.
 
-## Uninstalling
+</details>
 
-```bash
-bash /root/veiltrium.sh --uninstall      # asks you to type "uninstall"; VT_YES=uninstall answers it without a terminal
-```
-
-It lists what it will remove and waits for the word. It then stops and removes the three proxy services, the panel and its helper, every `veiltrium-*` unit and timer, the programs it installed (`hysteria`, `xray`, `trusttunnel_endpoint`, `veiltrium-panel`, `veiltrium-recover`, `veiltrium-scanner-block`), the settings and state (`/etc/hysteria`, `/usr/local/etc/xray`, `/etc/trusttunnel`, `/etc/veiltrium`, `/etc/veiltrium-panel`, `/var/lib/veiltrium`, `/usr/local/lib/veiltrium`), the install log, the needrestart override, the firewall table `inet veiltrium`, its lines in `/etc/nftables.conf` (the file is edited and checked with `nft -c` first; the other lines stay, and if nothing else was in it, the original saved at install time comes back) and the four service users. **`/root/veiltrium` goes too**: it holds the client details, the probe profile and the panel password. After the uninstall everything but SSH is reachable again unless another firewall is in place.
-
-It never touches what protects the server by itself: the SSH settings (`/etc/ssh/sshd_config.d/00-veiltrium-hardening.conf`), fail2ban (`/etc/fail2ban/jail.d/veiltrium-sshd.local`), automatic updates (`/etc/apt/apt.conf.d/52veiltrium-unattended-upgrades`, `20auto-upgrades`), journald (`/etc/systemd/journald.conf.d/50-veiltrium.conf`) and the kernel hardening (`/etc/sysctl.d/99-zz-veiltrium-hardening.conf`, `/etc/modules-load.d/veiltrium-bbr.conf`); nor the packages, nor the audit log. The last lines of the output name the ones that still exist so you can remove them by hand. A second run reports that there is nothing to remove.
-
-## Audit log
-
-Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `set-client`, `disable-client`, `enable-client`, `enforce`, `client-disabled`, `client-enabled`, `panel-password`, `traffic-reset`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
-
-```
-2026-10-20T09:14:02Z source=panel action=add-client target=anna result=ok
-```
-
-```bash
-bash /root/veiltrium.sh --audit          # the last 50 lines
-bash /root/veiltrium.sh --audit 200
-bash /root/veiltrium.sh --audit --json - # a JSON array
-```
-208d
-## Traffic counters
+<details>
+<summary>Traffic counters</summary>
 
 The installer counts the traffic of every client, per protocol: bytes up (from the client), bytes down (to it) and when it was last seen.
 
@@ -269,9 +424,12 @@ bash /root/veiltrium.sh --traffic-reset      # all counters to zero
 - A node installed before this feature gets the endpoints on its next run of the installer: Hysteria, Xray and TrustTunnel restart once for that, then re-runs change nothing again. Traffic before that run is not counted.
 - Not counted: what moved between the last reading and a crash or a reboot (at most 5 minutes).
 
-## Web panel
+</details>
 
-Every node gets a small web panel: an overview of the node and its protocols, and the clients with their links, QR codes and the AWG Manager JSON; clients can be added and revoked there.
+<details>
+<summary>Web panel</summary>
+
+Every node gets a small web panel: an overview of the node and its protocols, and the clients with their links, QR codes and the AWG Manager JSON; clients can be added, revoked, reset, limited and disabled there. The interface is available in English and Russian.
 
 ```bash
 ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to http://localhost:2096/
@@ -279,12 +437,77 @@ ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to 
 
 - The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt` (root only). `bash /root/veiltrium.sh --panel-password` sets a new one and signs everybody out.
 - **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only; the SSH tunnel is the way in. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
-- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts seven requests (status, list, show, add, remove, reset, check-russia) with checked names and runs the same tested code as the command line.
+- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts a fixed list of requests (status, list, show, add, remove, reset, set, disable, enable, audit, check-russia) with checked names and runs the same tested code as the command line.
 - Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` host names (no DNS rebinding), a strict Content Security Policy with no external resources, and a lockout after failed logins.
 - The binary comes from this repository's releases (`panel-v*`), SHA-256 pinned in the installer like the proxies. `PANEL_ENABLE=0` leaves it out.
 - The command line has the same machine interface: `--status`, `--list-clients`, `--show-client NAME`, `--add-client NAME`, `--remove-client NAME`, `--check-russia`, `--diagnose` and `--dry-run` take `--json -`.
 
-## Managing the REALITY SNI
+</details>
+
+<details>
+<summary>Alerts</summary>
+
+Off by default. With a channel set, the server tells you when something breaks; it only sends out, nothing listens.
+
+```bash
+ALERT_TG_TOKEN=123456789:AAH... ALERT_TG_CHAT=123456789 bash veiltrium.sh   # Telegram bot (from @BotFather) and the chat id
+ALERT_WEBHOOK=https://example.com/hook bash veiltrium.sh                     # or a webhook: JSON POST {node, server, event, text, time}
+bash veiltrium.sh --test-alert                                               # a test message; reports per channel
+ALERT_TG_TOKEN=none ALERT_WEBHOOK=none bash veiltrium.sh                     # turn off
+```
+
+- Settings are validated strictly, saved in `/etc/veiltrium/alerts.env` (root only, 600) and kept on later runs. The token is never printed back (only `123456789:****`) and not written to the install log. It reaches `curl` through its config on stdin, so it is not on any command line. Note that a variable typed in the shell stays in your shell history.
+- Events, each sent once per change: a proxy service not active in 2 checks in a row (`veiltrium-watch.timer`, every 5 minutes, exists only while a channel is set) and again when it recovers; the check from Russia reaching `bad_streak` 2 (with the hint to move to a new server or use a standby address) and again when it is reachable; a rollback (an install run or a client change that did not pass its checks and was restored).
+- A failed delivery goes to the journal (`journalctl -t veiltrium-alert`) and never stops anything. The messages hold the node name, the server address and a short hint; no secrets.
+
+</details>
+
+<details>
+<summary>Updates</summary>
+
+```bash
+bash veiltrium.sh --check-update      # is a newer release out? (--json - for JSON); no changes
+bash veiltrium.sh --update            # download it, check it, ask, then run it as a normal install
+```
+
+- `--check-update` reads the release feed of this repository (installer tags `vYYYY.MM.DD[.N]` only; panel tags are ignored) and compares it numerically with the installed version.
+- `--update` downloads `veiltrium.sh` of that tag from `raw.githubusercontent.com` into a private file, checks that it is a bash script of exactly that version (`SCRIPT_VERSION` equal to the tag, complete, `bash -n`), shows `current -> new` and asks you to type `yes` (`VT_YES=1` skips the question). It replaces nothing itself: it runs the new script as an ordinary install with your environment, which refreshes the installed copy as usual (keys, passwords and clients are kept).
+- Trust is the same as for the `curl` one-liner: GitHub and HTTPS. There is no signature yet.
+
+</details>
+
+<details>
+<summary>Audit log</summary>
+
+Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `set-client`, `disable-client`, `enable-client`, `enforce`, `client-disabled`, `client-enabled`, `panel-password`, `traffic-reset`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
+
+```
+2026-10-20T09:14:02Z source=panel action=add-client target=anna result=ok
+```
+
+```bash
+bash /root/veiltrium.sh --audit          # the last 50 lines
+bash /root/veiltrium.sh --audit 200
+bash /root/veiltrium.sh --audit --json - # a JSON array
+```
+
+</details>
+
+<details>
+<summary>Uninstalling</summary>
+
+```bash
+bash /root/veiltrium.sh --uninstall      # asks you to type "uninstall"; VT_YES=uninstall answers it without a terminal
+```
+
+It lists what it will remove and waits for the word. It then stops and removes the three proxy services, the panel and its helper, every `veiltrium-*` unit and timer, the programs it installed (`hysteria`, `xray`, `trusttunnel_endpoint`, `veiltrium-panel`, `veiltrium-recover`, `veiltrium-scanner-block`), the settings and state (`/etc/hysteria`, `/usr/local/etc/xray`, `/etc/trusttunnel`, `/etc/veiltrium`, `/etc/veiltrium-panel`, `/var/lib/veiltrium`, `/usr/local/lib/veiltrium`), the install log, the needrestart override, the firewall table `inet veiltrium`, its lines in `/etc/nftables.conf` (the file is edited and checked with `nft -c` first; the other lines stay, and if nothing else was in it, the original saved at install time comes back) and the four service users. **`/root/veiltrium` goes too**: it holds the client details, the probe profile and the panel password. After the uninstall everything but SSH is reachable again unless another firewall is in place.
+
+It never touches what protects the server by itself: the SSH settings (`/etc/ssh/sshd_config.d/00-veiltrium-hardening.conf`), fail2ban (`/etc/fail2ban/jail.d/veiltrium-sshd.local`), automatic updates (`/etc/apt/apt.conf.d/52veiltrium-unattended-upgrades`, `20auto-upgrades`), journald (`/etc/systemd/journald.conf.d/50-veiltrium.conf`) and the kernel hardening (`/etc/sysctl.d/99-zz-veiltrium-hardening.conf`, `/etc/modules-load.d/veiltrium-bbr.conf`); nor the packages, nor the audit log. The last lines of the output name the ones that still exist so you can remove them by hand. A second run reports that there is nothing to remove.
+
+</details>
+
+<details>
+<summary>Managing the Reality SNI</summary>
 
 The Reality site is chosen on a new node, and only changes when you ask for it:
 
@@ -295,6 +518,7 @@ REALITY_SNI=www.example.com bash /root/veiltrium.sh --reselect-reality
 ```
 
 **How a site is evaluated.**
+
 - Direct checks:
   - DNS gives only public IPv4 addresses;
   - on every address (up to 4): TLS 1.3 with X25519, ALPN h2 and a certificate valid for the name;
@@ -314,7 +538,10 @@ bash /root/veiltrium.sh --trial-reality www.example.com --trial-minutes 30
 bash /root/veiltrium.sh --trial-stop
 ```
 
-## What Russia sees
+</details>
+
+<details>
+<summary>What Russia sees: RKN list, Globalping, 6-hour check</summary>
 
 A check from a European server says nothing about a home provider in Russia. Two things the installer checks by itself:
 
@@ -324,7 +551,10 @@ A check from a European server says nothing about a home provider in Russia. Two
 - The server's address goes to Globalping's public measurement service. `GLOBALPING=0` (saved) turns the automatic check off; `--check-russia` still runs on request.
 - Neither check sees whether DPI lets a protocol through: that shows only in a real client (for example, the tunnel's status in AWG Manager).
 
-### Optional: a probe from a Keenetic router
+</details>
+
+<details>
+<summary>Optional: a probe from a Keenetic router (TSPU stall detection)</summary>
 
 `tools/keenetic-vpn-probe.sh` tests every protocol with real clients from the home network itself, through the router's physical WAN, and signs the results for the server (`--import-mts`), where a verified success counts in the Reality site score. It is not needed for a working setup.
 
@@ -359,59 +589,57 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
    ```
 
 **What counts as proof.**
+
 - A result counts only with `route: verified`: packets from the test client's own sockets were seen leaving through the physical WAN (tcpdump, with conntrack for NAT).
 - Anything else is `route_unverified` and does not count. That includes a VPN interface given as the WAN, a local redirect, or missing evidence.
 - A single success does not prove that DPI is bypassed.
 
 **Signatures.**
+
 - Results are signed with HMAC-SHA256 using the server's probe key.
 - Each server's lines are bound by a signed header (count and hash) and a run id. Changed, dropped, foreign, old or replayed results are rejected.
 - A signature proves which profile produced a result, not where the probe ran. That is what the route evidence is for.
 
-## AWG Manager and sing-box compatibility
+</details>
 
-- **Hysteria 2.** AWG Manager deliberately drops `pinSHA256` from `hysteria2://` links and imports them with `insecure=true`, i.e. **without any certificate check**. Instead, use section 6 of `/root/veiltrium/client.txt`: a sing-box JSON block with `certificate_public_key_sha256`, imported as a server group (sing-box JSON). The router's sing-box build (`1.15.0-alpha.12-awgm.33`) enforces the pin, including over QUIC; CI checks this with the same build. `keenetic-vpn-probe.sh --check-awg` shows whether the router's config actually pins the key.
-- **VLESS Reality.** The `vless://` link imports as is (`fp=chrome`, `flow=xtls-rprx-vision`).
-- **TrustTunnel.** The `tt://` link carries the certificate. AWG Manager verifies it, but uses HTTP/2 only.
-- **sing-box clients in general.** Use the JSON outbounds from the client file. `certificate_public_key_sha256` is the base64 SHA-256 of the public key (SPKI), which is not the same value as Hysteria's hex `pinSHA256`.
-
-## Phones and apps
-
-Every client gets two extra files next to its details (`/root/veiltrium/client.*` for `main`, `/root/veiltrium/clients/NAME.*` for the others, root only, none for a disabled client). They are also in `--show-client NAME --json -` as `subscription_base64` and `singbox_profile`.
-
-- **`.singbox.json`: a complete sing-box profile** (TUN inbound, DNS over HTTPS through the proxy, Hysteria 2 and VLESS Reality outbounds, standby servers, a `urltest` group `auto` and a selector `proxy`). For apps built on sing-box (Hiddify, NekoBox, Karing, sing-box SFA/SFI). The Hysteria certificate pin is checked. Needs sing-box 1.12 or newer.
-- **`.sub`: a base64 subscription** (the Hysteria 2 and VLESS links, standby ones included, no TrustTunnel). For apps built on Xray (v2rayNG, v2rayN, Happ). Hysteria 2 support and its certificate pin vary by app there: prefer VLESS Reality. `--qr NAME` also prints it as a QR code when it fits.
-- If the connection degrades after a few minutes in VPN (TUN) mode on a phone, try the app's proxy mode or turn off sniffing.
-- For Reality keep `fp=chrome`, do not enable TCP Fast Open, do not use `fp=random`.
-
-## Testing and CI
+## Tests
 
 Two levels:
 
 - **FAST** (`tests/fast.sh`, workflow `fast.yml`, on every push, seconds): `bash -n`, shellcheck, `dash` and BusyBox syntax for the probe, unit tests of scoring, choice, home-network records, client configs and links, and HMAC (RFC 4231 vectors and agreement with OpenSSL for both the server and the BusyBox implementation).
-- **FULL** (workflow `e2e.yml`, about 30 minutes; manual only, on any branch including `main`, before merge or release). It runs on Ubuntu 26.04 and 24.04:
-  - a fresh install, with the firewall checked from a separate network namespace;
-  - real clients of all three protocols;
-  - the exact router sing-box build;
-  - fail2ban bans;
-  - reboot simulation;
-  - re-runs with live connections through all three protocols;
-  - added clients: real clients on every protocol, a re-run with clients, rollback of a failed change, revocation;
-  - the web panel: loopback only, out of reach of the proxies, the helper's request rules, login and CSRF rules, a client change through the API, a new password, a re-run that changes nothing;
-  - rollback: SIGINT, SIGTERM, SIGKILL with the watchdog, a simulated power loss, systemd start failures;
-  - local test sites for Reality selection (invalid certificate, no HTTP/2, a dead CDN address, timeouts, NXDOMAIN);
-  - the Keenetic probe under BusyBox with policy routing, redirects, NAT and a VPN given as the WAN;
-  - a separate upgrade job from the release in use: it must change nothing, and its first added client switches Hysteria to per-client passwords.
+- **FULL** (workflow `e2e.yml`, about 30 minutes; manual only, on any branch including `main`, before merge or release). It runs on Ubuntu 26.04 and 24.04 and covers a fresh install with the firewall checked from a separate network namespace, real clients of all three protocols, the exact router sing-box build, fail2ban bans, reboot simulation, re-runs with live connections, added clients, the web panel, every rollback path, local test sites for Reality selection, the Keenetic probe under BusyBox and an upgrade job from the release in use.
+
+<details>
+<summary>What FULL covers</summary>
+
+- a fresh install, with the firewall checked from a separate network namespace;
+- real clients of all three protocols;
+- the exact router sing-box build;
+- fail2ban bans;
+- reboot simulation;
+- re-runs with live connections through all three protocols;
+- added clients: real clients on every protocol, a re-run with clients, rollback of a failed change, revocation;
+- the web panel: loopback only, out of reach of the proxies, the helper's request rules, login and CSRF rules, a client change through the API, a new password, a re-run that changes nothing;
+- rollback: SIGINT, SIGTERM, SIGKILL with the watchdog, a simulated power loss, systemd start failures;
+- local test sites for Reality selection (invalid certificate, no HTTP/2, a dead CDN address, timeouts, NXDOMAIN);
+- the Keenetic probe under BusyBox with policy routing, redirects, NAT and a VPN given as the WAN;
+- a separate upgrade job from the release in use: it must change nothing in the secrets and links, and its first added client switches Hysteria to per-client passwords.
 
 CI has no Russian home network: everything about reachability from a home provider is a simulation there, and needs the probe on a real router.
 
+</details>
+
 ## Known limitations
 
-- **No domain.** Hysteria 2 and TrustTunnel are self-signed; an active prober can see that (see above).
+- **No domain.** Hysteria 2 and TrustTunnel are self-signed; an active prober can see that (see the security model).
 - **Pinning depends on the client.** It protects only clients that pin. AWG Manager's link import does not; use the JSON import.
 - **The Reality score is measured from the server.** Reachability from a home network needs the Keenetic probe, and a verified route needs `tcpdump` on the router.
 - **TrustTunnel HTTP/3 is not available in AWG Manager.** The router imports TrustTunnel as HTTP/2 only.
 - **The installer is written for Ubuntu.** Other distributions are not supported.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
