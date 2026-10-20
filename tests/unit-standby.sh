@@ -72,9 +72,9 @@ standby_parse 192.168.1.5 || true
 [[ "${STANDBY_ERR}" == *"192.168.1.5"* ]]; check $? 0 "bad address message names the address"
 
 # ---- no standby: byte-identical to the previous version ------------------------
-# BASELINE = the installer before the batch-2 features (d815005: short command, --qr; no traffic counters in the client JSON);
+# BASELINE = the installer before the batch-2 features (d6d5f90: short command, --qr; no traffic counters in the client JSON);
 # without that object (a shallow clone, as in CI) only 'none' is compared with the empty list.
-BASELINE="${BASELINE_REF:-d815005}"
+BASELINE="${BASELINE_REF:-d6d5f90}"
 if [[ -n "${BASELINE_FILE:-}" ]]; then HEAD_REF="${BASELINE_FILE}"   # an installer file given directly
 elif git show "${BASELINE}:veiltrium.sh" > "${TMPD}/head.sh" 2>/dev/null; then HEAD_REF="${TMPD}/head.sh"
 else echo "note: ${BASELINE} not available; comparing the current script with itself"; HEAD_REF=./veiltrium.sh; fi
@@ -89,7 +89,7 @@ strip_traffic() {   # file: rewritten without the "traffic" object
 bash tests/unit-standby.sh --gen "${HEAD_REF}" > "${TMPD}/before.txt" 2>&1
 bash tests/unit-standby.sh --gen ./veiltrium.sh none > "${TMPD}/after.txt" 2>&1
 bash tests/unit-standby.sh --gen ./veiltrium.sh > "${TMPD}/after-empty.txt" 2>&1
-strip_traffic "${TMPD}/after.txt"; strip_traffic "${TMPD}/after-empty.txt"
+strip_traffic "${TMPD}/before.txt"; strip_traffic "${TMPD}/after.txt"; strip_traffic "${TMPD}/after-empty.txt"
 cmp -s "${TMPD}/after.txt" "${TMPD}/after-empty.txt"; check $? 0 "STANDBY_HOSTS=none gives the same output as unset"
 check "$(wc -c < "${TMPD}/before.txt" | tr -d ' ')" "$(wc -c < "${TMPD}/after.txt" | tr -d ' ')" "no standby: same size as before"
 if cmp -s "${TMPD}/before.txt" "${TMPD}/after.txt"; then check 1 1 "no standby: client files and JSON are byte-identical"

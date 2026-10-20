@@ -3403,6 +3403,8 @@ EOF
 }
 
 # Rewritten only when the text differs (no needless writes on a re-run).
+# The tests pass a destination; the installer uses the default.
+# shellcheck disable=SC2120
 write_cli_wrapper() {
     local dest="${1:-${CLI_BIN}}"
     cli_wrapper_text "${PANEL_LIB}/veiltrium.sh" > "${dest}.new"
