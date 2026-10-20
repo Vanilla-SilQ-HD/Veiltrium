@@ -171,6 +171,8 @@ bash /root/veiltrium.sh --show-client anna
 bash /root/veiltrium.sh --remove-client anna
 ```
 
+The installer also writes a short command, `/usr/local/bin/veiltrium`, which runs the installed copy of the script: `veiltrium status`, `clients`, `add NAME`, `remove NAME`, `show NAME`, `qr NAME`, `export FILE`, `russia`, `diagnose`, `panel-password`, `install` (the same as re-running the installer) and `help` (all modes and settings). Any installer option works too, for example `veiltrium --dry-run`. `veiltrium qr NAME` prints terminal QR codes of the client's links (including standby servers); it writes to the terminal only, because the links hold secrets.
+
 - Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `main` is the first client.
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
