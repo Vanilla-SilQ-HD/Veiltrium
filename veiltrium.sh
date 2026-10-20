@@ -51,8 +51,9 @@
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
 #    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
+#    bash veiltrium.sh --qr NAME           terminal QR codes of a client's links (main: the first one)
 #    bash veiltrium.sh --panel-password    a new web panel password (signs everybody out)
-#    bash veiltrium.sh --export FILE       pack this node (all secrets, encrypted with a passphrase)
+#    bash veiltrium.sh --export FILE      pack this node (all secrets, encrypted with a passphrase)
 #    bash veiltrium.sh --import FILE       install on a new server with the same secrets (links differ
 #                                                   only by the address)
 #    bash veiltrium.sh --help
@@ -2947,6 +2948,97 @@ import_node() {
     return 0
 }
 
+# ---- Short command: /usr/local/bin/veiltrium --------------------------------
+# A small wrapper over the installed copy of this script. The text comes from here so a test
+# can generate it with a stub script path ($1). To add a command, add one line to its case.
+cli_wrapper_text() {
+    printf '#!/bin/bash\n# veiltrium: short command (written by the installer)\nVT_SCRIPT=%q\n' "$1"
+    cat <<'EOF'
+if [[ ! -f "${VT_SCRIPT}" ]]; then
+    echo "veiltrium: ${VT_SCRIPT} is missing; run the installer once (bash veiltrium.sh)." >&2
+    exit 1
+fi
+cli_usage() {
+    cat <<'USAGE'
+Usage: veiltrium COMMAND [NAME|FILE]
+
+  status           overview of the node (no tests)
+  clients          list the clients
+  add NAME         add a client (own credentials for all protocols)
+  remove NAME      revoke a client
+  show NAME        connection details of a client (main: the first one)
+  qr NAME          QR codes of a client's links
+  export FILE      pack this node for a new server (encrypted with a passphrase)
+  russia           can Russian networks reach this server?
+  diagnose         check the node; no changes
+  panel-password   a new web panel password
+  install          run the installer again (update or repair)
+  help             all modes and settings
+
+Any option of the installer also works:  veiltrium --dry-run
+USAGE
+}
+cmd="${1:-help}"
+[[ $# -eq 0 ]] || shift
+case "${cmd}" in
+    -*)             exec bash "${VT_SCRIPT}" "${cmd}" "$@" ;;
+    status)         set -- --status "$@" ;;
+    clients)        set -- --list-clients "$@" ;;
+    add)            set -- --add-client "$@" ;;
+    remove)         set -- --remove-client "$@" ;;
+    show)           set -- --show-client "$@" ;;
+    qr)             set -- --qr "$@" ;;
+    export)         set -- --export "$@" ;;
+    russia)         set -- --check-russia "$@" ;;
+    diagnose)       set -- --diagnose "$@" ;;
+    panel-password) set -- --panel-password "$@" ;;
+    install)        set -- "$@" ;;
+    help)           set -- --help ;;
+    *)              echo "veiltrium: unknown command: ${cmd}" >&2; cli_usage >&2; exit 2 ;;
+esac
+exec bash "${VT_SCRIPT}" "$@"
+EOF
+}
+
+# Rewritten only when the text differs (no needless writes on a re-run).
+write_cli_wrapper() {
+    local dest="${1:-/usr/local/bin/veiltrium}"
+    cli_wrapper_text "${PANEL_LIB}/veiltrium.sh" > "${dest}.new"
+    if cmp -s "${dest}.new" "${dest}"; then
+        rm -f "${dest}.new"
+    else
+        chmod 755 "${dest}.new"
+        mv -f "${dest}.new" "${dest}"
+    fi
+}
+
+# The links of a client's details file: one per line (a standby link is a line of its own).
+qr_links() {
+    grep -E '^(hysteria2|vless|tt)://' "$1" 2>/dev/null | awk '!seen[$0]++' || true
+}
+
+# Terminal QR codes (the output carries secrets: terminal only, never a log).
+qr_show() {
+    local file="$1" link proto frag cap n=0
+    command -v qrencode >/dev/null 2>&1 || die "qrencode is missing: run the installer once (bash $0) first."
+    while IFS= read -r link; do
+        [[ -n "${link}" ]] || continue
+        case "${link}" in
+            hysteria2://*) proto="Hysteria 2" ;;
+            vless://*)     proto="VLESS Reality" ;;
+            *)             proto="TrustTunnel" ;;
+        esac
+        frag=""; [[ "${link}" == *'#'* ]] && frag="${link##*#}"
+        cap="${proto}${frag:+ (${frag})}"
+        n=$(( n + 1 ))
+        printf '\n%s\n' "${cap}"
+        if ! printf '%s' "${link}" | qrencode -t ansiutf8; then
+            printf '(this link is too long for a QR code: copy it from --show-client)\n'
+        fi
+    done < <(qr_links "${file}")
+    (( n > 0 )) || die "no links found in ${file}."
+}
+
 usage() {
     banner
     printf '\n'
@@ -2969,7 +3061,31 @@ Settings (environment variables, saved where noted):
                                     the server's country, detected once)
   VT_EXPORT_PASSPHRASE / VT_IMPORT_PASSPHRASE   passphrase for --export / --import without a
                                     terminal (otherwise it is asked for; 12+ characters on export)
-  The full list (ports, TT_ENABLE, SCANNER_BLOCK, RU_BLOCKLISTS, PUBLIC_IP, ...) is in README.md.
+
+Ports and protocols:
+  HY2_PORT=443                      Hysteria UDP port (an existing node keeps its port)
+  REALITY_PORT=443                  Reality TCP port (an existing node keeps its port unless given)
+  TT_PORT=8443                      TrustTunnel TCP+UDP port (kept the same way)
+  REALITY_ENABLE=0                  no VLESS Reality
+  TT_ENABLE=0                       no TrustTunnel
+  REALITY_FP=chrome                 TLS client fingerprint in the VLESS link (default chrome)
+  REALITY_RESELECT=1                same as --reselect-reality
+  PUBLIC_IP=1.2.3.4                 the server's address for the links (behind NAT; default: detected)
+
+Protection and checks:
+  SCANNER_BLOCK=0                   no scanner blocklist on the proxy ports
+  RU_BLOCKLISTS="url ..."           URLs of RKN block lists (domains, one per line); such names are
+                                    never chosen as server names
+  MTS_MAX_AGE_DAYS=14               home-network probe results older than this are ignored
+
+Reboots and regeneration:
+  VT_AUTO_REBOOT=0                  a new node does not reboot by itself when updates need it
+  AUTO_REBOOT_TIME=01:30            time of the nightly reboot for updates (server time)
+  VT_RECONFIGURE=1                  new passwords, keys and certificates (every client must be updated)
+  TRIAL_MINUTES=30                  default trial length (same as --trial-minutes)
+
+Every variable can be written before the command:  VAR=value bash veiltrium.sh
+Short command on an installed node:  veiltrium help
 
 Options:
   --trial-minutes N                 trial length, 5..240 (default 30)
@@ -3031,7 +3147,7 @@ while (( $# )); do
         --trial-minutes) TRIAL_MINUTES="${2:-}"; shift ;;
         --trial-stop) MODE="trial-stop" ;;
         --json) JSON_OUT="${2:-}"; [[ -n "${JSON_OUT}" ]] || die "--json needs a file name"; shift ;;
-        --add-client|--remove-client|--show-client)
+        --add-client|--remove-client|--show-client|--qr)
             MODE="${1#--}"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "$1 needs a client name"; shift ;;
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
@@ -3108,7 +3224,7 @@ if [[ "${MODE}" != "install" ]]; then
     load_tt_state
     load_probe_env
     load_ports
-    case "${MODE}" in list-clients|show-client|add-client|remove-client|trial) load_clients ;; esac
+    case "${MODE}" in list-clients|show-client|qr|add-client|remove-client|trial) load_clients ;; esac
     load_node_name
     set_hy2_auth_main
     PUBLIC_IP="${PUBLIC_IP:-${PROBE_SERVER}}"
@@ -3155,14 +3271,14 @@ if [[ "${MODE}" != "install" ]]; then
                      else empty end)'
             fi
             exit 0 ;;
-        list-clients|show-client|add-client|remove-client)
+        list-clients|show-client|qr|add-client|remove-client)
             [[ -n "${H_PASSWORD}" && -n "${PUBLIC_IP}" && -s "${CLIENT_FILE}" ]] \
                 || die "this server has no installed node yet: run the installer once (bash $0) first."
             node_context
             case "${MODE}" in
                 list-clients)
                     if [[ -n "${JSON_OUT}" ]]; then clients_json | json_emit; else clients_list; fi ;;
-                show-client)
+                show-client|qr)
                     if [[ "${CLIENT_ARG}" == "main" ]]; then CLIENT_TXT="${CLIENT_FILE}"
                     elif [[ "${CLIENT_ARG}" =~ ${CLIENT_RE} && -n "$(client_index "${CLIENT_ARG}")" && \
                             -s "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt" ]]; then
@@ -3170,7 +3286,10 @@ if [[ "${MODE}" != "install" ]]; then
                     else
                         die "no client ${CLIENT_ARG} (see --list-clients)."
                     fi
-                    if [[ -n "${JSON_OUT}" ]]; then
+                    if [[ "${MODE}" == "qr" ]]; then
+                        [[ -z "${JSON_OUT}" ]] || die "--qr prints to the terminal only (no --json)."
+                        qr_show "${CLIENT_TXT}"
+                    elif [[ -n "${JSON_OUT}" ]]; then
                         client_json "${CLIENT_ARG}" "$(grep -m1 '^tt://' "${CLIENT_TXT}" 2>/dev/null || true)" \
                             "$(grep '^tt://' "${CLIENT_TXT}" 2>/dev/null | tail -n +2 || true)" | json_emit
                     else
@@ -3580,7 +3699,7 @@ for attempt in 1 2 3 4 5 6; do
 done
 (( apt_updated == 1 )) || die "could not update package lists (check the server's internet connection)."
 "${APT_GET[@]}" -y full-upgrade
-"${APT_GET[@]}" -y install curl ca-certificates openssl nftables unattended-upgrades iproute2 util-linux unzip jq
+"${APT_GET[@]}" -y install curl ca-certificates openssl nftables unattended-upgrades iproute2 util-linux unzip jq qrencode
 if "${APT_GET[@]}" -y install fail2ban python3-systemd; then
     HAVE_FAIL2BAN=1
 else
@@ -4639,6 +4758,7 @@ if ! cmp -s "${SCRIPT_PATH}" "${PANEL_LIB}/veiltrium.sh"; then
     install -m 755 "${SCRIPT_PATH}" "${PANEL_LIB}/veiltrium.sh.new"
     mv -f "${PANEL_LIB}/veiltrium.sh.new" "${PANEL_LIB}/veiltrium.sh"
 fi
+write_cli_wrapper   # /usr/local/bin/veiltrium
 cat > "${TMPD}/russia-check.service" <<EOF
 # veiltrium: periodic check from Russian networks
 [Unit]
@@ -4908,6 +5028,7 @@ info "SSH: password login kept; ${SSH_NOTE}"
 info "Hysteria, Xray and TrustTunnel: separate users, systemd sandbox, no access to the server itself or private networks"
 info "security updates install automatically; install log: ${LOG_FILE}"
 info "everything above is saved in ${CLIENT_FILE} (root only)"
+info "short command on this server: veiltrium help   (veiltrium qr main: QR codes of the links)"
 info "Tip: since SSH password login stays on, make the password long: 16+ characters."
 if (( CHECK_FAIL != 0 )); then
     printf '\n\033[1;33m! Some checks failed; send the output above.\033[0m\n'
