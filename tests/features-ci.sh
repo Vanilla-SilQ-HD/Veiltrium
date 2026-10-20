@@ -47,7 +47,7 @@ hy_case() {   # $1 = hysteria2:// link
     /usr/local/bin/hysteria client -c "$W/h.yaml" > "$W/h.log" 2>&1 &
     pid=$!
     wait_port 18101 || true
-    c="$(fetch 18101)"; stop "$pid"; printf '%s' "$c"
+    c="$(fetch 18101)"; stop "$pid"; if [ "$WHAT" = big ]; then collect; fi; printf '%s' "$c"
 }
 sb_case() {   # $1 = file with one sing-box outbound
     local pid c
@@ -58,7 +58,7 @@ sb_case() {   # $1 = file with one sing-box outbound
     "$SB" run -c "$W/sb.json" > "$W/sb.log" 2>&1 &
     pid=$!
     wait_port 18102 || true
-    c="$(fetch 18102)"; stop "$pid"; printf '%s' "$c"
+    c="$(fetch 18102)"; stop "$pid"; if [ "$WHAT" = big ]; then collect; fi; printf '%s' "$c"
 }
 tt_case() {   # $1 = user, $2 = password (HTTP/2)
     local c
@@ -75,6 +75,7 @@ tt_case() {   # $1 = user, $2 = password (HTTP/2)
     c="$(fetch 18103)"
     sudo pkill -f "trusttunnel_client --config $W/t.toml" || true
     for _ in $(seq 1 40); do [ -z "$(ss -Htln 'sport = :18103')" ] && break; sleep 0.3; done
+    if [ "$WHAT" = big ]; then collect; fi
     printf '%s' "$c"
 }
 sec() {   # $1 = file, $2 = 2|4 -> that JSON object of a client file
@@ -156,7 +157,7 @@ sudo grep -E '^R_STATS_PORT=' /usr/local/etc/xray/reality.env > /dev/null || fai
 sudo grep -E '^T_STATS_PORT=' /etc/trusttunnel/node.env > /dev/null || fail "no TrustTunnel statistics port in the node state"
 sudo jq -e '.inbounds[0].settings.clients[0].email == "main"' /usr/local/etc/xray/config.json
 sudo bash ./veiltrium.sh --traffic-reset > /dev/null 2>&1
-test -s "$CF" || fail "carol does not exist"
+sudo test -s "$CF" || fail "carol does not exist"
 sudo systemctl stop veiltrium-traffic.timer 2>/dev/null || true
 load_carol
 WHAT=big
@@ -185,6 +186,8 @@ grep -E '^  carol ' "$W/traffic.txt" > /dev/null
 # ======================================================================================
 sec_c() {
     echo "== c. reset-client"
+sudo test -s "$CF" || fail "carol does not exist"
+load_carol
 if inst --reset-client main > "$W/rm.log" 2>&1; then fail "reset-client accepted main"; fi
 grep -F 'VT_RECONFIGURE=1' "$W/rm.log" > /dev/null
 OLD_H="$C_H"; cp "$W/c4.json" "$W/old4.json"; OLD_TP="$C_TP"
@@ -208,6 +211,8 @@ main_expect
 # ======================================================================================
 sec_b() {
     echo "== b. limits, disable and enable, expiry"
+sudo test -s "$CF" || fail "carol does not exist"
+load_carol
 if inst --set-client main --limit 1M > "$W/bad.log" 2>&1; then fail "a limit on main was accepted"; fi
 if inst --set-client carol --limit abc > "$W/bad.log" 2>&1; then fail "a bad size was accepted"; fi
 if inst --set-client carol > "$W/bad.log" 2>&1; then fail "--set-client without a setting was accepted"; fi
@@ -351,31 +356,35 @@ if inst --test-alert > "$W/ta2.log" 2>&1; then fail "--test-alert succeeded afte
 # ======================================================================================
 sec_g() {
     echo "== g. the short command and QR codes"
-command -v qrencode > /dev/null || fail "qrencode is not installed"
-VT=/usr/local/bin/veiltrium
-test -x "$VT"
-sudo "$VT" status > "$W/cli-status.txt" 2>&1 || { cat "$W/cli-status.txt"; exit 1; }
-cat "$W/cli-status.txt"
-grep -F 'hysteria-server: active' "$W/cli-status.txt" > /dev/null
-grep -F 'clients: main + 1 added' "$W/cli-status.txt" > /dev/null
-sudo "$VT" clients 2>&1 | grep -E '^  carol ' > /dev/null
-sudo "$VT" qr main > "$W/qr.txt" 2>&1 || { cat "$W/qr.txt"; exit 1; }
-grep -F 'Hysteria 2' "$W/qr.txt" > /dev/null
-grep -F 'VLESS Reality' "$W/qr.txt" > /dev/null
-test "$(LC_ALL=C grep -c $'\xe2\x96' "$W/qr.txt")" -gt 20      # block characters of the code
-sudo "$VT" qr carol > "$W/qr2.txt" 2>&1
-grep -F 'Hysteria 2' "$W/qr2.txt" > /dev/null
-if sudo "$VT" qr nobody > "$W/qr3.txt" 2>&1; then fail "qr of a missing client"; fi
-sudo "$VT" help > "$W/help.txt" 2>&1
-grep -F 'Usage: veiltrium COMMAND' "$W/help.txt" > /dev/null
-rc=0; sudo "$VT" bogus > "$W/bogus.txt" 2>&1 || rc=$?
-test "$rc" = 2
-
+    local VT=/usr/local/bin/veiltrium rc=0
+    must() {   # $1 = text, $2 = file
+        grep -F -- "$1" "$2" > /dev/null || { echo "MISSING '$1' in $2:"; cat "$2"; exit 1; }
+    }
+    command -v qrencode > /dev/null || fail "qrencode is not installed"
+    ls -l "$VT" || fail "no $VT"
+    sudo "$VT" status > "$W/cli-status.txt" 2>&1 || { cat "$W/cli-status.txt"; fail "veiltrium status failed"; }
+    must 'hysteria-server: active' "$W/cli-status.txt"
+    must 'clients: main + 1 added' "$W/cli-status.txt"
+    sudo "$VT" clients > "$W/cli-clients.txt" 2>&1 || { cat "$W/cli-clients.txt"; fail "veiltrium clients failed"; }
+    must 'carol' "$W/cli-clients.txt"
+    sudo "$VT" qr main > "$W/qr.txt" 2>&1 || { cat "$W/qr.txt"; fail "veiltrium qr main failed"; }
+    must 'Hysteria 2' "$W/qr.txt"
+    must 'VLESS Reality' "$W/qr.txt"
+    n="$(LC_ALL=C grep -c $'\xe2\x96' "$W/qr.txt" || true)"
+    echo "QR block lines: $n"
+    [ "$n" -gt 20 ] || { head -40 "$W/qr.txt"; fail "no QR code in the output"; }
+    sudo "$VT" qr carol > "$W/qr2.txt" 2>&1 || { cat "$W/qr2.txt"; fail "veiltrium qr carol failed"; }
+    must 'Hysteria 2' "$W/qr2.txt"
+    if sudo "$VT" qr nobody > "$W/qr3.txt" 2>&1; then fail "qr of a missing client"; fi
+    sudo "$VT" help > "$W/help.txt" 2>&1 || { cat "$W/help.txt"; fail "veiltrium help failed"; }
+    must 'Usage: veiltrium COMMAND' "$W/help.txt"
+    sudo "$VT" bogus > "$W/bogus.txt" 2>&1 || rc=$?
+    [ "$rc" = 2 ] || { cat "$W/bogus.txt"; fail "an unknown command ended with $rc, not 2"; }
 }
 # ======================================================================================
-if [ "${FEATURES_REINSTALL:-1}" != 1 ]; then echo "export and import skipped"; return 0; fi
 sec_e() {
     echo "== e. export, uninstall, import on the same machine"
+if [ "${FEATURES_REINSTALL:-1}" != 1 ]; then echo "export and import skipped"; return 0; fi
 PASS='ci-export-passphrase-0001'
 EXPF=/root/vt-ci-export.vtx
 links0="$(creds "$MAIN" "$CF")"
