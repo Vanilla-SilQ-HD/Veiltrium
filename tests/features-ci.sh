@@ -310,8 +310,27 @@ jq '{log: {level: "error"}, inbounds: [{type: "socks", tag: "in", listen: "127.0
 "$SB" check -c "$W/standby-sb2.json"
 jq -n --slurpfile a "$W/awg.json" '{log: {level: "error"}, outbounds: $a[0]}' > "$W/awg-sb.json"
 "$SB" check -c "$W/awg-sb.json"
+# the phone bundle (subscription + sing-box profile) of main and an added client, with and without standby servers
+bundle_check() {   # $1 = what, $2 = expected standby count
+    local f n b
+    for f in /root/veiltrium/client /root/veiltrium/clients/carol; do
+        n="${f##*/}"
+        sudo cat "$f.singbox.json" > "$W/prof-$n.json"
+        jq -e . "$W/prof-$n.json" > /dev/null || fail "$1: $n profile is not valid JSON"
+        "$SB" check -c "$W/prof-$n.json" || fail "$1: sing-box check failed on the $n profile"
+        jq -e --argjson n "$2" '(.outbounds | map(select(.type == "hysteria2" or .type == "vless")) | length) == 2 * ($n + 1)' "$W/prof-$n.json" > /dev/null \
+            || fail "$1: $n profile has the wrong outbounds"
+        b="$(sudo cat "$f.sub")"
+        test "$(printf '%s' "$b" | base64 -d | grep -c -E '^(hysteria2|vless)://')" = $(( 2 * ($2 + 1) )) || fail "$1: $n subscription has the wrong links"
+        test "$(printf '%s' "$b" | base64 -d | grep -c '^tt://' || true)" = 0 || fail "$1: $n subscription carries a TrustTunnel link"
+    done
+    sudo bash ./veiltrium.sh --show-client carol --json - 2>/dev/null | jq -e '.subscription_base64 != null and (.singbox_profile.outbounds | length) > 3' > /dev/null \
+        || fail "$1: carol JSON lacks the subscription or the profile"
+}
+bundle_check "with standby" 2
 expect "main still works with standby servers listed" "$(hy_case "$H_MAIN")" 204
 instenv STANDBY_HOSTS=none > "$W/sb2.log" 2>&1 || { tail -40 "$W/sb2.log"; exit 1; }
+bundle_check "without standby" 0
 sudo bash ./veiltrium.sh --status --json - 2>/dev/null | jq -e '(.standby | length) == 0'
 snap > "$W/snap1.txt"
 cmp "$W/snap0.txt" "$W/snap1.txt" || { diff "$W/snap0.txt" "$W/snap1.txt" | sed -E 's/[0-9a-f]{40,}/<secret>/g' | head -20; fail "the client files are not the same after STANDBY_HOSTS=none"; }

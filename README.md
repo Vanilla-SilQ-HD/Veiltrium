@@ -375,6 +375,15 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 - **TrustTunnel.** The `tt://` link carries the certificate. AWG Manager verifies it, but uses HTTP/2 only.
 - **sing-box clients in general.** Use the JSON outbounds from the client file. `certificate_public_key_sha256` is the base64 SHA-256 of the public key (SPKI), which is not the same value as Hysteria's hex `pinSHA256`.
 
+## Phones and apps
+
+Every client gets two extra files next to its details (`/root/veiltrium/client.*` for `main`, `/root/veiltrium/clients/NAME.*` for the others, root only, none for a disabled client). They are also in `--show-client NAME --json -` as `subscription_base64` and `singbox_profile`.
+
+- **`.singbox.json`: a complete sing-box profile** (TUN inbound, DNS over HTTPS through the proxy, Hysteria 2 and VLESS Reality outbounds, standby servers, a `urltest` group `auto` and a selector `proxy`). For apps built on sing-box (Hiddify, NekoBox, Karing, sing-box SFA/SFI). The Hysteria certificate pin is checked. Needs sing-box 1.12 or newer.
+- **`.sub`: a base64 subscription** (the Hysteria 2 and VLESS links, standby ones included, no TrustTunnel). For apps built on Xray (v2rayNG, v2rayN, Happ). Hysteria 2 support and its certificate pin vary by app there: prefer VLESS Reality. `--qr NAME` also prints it as a QR code when it fits.
+- If the connection degrades after a few minutes in VPN (TUN) mode on a phone, try the app's proxy mode or turn off sniffing.
+- For Reality keep `fp=chrome`, do not enable TCP Fast Open, do not use `fp=random`.
+
 ## Testing and CI
 
 Two levels:

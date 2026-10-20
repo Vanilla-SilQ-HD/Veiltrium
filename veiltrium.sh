@@ -1983,12 +1983,119 @@ standby_outbounds_text() {   # $1 = hy2 | reality, $2 = main tag, $3 = JSON-esca
     json_objects_text "${objs[@]}"
 }
 
+# ---- Subscription and sing-box profile of a client ---------------------------------
+# True if client $1 is an added client that is disabled (it has no subscription or profile).
+client_is_disabled() {
+    local i
+    i="$(client_index "$1")"
+    [[ -n "${i}" && "${CL_STATE[i]:-}" == "disabled" ]]
+}
+
+# The share links of client $1 that a subscription carries, one per line: Hysteria 2 and
+# VLESS Reality, the main server first, then the standby servers (TrustTunnel has no
+# subscription format, its link stays in the client file).
+client_sub_links() {
+    local i
+    client_creds "$1"
+    hy2_link "${CC_USER}" "${CC_PASS}"; printf '\n'
+    for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+        hy2_link "${CC_USER}" "${CC_PASS}" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))"; printf '\n'
+    done
+    if [[ -n "${R_SITE}" ]]; then
+        vless_link "${CC_UUID}"; printf '\n'
+        for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+            vless_link "${CC_UUID}" "${STANDBY[i]}" "${LABEL}-standby$(( i + 1 ))"; printf '\n'
+        done
+    fi
+    return 0
+}
+
+# The subscription of client $1: the links joined by newlines (no trailing one), base64 on one line.
+client_sub_b64() {
+    printf '%s' "$(client_sub_links "$1")" | base64 -w0
+}
+
+# A complete sing-box profile (phones: TUN inbound) of client $1 as JSON (sing-box 1.12+):
+# the Hysteria 2 and VLESS Reality outbounds with the standby ones, a urltest group "auto",
+# a selector "proxy" (default auto), DNS over HTTPS through the proxy, sniffing and DNS hijack.
+client_singbox_profile_json() {
+    local jauth i objs=() tags=()
+    client_creds "$1"
+    jauth="$(json_escape "${CC_AUTH}")"
+    objs+=("$(hy2_outbound_text "${HOST}" hy2 "${jauth}")"); tags+=(hy2)
+    for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+        objs+=("$(hy2_outbound_text "${STANDBY[i]}" "hy2-standby$(( i + 1 ))" "${jauth}")"); tags+=("hy2-standby$(( i + 1 ))")
+    done
+    if [[ -n "${R_SITE}" ]]; then
+        objs+=("$(vless_outbound_text "${HOST}" reality "${CC_UUID}")"); tags+=(reality)
+        for (( i = 0; i < ${#STANDBY[@]}; i++ )); do
+            objs+=("$(vless_outbound_text "${STANDBY[i]}" "reality-standby$(( i + 1 ))" "${CC_UUID}")"); tags+=("reality-standby$(( i + 1 ))")
+        done
+    fi
+    jq -n --argjson ob "$(json_objects_text "${objs[@]}")" '
+        $ARGS.positional as $tags |
+        {log: {level: "warn"},
+         dns: {servers: [{type: "https", tag: "remote", server: "1.1.1.1", detour: "proxy"}], final: "remote"},
+         inbounds: [{type: "tun", tag: "tun-in", address: ["172.19.0.1/30"], auto_route: true, strict_route: true, stack: "mixed"}],
+         outbounds: ($ob + [
+           {type: "urltest", tag: "auto", outbounds: $tags, url: "https://www.gstatic.com/generate_204", interval: "3m", tolerance: 50},
+           {type: "selector", tag: "proxy", outbounds: (["auto"] + $tags), default: "auto"},
+           {type: "direct", tag: "direct"}]),
+         route: {rules: [{action: "sniff"}, {protocol: "dns", action: "hijack-dns"}, {ip_is_private: true, outbound: "direct"}],
+                 final: "proxy", auto_detect_interface: true}}' --args "${tags[@]}"
+}
+
+# Writes $2 (plus $3, a suffix such as a newline) to file $1 (0600) only if it differs.
+write_if_changed() {
+    if [[ -f "$1" ]] && cmp -s "$1" <(printf '%s%s' "$2" "${3:-}"); then return 0; fi
+    install -m 600 /dev/null "$1.new"
+    printf '%s%s' "$2" "${3:-}" > "$1.new"
+    mv -f "$1.new" "$1"
+}
+
+# The subscription ($1.sub) and the sing-box profile ($1.singbox.json) of client $2; a disabled
+# client has neither (stale files are removed).
+write_client_bundle() {
+    if client_is_disabled "$2"; then
+        rm -f "$1.sub" "$1.singbox.json"
+        return 0
+    fi
+    write_if_changed "$1.sub" "$(client_sub_b64 "$2")"
+    write_if_changed "$1.singbox.json" "$(client_singbox_profile_json "$2")" $'\n'
+    return 0
+}
+
+# The "Phones and apps" section of a client file. $1 = file base path (details file without .txt), $2 = client.
+phones_section_text() {
+    local files num=7
+    if (( ${#STANDBY[@]} )); then num=8; fi   # section 7 is the standby note
+    if client_is_disabled "$2"; then
+        files="   (This client is disabled: it has no subscription and no sing-box profile.)"
+    else
+        files="   Files: $1.singbox.json (sing-box profile), $1.sub (subscription)."
+    fi
+    cat <<EOF
+${num}) Phones and apps
+${files}
+   - Apps built on sing-box (Hiddify, NekoBox, Karing, sing-box SFA/SFI): import the sing-box
+     profile; the Hysteria certificate pin is checked there.
+   - Apps built on Xray (v2rayNG, v2rayN, Happ): paste the subscription (base64) or the links.
+     Hysteria 2 support and its certificate pin vary by app: prefer VLESS Reality there.
+   - Keenetic router (AWG Manager): VLESS and TrustTunnel by link; Hysteria only as the
+     server-group JSON (section 6).
+   - If the connection degrades after a few minutes in VPN (TUN) mode on a phone, try the
+     app's proxy mode or turn off sniffing.
+   - Reality: keep fp=chrome; do not enable TCP Fast Open; do not use fp=random.
+EOF
+}
+
 # Globals: HOST, HY2_PORT, HY2_SNI, CERT_SHA, PK_SHA, H_AUTH, H_PASSWORD, R_* (R_SITE
 # empty: no Reality), REALITY_PORT, REALITY_FP, T_SNI, TT_PORT, LABEL, the clients.
 # $1 = client ("main" or an added one), $2 = its tt:// link ("" = none), $3 = its file.
 client_details() {
     local name="$1" tt="$2" file="$3" hy_user hy_pass uuid auth jauth reality_text="" tt_text="" foot
     local hy2_obj vless_obj awg_entries hy2_sb_links="" vless_sb_links="" tt_sb_links="" awg_end="" i l dis_text=""
+    local phones_text
     i="$(client_index "${name}")"
     if [[ -n "${i}" && "${CL_STATE[i]:-}" == "disabled" ]]; then
         dis_text="$(client_disabled_line "${name}" "${CL_REASON[i]}")"$'\n'
@@ -2072,6 +2179,7 @@ EOF
     else
         foot="Revoke this client on the server:  bash veiltrium.sh --remove-client ${name}"
     fi
+    phones_text="$(phones_section_text "${file%.txt}" "${name}")"
     cat <<EOF
 ${dis_text}Veiltrium connection details: node ${LABEL}, client ${name} ($(date '+%Y-%m-%d %H:%M %Z'))
 Keep this secret: the links and configs contain passwords and keys.
@@ -2100,6 +2208,9 @@ ${tt_text}
 [
 ${awg_entries}
 ]${awg_end}
+
+----------------------------------------------------------------------
+${phones_text}
 
 ----------------------------------------------------------------------
 Copy links without any chat app or Markdown in between (it breaks & and _):
@@ -2134,6 +2245,7 @@ write_client_files() {
     tt_standby_links "${T_USER}" "${TT_URL}"
     client_details main "${TT_URL}" "${CLIENT_FILE}" > "${CLIENT_FILE}.new"
     mv -f "${CLIENT_FILE}.new" "${CLIENT_FILE}"
+    write_client_bundle "${CLIENT_FILE%.txt}" main
     if (( ${#CL_NAMES[@]} )); then install -d -m 700 "${CLIENT_FILES_DIR}"; fi
     for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
         tt=""
@@ -2155,10 +2267,16 @@ write_client_files() {
         install -m 600 /dev/null "${f}.new"
         client_details "${CL_NAMES[i]}" "${tt}" "${f}" > "${f}.new"
         mv -f "${f}.new" "${f}"
+        write_client_bundle "${f%.txt}" "${CL_NAMES[i]}"
     done
     for f in "${CLIENT_FILES_DIR}"/*.txt; do
         [[ -f "${f}" ]] || continue
         n="${f##*/}"; n="${n%.txt}"
+        if [[ -z "$(client_index "${n}")" ]]; then rm -f "${f}"; fi
+    done
+    for f in "${CLIENT_FILES_DIR}"/*.sub "${CLIENT_FILES_DIR}"/*.singbox.json; do
+        [[ -f "${f}" ]] || continue
+        n="${f##*/}"; n="${n%.sub}"; n="${n%.singbox.json}"
         if [[ -z "$(client_index "${n}")" ]]; then rm -f "${f}"; fi
     done
     return 0
@@ -2581,8 +2699,13 @@ traffic_endpoints_check() {
 # $2 = its tt:// link ("" = none), $3 = the tt:// links of the standby servers (one per line).
 # With standby servers the document gains "standby" (the addresses) and per protocol
 # standby_links, standby_outbounds (outbounds + a urltest group) and a longer awg_group.
+# subscription_base64 (string) and singbox_profile (object) are null for a disabled client.
 client_json() {
-    local vless="" i hy_sb='[]' vless_sb='[]' tt_sb='[]' sb='[]'
+    local vless="" i hy_sb='[]' vless_sb='[]' tt_sb='[]' sb='[]' sub_b64="" profile=null
+    if ! client_is_disabled "$1"; then
+        sub_b64="$(client_sub_b64 "$1")"
+        profile="$(client_singbox_profile_json "$1" | jq -c .)"
+    fi
     client_creds "$1"
     if [[ -n "${R_SITE}" ]]; then vless="$(vless_link "${CC_UUID}")"; fi
     if (( ${#STANDBY[@]} )); then
@@ -2602,6 +2725,7 @@ client_json() {
         --argjson hy_port "${HY2_PORT}" --arg pk "${PK_SHA}" --arg cert "${CERT_SHA}" \
         --arg vless "${vless}" --arg uuid "${CC_UUID}" --arg r_site "${R_SITE}" --argjson r_port "${REALITY_PORT}" \
         --arg fp "${REALITY_FP}" --arg pbk "${R_PUB}" --arg sid "${R_SID}" --arg tt "$2" \
+        --arg sub_b64 "${sub_b64}" --argjson profile "${profile}" \
         --argjson sb "${sb}" --argjson hy_sb "${hy_sb}" --argjson vless_sb "${vless_sb}" --argjson tt_sb "${tt_sb}" \
         --argjson lim "$(client_limits_json "$1")" \
         --argjson traffic "$(traffic_client_json "$1")" '
@@ -2634,6 +2758,8 @@ client_json() {
                  + [urltest("Veiltrium-auto-reality"; ["reality"] + numbered("reality"))])} else {} end)) end),
          trusttunnel: (if $tt == "" then null else ({link: $tt}
            + (if ($tt_sb | length) > 0 then {standby_links: $tt_sb} else {} end)) end),
+         subscription_base64: (if $sub_b64 == "" then null else $sub_b64 end),
+         singbox_profile: $profile,
          traffic: $traffic}'
 }
 
@@ -3908,6 +4034,12 @@ qr_show() {
         fi
     done < <(qr_links "${file}")
     (( n > 0 )) || die "no links found in ${file}."
+    if [[ -s "${file%.txt}.sub" ]]; then
+        printf '\nSubscription (base64)\n'
+        if ! qrencode -t ansiutf8 < "${file%.txt}.sub"; then
+            printf '(the subscription is too long for a QR code: copy it from %s)\n' "${file%.txt}.sub"
+        fi
+    fi
 }
 
 # ---- Alerts (outbound only, opt-in) -------------------------------------------

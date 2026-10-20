@@ -29,14 +29,24 @@ gen() {
     if [[ -n "${2:-}" ]]; then standby_parse "$2" || { echo "standby_parse failed: ${STANDBY_ERR}"; exit 1; }
     else STANDBY=(); fi
     local c t
+    # The phones section and the subscription/profile JSON fields are a later feature (tests/unit-bundle.sh
+    # covers them): drop them, so that the output stays comparable with the baseline.
+    strip_phones() {
+        awk '/^-+$/ { if (held != "") print held; held = $0; skip = 0; next }
+             skip { next }
+             held != "" { if ($0 ~ /^[78]\) Phones and apps/) { skip = 1; held = ""; next } print held; held = "" }
+             { print }
+             END { if (held != "") print held }'
+    }
     for c in main bob; do
         if [[ "${c}" == main ]]; then t="$(tt_export_link vpn)"; else t="$(tt_export_link bob)"; fi
         # (the baseline installer has no such function and no standby servers)
         if declare -F tt_standby_links >/dev/null; then tt_standby_links "${c}" "${t}"; fi
         echo "=== details ${c}"
-        client_details "${c}" "${t}" "/root/veiltrium/${c}.txt"
+        client_details "${c}" "${t}" "/root/veiltrium/${c}.txt" | strip_phones
         echo "=== json ${c}"
-        client_json "${c}" "${t}" "$(printf '%s\n' "${TT_STANDBY_LINKS[@]+"${TT_STANDBY_LINKS[@]}"}" | grep . || true)"
+        client_json "${c}" "${t}" "$(printf '%s\n' "${TT_STANDBY_LINKS[@]+"${TT_STANDBY_LINKS[@]}"}" | grep . || true)" \
+            | jq 'del(.subscription_base64, .singbox_profile)'
     done
 }
 
