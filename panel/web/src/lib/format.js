@@ -1,12 +1,12 @@
 // Small display helpers shared by the pages.
 import { t, locale } from './i18n.svelte.js';
 
-// bytes -> "1.5 GB"
+// bytes -> "1.5 GB" in decimal units (1 GB = 10^9 bytes), the same units as the limits
 export function bytes(n) {
   if (typeof n !== 'number' || !isFinite(n) || n < 0) return '-';
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
   return `${i === 0 || n >= 100 ? Math.round(n) : n.toLocaleString(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${t('unit.' + u[i])}`;
 }
 
