@@ -2975,6 +2975,8 @@ env_value_ok() {
         T_IPV6) [[ -z "${v}" || "${v}" == "true" || "${v}" == "false" ]] ;;
         N_NAME) [[ -z "${v}" || "${v}" =~ ${NAME_RE} ]] ;;
         N_GLOBALPING) [[ "${v}" == "0" || "${v}" == "1" ]] ;;
+        N_STANDBY)   # what save_node_name writes: 1-3 distinct public IPv4 addresses, comma-separated
+            ( standby_parse "${v}" ) && [[ -n "${v}" && "${v}" != "none" && "${v}" =~ ^[0-9.]+(,[0-9.]+){0,2}$ ]] ;;
         PROBE_KEY) [[ "${v}" =~ ^[0-9a-f]{64}$ ]] ;;
         PROBE_SERVER) [[ -z "${v}" || "${v}" =~ ^[0-9.]{7,15}$ ]] ;;
         C_NAME) [[ "${v}" =~ ${CLIENT_RE} ]] ;;
@@ -3069,7 +3071,7 @@ export_tree_ok() {
             hysteria/node.env) env_file_ok "${f}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET" || { echo "bad ${rel}"; return 1; } ;;
             reality/reality.env) env_file_ok "${f}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT" || { echo "bad ${rel}"; return 1; } ;;
             trusttunnel/node.env) env_file_ok "${f}" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT" || { echo "bad ${rel}"; return 1; } ;;
-            veiltrium/node.env) env_file_ok "${f}" "" "N_NAME N_GLOBALPING" || { echo "bad ${rel}"; return 1; } ;;
+            veiltrium/node.env) env_file_ok "${f}" "" "N_NAME N_GLOBALPING N_STANDBY" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/probe.env) env_file_ok "${f}" "PROBE_KEY PROBE_SERVER" "" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/reality-candidates)
                 cnt=0

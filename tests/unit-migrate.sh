@@ -48,7 +48,7 @@ mknode() {   # $1 = root, $2 = Hysteria password
     T_USER="u1234abcd"; T_PASS="${c48}"; T_SNI="www.nvidia.com"; TT_IPV6=false
     printf 'T_USER=%q\nT_PASS=%q\nT_SNI=%q\nT_IPV6=%q\nT_STATS_PORT=%q\n' "${T_USER}" "${T_PASS}" "${T_SNI}" "${TT_IPV6}" 34569 > "${TT_STATE}"
     newcert "${TT_DIR}/cert.pem" "${TT_DIR}/key.pem" www.nvidia.com
-    N_NAME=PL; GLOBALPING=1; save_node_name 1
+    N_NAME=PL; GLOBALPING=1; N_STANDBY="8.8.8.8,1.1.1.1"; save_node_name 1
     printf 'PROBE_KEY=%q\nPROBE_SERVER=%q\n' "$(printf 'd%.0s' {1..64})" "192.0.2.10" > "${PROBE_ENV}"
     printf '# veiltrium: Reality mask site candidates (REALITY_CANDIDATES), one per line\nwww.yahoo.com\nwww.sony.com\n' > "${CANDIDATES_FILE}"
     write_client_env "${CLIENTS_DIR}/anna.env" anna 11111111-2222-4333-8444-555555555552 "${a48}" "${b48}" 2026-10-13
@@ -92,7 +92,22 @@ done
 { cat "${T}/old-r.env"; printf 'H_STATS_PORT=34567\n'; } > "${T}/bad-r.env"
 if env_file_ok "${T}/bad-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; then r=accepted; else r=refused; fi
 check "${r}" refused "validator refuses a Hysteria counter key in reality.env"
-check "$(env_file_ok "${NODE_ENV}" "" "N_NAME N_GLOBALPING"; echo $?)" 0 "validator: the node name file with its comment passes"
+check "$(env_file_ok "${NODE_ENV}" "" "N_NAME N_GLOBALPING N_STANDBY"; echo $?)" 0 "validator: the node file with its comment and the standby list passes"
+check "$(grep -cF 'N_STANDBY=8.8.8.8\,1.1.1.1' "${NODE_ENV}")" 1 "save_node_name writes the standby list (comma escaped by printf %q)"
+badnode() {   # name, N_STANDBY value as written to node.env
+    printf 'N_GLOBALPING=1\nN_STANDBY=%s\n' "$2" > "${T}/bad-n.env"
+    if env_file_ok "${T}/bad-n.env" "" "N_NAME N_GLOBALPING N_STANDBY"; then check accepted refused "validator refuses $1"; else check refused refused "validator refuses $1"; fi
+}
+printf 'N_STANDBY=9.9.9.9\n' > "${T}/ok-n.env"
+check "$(env_file_ok "${T}/ok-n.env" "" "N_STANDBY"; echo $?)" 0 "validator: a single standby address passes"
+badnode "a standby list of four" '8.8.8.8\,1.1.1.1\,9.9.9.9\,4.4.4.4'
+badnode "a private standby address" '10.0.0.1'
+badnode "a repeated standby address" '8.8.8.8\,8.8.8.8'
+badnode "a hostname as standby" 'evil.example'
+badnode "a command after a semicolon" '8.8.8.8;id'
+badnode "a command substitution" '$(id)'
+badnode "an empty list entry" '8.8.8.8\,\,1.1.1.1'
+badnode "the word none (never saved)" 'none'
 check "$(env_file_ok "${CLIENTS_DIR}/bob_2.env" "C_NAME C_UUID C_HY2_PASS C_TT_PASS" "C_CREATED"; echo $?)" 0 "validator: a client file passes"
 
 bad() {   # name, content (a state file that must be refused)
@@ -156,6 +171,7 @@ done
 check "${same}" 1 "round trip: every secret and name is identical"
 check "$(grep -c '^N_NAME=' "${T}/dst/etc/veiltrium/node.env")" 0 "round trip: N_NAME is dropped (the country is detected again)"
 check "$(grep -c '^N_GLOBALPING=1' "${T}/dst/etc/veiltrium/node.env")" 1 "round trip: the Globalping choice is kept"
+check "$(grep -cF 'N_STANDBY=8.8.8.8\,1.1.1.1' "${T}/dst/etc/veiltrium/node.env")" 1 "round trip: the standby list is kept"
 check "$(stat -c %a "${T}/dst/etc/hysteria/server.key")" 600 "round trip: before the hysteria group exists the key is root-only"
 check "$(ls "${T}/dst/etc/veiltrium" | tr '\n' ' ')" "clients node.env probe.env reality-candidates " "round trip: nothing else is placed (no panel password, no scanner list)"
 check "$(ls -A "${T}/w2")" "" "import: the temporary files are removed"

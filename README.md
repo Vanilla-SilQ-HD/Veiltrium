@@ -205,7 +205,6 @@ The installer also writes a short command, `/usr/local/bin/veiltrium`, which run
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
 
-<<<<<<< HEAD
 ### Resetting a client's credentials
 
 `--reset-client NAME` gives an added client a new VLESS UUID, a new Hysteria password and a new TrustTunnel password under the same name, for example after a phone was lost. It runs the same transaction as adding or removing a client: the three server configs change together, the services restart, and real clients check that the new credentials work, the old Hysteria and VLESS ones no longer do, and the main client still works. Otherwise the previous settings come back. The details in `/root/veiltrium/clients/NAME.txt` are rewritten and printed; send them to the client. `main` cannot be reset this way: `VT_RECONFIGURE=1 bash veiltrium.sh` replaces the secrets of the whole node, the added clients included. The panel's root helper accepts the request as well (`reset-client NAME`).
