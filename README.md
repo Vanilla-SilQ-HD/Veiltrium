@@ -169,12 +169,41 @@ bash /root/veiltrium.sh --add-client anna      # prints the details, saves /root
 bash /root/veiltrium.sh --list-clients
 bash /root/veiltrium.sh --show-client anna
 bash /root/veiltrium.sh --remove-client anna
+bash /root/veiltrium.sh --reset-client anna    # new credentials, same name
 ```
 
 - Names: 1-32 characters, `a-z`, `0-9`, `_` and `-`, starting with a letter or digit; `main` is the first client.
 - Adding or removing a client rewrites the three server configs as one change and restarts the services: connected clients reconnect within a few seconds. Real clients then check that the main client and the new one work, or that a removed one no longer does. Otherwise the previous settings come back.
 - Hysteria uses a password per client (`user:password`). A node installed before this version has one shared password. Its first `--add-client` switches it, so the main client's Hysteria link and JSON change once; its VLESS and TrustTunnel links stay the same.
 - A plain re-run keeps every client and their links. If a server name or certificate changes, their detail files are rewritten with the new links.
+
+### Resetting a client's credentials
+
+`--reset-client NAME` gives an added client a new VLESS UUID, a new Hysteria password and a new TrustTunnel password under the same name, for example after a phone was lost. It runs the same transaction as adding or removing a client: the three server configs change together, the services restart, and real clients check that the new credentials work, the old Hysteria and VLESS ones no longer do, and the main client still works. Otherwise the previous settings come back. The details in `/root/veiltrium/clients/NAME.txt` are rewritten and printed; send them to the client. `main` cannot be reset this way: `VT_RECONFIGURE=1 bash veiltrium.sh` replaces the secrets of the whole node, the added clients included. The panel's root helper accepts the request as well (`reset-client NAME`).
+
+## Uninstalling
+
+```bash
+bash /root/veiltrium.sh --uninstall      # asks you to type "uninstall"; VT_YES=uninstall answers it without a terminal
+```
+
+It lists what it will remove and waits for the word. It then stops and removes the three proxy services, the panel and its helper, every `veiltrium-*` unit and timer, the programs it installed (`hysteria`, `xray`, `trusttunnel_endpoint`, `veiltrium-panel`, `veiltrium-recover`, `veiltrium-scanner-block`), the settings and state (`/etc/hysteria`, `/usr/local/etc/xray`, `/etc/trusttunnel`, `/etc/veiltrium`, `/etc/veiltrium-panel`, `/var/lib/veiltrium`, `/usr/local/lib/veiltrium`), the install log, the needrestart override, the firewall table `inet veiltrium`, its lines in `/etc/nftables.conf` (the file is edited and checked with `nft -c` first; the other lines stay, and if nothing else was in it, the original saved at install time comes back) and the four service users. **`/root/veiltrium` goes too**: it holds the client details, the probe profile and the panel password. After the uninstall everything but SSH is reachable again unless another firewall is in place.
+
+It never touches what protects the server by itself: the SSH settings (`/etc/ssh/sshd_config.d/00-veiltrium-hardening.conf`), fail2ban (`/etc/fail2ban/jail.d/veiltrium-sshd.local`), automatic updates (`/etc/apt/apt.conf.d/52veiltrium-unattended-upgrades`, `20auto-upgrades`), journald (`/etc/systemd/journald.conf.d/50-veiltrium.conf`) and the kernel hardening (`/etc/sysctl.d/99-zz-veiltrium-hardening.conf`, `/etc/modules-load.d/veiltrium-bbr.conf`); nor the packages, nor the audit log. The last lines of the output name the ones that still exist so you can remove them by hand. A second run reports that there is nothing to remove.
+
+## Audit log
+
+Every action that changes the node adds one line to `/var/log/veiltrium/audit.log` (directory `750`, file `640`, root only; logrotate keeps six monthly files): time (UTC), source (`cli`, or `panel` for the web panel), action (`install`, `import`, `export`, `add-client`, `remove-client`, `reset-client`, `panel-password`, `uninstall`), target (a client name or a file name) and the result (`ok`, `rolled-back` or `failed`). No secret is ever written.
+
+```
+2026-10-20T09:14:02Z source=panel action=add-client target=anna result=ok
+```
+
+```bash
+bash /root/veiltrium.sh --audit          # the last 50 lines
+bash /root/veiltrium.sh --audit 200
+bash /root/veiltrium.sh --audit --json - # a JSON array
+```
 
 ## Web panel
 
@@ -186,7 +215,7 @@ ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to 
 
 - The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt` (root only). `bash /root/veiltrium.sh --panel-password` sets a new one and signs everybody out.
 - **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only; the SSH tunnel is the way in. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
-- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts six requests (status, list, show, add, remove, check-russia) with checked names and runs the same tested code as the command line.
+- **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts seven requests (status, list, show, add, remove, reset, check-russia) with checked names and runs the same tested code as the command line.
 - Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` host names (no DNS rebinding), a strict Content Security Policy with no external resources, and a lockout after failed logins.
 - The binary comes from this repository's releases (`panel-v*`), SHA-256 pinned in the installer like the proxies. `PANEL_ENABLE=0` leaves it out.
 - The command line has the same machine interface: `--status`, `--list-clients`, `--show-client NAME`, `--add-client NAME`, `--remove-client NAME`, `--check-russia`, `--diagnose` and `--dry-run` take `--json -`.

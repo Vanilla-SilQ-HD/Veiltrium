@@ -47,6 +47,7 @@
 #    bash veiltrium.sh --trial-stop        end a Reality trial now
 #    bash veiltrium.sh --add-client NAME   a new client: own credentials for all protocols
 #    bash veiltrium.sh --remove-client NAME   revoke a client
+#    bash veiltrium.sh --reset-client NAME new credentials for a client (the old ones stop working)
 #    bash veiltrium.sh --list-clients      the clients of this node
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
@@ -55,6 +56,9 @@
 #    bash veiltrium.sh --export FILE       pack this node (all secrets, encrypted with a passphrase)
 #    bash veiltrium.sh --import FILE       install on a new server with the same secrets (links differ
 #                                                   only by the address)
+#    bash veiltrium.sh --audit [N]         the last N (default 50) lines of the audit log
+#    bash veiltrium.sh --uninstall         remove Veiltrium from this server (asks to type "uninstall";
+#                                                   SSH, fail2ban, updates and sysctl hardening stay)
 #    bash veiltrium.sh --help
 #
 #  Standby servers: deploy a second VPS from an export of this node, then run
@@ -190,6 +194,10 @@ PANEL_ETC="/etc/veiltrium-panel"                # readable by the panel's group 
 PANEL_AUTH="${PANEL_ETC}/auth"
 PANEL_FILE="${VT_ROOT_DIR}/panel.txt"
 HELPER_SOCK="/run/veiltrium/helper.sock"
+AUDIT_DIR="/var/log/veiltrium"
+AUDIT_LOG="${AUDIT_DIR}/audit.log"
+LOGROTATE_FILE="/etc/logrotate.d/veiltrium"
+AUDIT_ACTION=""; AUDIT_TARGET=""; AUDIT_ROLLBACK=0   # set once a mode that changes the node starts (see audit_append)
 
 # ---- Output -----------------------------------------------------------------
 # Project identification for people (terminal and install log only; never written
@@ -2216,6 +2224,30 @@ clients_json() {
          clients: map({name: .[0], main: (.[0] == "main"), created: (if (.[1] // "") == "" then null else .[1] end)})}'
 }
 
+# Server load as a JSON object: load averages (1/5/15 min) and CPU count, memory and the
+# disk of / in MiB. Plain /proc and df; a value that cannot be read is 0.
+server_load_json() {
+    local l1=0 l5=0 l15=0 cpus mt=0 ma=0 dt=0 du=0
+    read -r l1 l5 l15 _ < /proc/loadavg 2>/dev/null || true
+    cpus="$(nproc 2>/dev/null || echo 1)"
+    mt="$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || true)"
+    ma="$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo 2>/dev/null || true)"
+    read -r dt du < <(df -Pm / 2>/dev/null | awk 'NR == 2 { print $2, $3 }' || true) || true
+    [[ "${l1}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || l1=0
+    [[ "${l5}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || l5=0
+    [[ "${l15}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || l15=0
+    [[ "${cpus}" =~ ^[0-9]+$ ]] || cpus=1
+    [[ "${mt:-}" =~ ^[0-9]+$ ]] || mt=0
+    [[ "${ma:-}" =~ ^[0-9]+$ ]] || ma=0
+    [[ "${dt:-}" =~ ^[0-9]+$ ]] || dt=0
+    [[ "${du:-}" =~ ^[0-9]+$ ]] || du=0
+    jq -nc --argjson l1 "${l1}" --argjson l5 "${l5}" --argjson l15 "${l15}" --argjson cpus "${cpus}" \
+        --argjson mt "${mt}" --argjson ma "${ma}" --argjson dt "${dt}" --argjson du "${du}" \
+        '{cpus: $cpus, load: {m1: $l1, m5: $l5, m15: $l15},
+          memory_mb: {total: $mt, used: (if $mt > $ma then $mt - $ma else 0 end)},
+          disk_mb: {total: $dt, used: $du}}'
+}
+
 # A fast overview of the node: no network tests, no secrets.
 status_json() {
     local svc st="" vh vx vt os report n scan ru
@@ -2245,10 +2277,11 @@ status_json() {
         --arg h_sni "${H_SNI}" --arg h_port "${HY2_PORT}" --arg h_mts "$(mts_status hysteria2 "${H_SNI:-none}")" \
         --arg t_sni "${T_SNI}" --arg t_port "${TT_PORT}" --arg t2 "$(mts_status tt_h2 "${T_SNI:-none}")" \
         --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" --argjson ru "${ru:-null}" \
-        --arg globalping "${GLOBALPING}" --arg standby "${N_STANDBY}" '
+        --arg globalping "${GLOBALPING}" --arg standby "${N_STANDBY}" --argjson resources "$(server_load_json)" '
         {schema: "veiltrium-status/1", generated_at: $now, script_version: $version, node_name: $label,
          server: $server, standby: ($standby | split(",") | map(select(length > 0))),
          os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
+         resources: $resources,
          services: ($st | split("\n") | map(select(length > 0) | split("=") | {key: .[0], value: .[1]}) | from_entries),
          versions: {hysteria: $vh, xray: $vx, trusttunnel: $vt},
          clients: {added: ($n | tonumber), hysteria_auth: $h_auth},
@@ -2297,14 +2330,14 @@ clients_list() {
     return 0
 }
 
-# Adds (credentials in ${TMPD}/client.env) or removes client $2 ($1 = add|remove). All
-# protocol configs change as one: the services restart (connected clients reconnect
-# within seconds), real clients check the result, and on any failure the previous
-# files come back.
+# Adds (credentials in ${TMPD}/client.env), removes or resets client $2 ($1 = add|remove|reset;
+# a reset replaces the credentials with the ones in ${TMPD}/client.env). All protocol configs
+# change as one: the services restart (connected clients reconnect within seconds), real
+# clients check the result, and on any failure the previous files come back.
 clients_change() {
     local mode="$1" name="$2" reg="${CLIENTS_DIR}/$2.env" old_auth="${H_AUTH}" i ok=1
     local new_auth="" new_uuid="" gone_auth="" gone_uuid=""
-    if [[ "${mode}" == "remove" ]]; then
+    if [[ "${mode}" == "remove" || "${mode}" == "reset" ]]; then
         i="$(client_index "${name}")"
         [[ -n "${i}" ]] || die "no client ${name}."
         gone_auth="${name}:${CL_HPASS[i]}"; gone_uuid="${CL_UUID[i]}"
@@ -2313,10 +2346,10 @@ clients_change() {
     txn_begin hysteria hysteria-server.service "${HY2_CONFIG}" "${HY2_STATE}" "${reg}"
     if (( HAVE_REALITY == 1 )); then txn_begin reality xray.service "${XRAY_DIR}/config.json"; fi
     if (( HAVE_TT == 1 )); then txn_begin trusttunnel trusttunnel.service "${TT_DIR}/credentials.toml"; fi
-    if [[ "${mode}" == "add" ]]; then mv -f "${TMPD}/client.env" "${reg}"; else rm -f "${reg}"; fi
+    if [[ "${mode}" == "add" || "${mode}" == "reset" ]]; then mv -f "${TMPD}/client.env" "${reg}"; else rm -f "${reg}"; fi
     load_clients
     H_AUTH="userpass"; set_hy2_auth_main
-    if [[ "${mode}" == "add" ]]; then
+    if [[ "${mode}" == "add" || "${mode}" == "reset" ]]; then
         i="$(client_index "${name}")"
         [[ -n "${i}" ]] || die "the new client ${name} was not saved."
         new_auth="${name}:${CL_HPASS[i]}"; new_uuid="${CL_UUID[i]}"
@@ -2356,7 +2389,7 @@ clients_change() {
         hy2_client_test "${HY2_SNI}" "${CERT_SHA}" "${new_auth}"
         if (( HY2_E2E != 0 )); then ok=0; warn "Hysteria: the new client does not work"; fi
     fi
-    if (( ok == 1 )) && [[ -n "${gone_auth}" ]]; then
+    if (( ok == 1 )) && [[ -n "${gone_auth}" ]]; then   # (remove: the client's; reset: its previous password)
         hy2_client_test "${HY2_SNI}" "${CERT_SHA}" "${gone_auth}"
         if (( HY2_E2E == 0 )); then ok=0; warn "Hysteria: the removed client still connects"; fi
     fi
@@ -2387,6 +2420,7 @@ clients_change() {
         txn_restore hysteria
         if (( HAVE_REALITY == 1 )); then txn_restore reality; fi
         if (( HAVE_TT == 1 )); then txn_restore trusttunnel; fi
+        AUDIT_ROLLBACK=1
         die "the change did not pass the checks; the previous clients and settings were restored."
     fi
     # The registry entry belongs to the Hysteria change, committed last: if the run is cut
@@ -2416,6 +2450,11 @@ clients_change() {
         if (( HAVE_REALITY == 1 )); then checked+=", VLESS Reality"; fi
         if (( HAVE_TT == 1 )); then checked+=", TrustTunnel (certificate)"; fi
         ok "Client ${name} added; checked with real clients: ${checked}."
+    elif [[ "${mode}" == "reset" ]]; then
+        local checked="Hysteria"
+        if (( HAVE_REALITY == 1 )); then checked+=", VLESS Reality"; fi
+        ok "Client ${name} reset: new credentials work, the previous ones no longer do (checked with real clients: ${checked}; TrustTunnel: its password list was rewritten and the service answers)."
+        info "Send ${name} the new details: ${CLIENT_FILES_DIR}/${name}.txt  (bash $0 --show-client ${name})"
     else
         ok "Client ${name} removed: its credentials no longer work."
     fi
@@ -2454,7 +2493,7 @@ helper_main() {
     case "${verb}" in
         status|list-clients|check-russia) [[ -z "${arg}" ]] || verb="" ;;
         show-client) [[ "${arg}" == "main" || "${arg}" =~ ${CLIENT_RE} ]] || verb="" ;;
-        add-client|remove-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
+        add-client|remove-client|reset-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
         *) verb="" ;;
     esac
     if [[ -z "${verb}" ]]; then
@@ -2466,7 +2505,7 @@ helper_main() {
     # stdout (the JSON) to the file, stderr (human text, progress) through the relay
     # stdin is the socket: the child must never wait on it
     # PIPE is ignored here and would stay ignored in the child: restore its default
-    { env --default-signal=PIPE VEILTRIUM_PROGRESS=1 VEILTRIUM_LOCK_WAIT="${wait}" NEEDRESTART_SUSPEND=1 \
+    { env --default-signal=PIPE VEILTRIUM_PROGRESS=1 VEILTRIUM_SOURCE=panel VEILTRIUM_LOCK_WAIT="${wait}" NEEDRESTART_SUSPEND=1 \
         bash "${SCRIPT_PATH}" "--${verb}" ${arg:+"${arg}"} --json - \
         2>&1 > "${d}/out" </dev/null || printf '%s' "$?" > "${d}/rc"; } | helper_relay
     rc="$(cat "${d}/rc" 2>/dev/null || echo 0)"
@@ -2947,6 +2986,262 @@ import_node() {
     return 0
 }
 
+# ---- Audit log ----------------------------------------------------------------
+# One line per action that changes the node (add-client, remove-client, reset-client,
+# export, import, install, uninstall, panel-password): time, source (cli, or panel when
+# the panel's root helper runs it), action, target, result (ok, rolled-back, failed).
+# Never a secret: the target is a client name or the base name of a file.
+audit_line() {   # $1 = action, $2 = target ("" = none), $3 = ok | rolled-back | failed
+    local src="${VEILTRIUM_SOURCE:-cli}" target="${2:-}" result="${3:-failed}"
+    [[ "${src}" == "cli" || "${src}" == "panel" ]] || src="cli"
+    [[ "$1" =~ ^[a-z][a-z-]{0,30}$ ]] || return 1
+    [[ "${target}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || target="-"
+    [[ "${result}" == "ok" || "${result}" == "rolled-back" ]] || result="failed"
+    printf '%s source=%s action=%s target=%s result=%s\n' "$(date -u +%FT%TZ)" "${src}" "$1" "${target}" "${result}"
+}
+
+audit_append() {   # the same arguments; a log that cannot be written never fails the action
+    local line
+    line="$(audit_line "$@")" || return 0
+    install -d -m 750 "${AUDIT_DIR}" 2>/dev/null || return 0
+    if [[ ! -e "${AUDIT_LOG}" ]]; then install -m 640 /dev/null "${AUDIT_LOG}" 2>/dev/null || return 0; fi
+    printf '%s\n' "${line}" >> "${AUDIT_LOG}" 2>/dev/null || true
+    return 0
+}
+
+# The directory, the file and the monthly rotation (6 kept), if logrotate is installed.
+audit_setup() {
+    install -d -m 750 "${AUDIT_DIR}"
+    if [[ ! -e "${AUDIT_LOG}" ]]; then install -m 640 /dev/null "${AUDIT_LOG}"; fi
+    if [[ -d "$(dirname "${LOGROTATE_FILE}")" ]] && command -v logrotate >/dev/null 2>&1; then
+        cat > "${LOGROTATE_FILE}.new" <<EOF
+# veiltrium: the audit log of the actions on this node
+${AUDIT_LOG} {
+    monthly
+    rotate 6
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 640 root root
+}
+EOF
+        if cmp -s "${LOGROTATE_FILE}.new" "${LOGROTATE_FILE}" 2>/dev/null; then rm -f "${LOGROTATE_FILE}.new"
+        else mv -f "${LOGROTATE_FILE}.new" "${LOGROTATE_FILE}"; fi
+    fi
+    return 0
+}
+
+audit_show() {   # $1 = how many lines; JSON_OUT set: a JSON array
+    local n="$1"
+    if [[ -n "${JSON_OUT}" ]]; then
+        { tail -n "${n}" "${AUDIT_LOG}" 2>/dev/null || true; } | jq -R -s -c '
+            split("\n") | map(select(length > 0) | split(" ") |
+                {time: .[0]} + (.[1:] | map(capture("^(?<k>[a-z]+)=(?<v>.*)$") | {(.k): .v}) | add // {}))' | json_emit
+    elif [[ -s "${AUDIT_LOG}" ]]; then
+        tail -n "${n}" "${AUDIT_LOG}"
+    else
+        info "The audit log is empty (${AUDIT_LOG})."
+    fi
+    return 0
+}
+
+# ---- Uninstall (--uninstall) -------------------------------------------------
+# Removes what Veiltrium created for the VPN. Fixed lists only: nothing is found by a
+# pattern. SSH settings, fail2ban, automatic updates, journald and the kernel hardening
+# stay (uninstall_kept_paths); so does the audit log.
+UNINSTALL_UNITS=(hysteria-server.service xray.service trusttunnel.service
+    veiltrium-panel.service veiltrium-helper.socket veiltrium-helper@.service
+    veiltrium-recover.service veiltrium-scanner-block.service veiltrium-scanner-block.timer
+    veiltrium-russia-check.service veiltrium-russia-check.timer)
+# created by systemd-run (a change in progress, a Reality trial): gone after a stop
+UNINSTALL_RUNTIME_UNITS=(veiltrium-watchdog.timer veiltrium-watchdog.service
+    veiltrium-trial-end.timer veiltrium-trial-end.service)
+UNINSTALL_USERS=(hysteria xray trusttunnel veiltrium-panel)
+
+# Every path that is removed, one per line (files, directories, binaries, unit files).
+uninstall_paths() {
+    local u
+    for u in "${UNINSTALL_UNITS[@]}"; do printf '/etc/systemd/system/%s\n' "${u}"; done
+    printf '%s\n' /etc/systemd/system/veiltrium-recover.service.new \
+        "${TRIAL_DROPIN}" "${RUN_DIR}" "${HELPER_SOCK%/*}" \
+        /var/lib/systemd/timers/stamp-veiltrium-scanner-block.timer \
+        /var/lib/systemd/timers/stamp-veiltrium-russia-check.timer \
+        "${HY2_BIN}" "${XRAY_BIN}" "${TT_BIN}" "${PANEL_BIN}" "${SCANNER_BIN}" "${RECOVER_BIN}" \
+        "${HY2_DIR}" "${XRAY_DIR}" "${TT_DIR}" "${SCANNER_DIR}" "${PANEL_ETC}" "${STATE_DIR}" "${PANEL_LIB}" \
+        /var/lib/hysteria "${VT_ROOT_DIR}" \
+        /etc/needrestart/conf.d/50-veiltrium.conf /etc/nftables.conf.vt-new \
+        "${LOG_FILE}" "${LOG_FILE}.1"
+}
+
+# What stays, one per line: settings that protect the server whatever runs on it.
+uninstall_kept_paths() {
+    printf '%s\n' /etc/ssh/sshd_config.d/00-veiltrium-hardening.conf \
+        /etc/fail2ban/jail.d/veiltrium-sshd.local \
+        /etc/apt/apt.conf.d/52veiltrium-unattended-upgrades /etc/apt/apt.conf.d/20auto-upgrades \
+        /etc/systemd/journald.conf.d/50-veiltrium.conf \
+        /etc/sysctl.d/99-zz-veiltrium-hardening.conf /etc/modules-load.d/veiltrium-bbr.conf \
+        "${AUDIT_DIR}" "${LOGROTATE_FILE}" /etc/nftables.conf /etc/nftables.conf.orig-veiltrium
+}
+
+# True for paths the uninstall must never remove.
+uninstall_protected() {
+    case "$1" in
+        /etc/ssh|/etc/ssh/*|/etc/fail2ban|/etc/fail2ban/*|/etc/apt|/etc/apt/*|/etc/sysctl.d|/etc/sysctl.d/*) return 0 ;;
+        /etc/modules-load.d|/etc/modules-load.d/*|/etc/systemd/journald.conf.d|/etc/systemd/journald.conf.d/*) return 0 ;;
+        /etc/default|/etc/default/*|/etc/logrotate.d|/etc/logrotate.d/*|/etc/nftables.conf|/etc/nftables.conf.orig-*) return 0 ;;
+        /var/log|/var/log/veiltrium|/var/log/veiltrium/*|/root|/root/.ssh|/root/.ssh/*) return 0 ;;
+    esac
+    return 1
+}
+
+# Removes one path of the fixed list: absolute, at least two components, not protected.
+uninstall_rm() {
+    local p="$1"
+    if [[ "${p}" != /*/* || "${p}" == *..* || "${p}" == *[[:space:]]* ]] || uninstall_protected "${p}"; then
+        warn "Refusing to remove '${p}'."
+        return 0
+    fi
+    if [[ -e "${p}" || -L "${p}" ]]; then rm -rf -- "${p}"; info "removed ${p}"; fi
+    return 0
+}
+
+# A system account that looks like the one this installer made (system uid, no login shell).
+uninstall_user_ours() {
+    local ent uid shell
+    ent="$(getent passwd "$1" 2>/dev/null || true)"
+    [[ -n "${ent}" ]] || return 1
+    uid="$(cut -d: -f3 <<<"${ent}")"; shell="$(cut -d: -f7 <<<"${ent}")"
+    [[ "${uid}" =~ ^[0-9]+$ ]] && (( uid < 1000 )) && [[ "${shell}" == "/usr/sbin/nologin" ]]
+}
+
+# stdin: /etc/nftables.conf; stdout: the same without what Veiltrium wrote (its table, the
+# include of the scanner list and its comment lines). Every other line stays.
+nft_conf_strip() {
+    awk -v inc="include \"${SCANNER_FILE}\"" '
+        skip { if ($0 ~ /^}/) skip = 0; next }
+        /^table inet veiltrium[ \t]*\{/ { skip = 1; next }
+        /^table inet veiltrium[ \t]*$/ || /^delete table inet veiltrium[ \t]*$/ { next }
+        /^# veiltrium:/ || /^# Only our own table is recreated/ { next }
+        $0 == inc { next }
+        { print }'
+}
+
+# The live table goes; /etc/nftables.conf loses our parts and is checked with nft -c
+# before it replaces the file. If nothing else was in it, the original saved at install
+# time (if there is one) comes back. The nftables service is not reloaded here.
+uninstall_firewall() {
+    local conf="/etc/nftables.conf" new="/etc/nftables.conf.vt-new" orig="/etc/nftables.conf.orig-veiltrium" restored=0
+    nft delete table inet veiltrium >/dev/null 2>&1 || true
+    [[ -f "${conf}" ]] || return 0
+    grep -qE 'veiltrium' "${conf}" || return 0
+    nft_conf_strip < "${conf}" > "${new}"
+    if ! grep -qvE '^[[:space:]]*(#.*)?$' "${new}" && [[ -f "${orig}" ]]; then
+        cp -p "${orig}" "${new}"; restored=1
+    else
+        chmod --reference="${conf}" "${new}" 2>/dev/null || chmod 600 "${new}"
+    fi
+    if ! nft -c -f "${new}" >/dev/null 2>&1; then
+        rm -f "${new}"
+        warn "The firewall file ${conf} was not changed (the edited copy did not pass nft -c); remove the veiltrium table and the include line by hand."
+        return 0
+    fi
+    mv -f "${new}" "${conf}"
+    if (( restored == 1 )); then
+        rm -f "${orig}"
+        info "restored the original ${conf} (saved at install time)"
+    else
+        info "removed the veiltrium table and the scanner list include from ${conf}"
+    fi
+    return 0
+}
+
+uninstall_present() {
+    local p u
+    while IFS= read -r p; do
+        if [[ -e "${p}" || -L "${p}" ]]; then return 0; fi
+    done < <(uninstall_paths)
+    for u in "${UNINSTALL_USERS[@]}"; do
+        if uninstall_user_ours "${u}"; then return 0; fi
+    done
+    if nft list table inet veiltrium >/dev/null 2>&1; then return 0; fi
+    if grep -qs 'veiltrium' /etc/nftables.conf; then return 0; fi
+    return 1
+}
+
+uninstall_confirm() {
+    local ans=""
+    if [[ "${VT_YES:-}" == "uninstall" ]]; then return 0; fi
+    printf '    Type "uninstall" to remove everything listed above: ' >&2
+    if ! read -r ans 2>/dev/null </dev/tty; then
+        printf '\n' >&2
+        die "no terminal to confirm on; nothing was removed. Run it in a terminal, or set VT_YES=uninstall."
+    fi
+    [[ "${ans}" == "uninstall" ]] || die "not confirmed; nothing was removed."
+    return 0
+}
+
+uninstall_kept_report() {
+    local p any=0
+    while IFS= read -r p; do
+        if [[ -e "${p}" ]]; then
+            if (( any == 0 )); then info "Left in place (remove by hand if you want):"; any=1; fi
+            info "  ${p}"
+        fi
+    done < <(uninstall_kept_paths)
+    if (( any == 1 )); then
+        info "Also unchanged: the packages (fail2ban, nftables, jq, unattended-upgrades, ...), the service"
+        info "state of ufw/apport (disabled by the installer), SSH logins and root."
+    fi
+    return 0
+}
+
+uninstall_main() {
+    local p u svc
+    if ! uninstall_present; then
+        ok "Nothing to remove: no Veiltrium files, services or firewall rules found."
+        uninstall_kept_report
+        return 0
+    fi
+    printf '\nThis removes Veiltrium from this server:\n'
+    info "services: hysteria-server, xray, trusttunnel, veiltrium-panel, the panel helper, the timers and recovery units"
+    info "programs: ${HY2_BIN}, ${XRAY_BIN}, ${TT_BIN}, ${PANEL_BIN}, ${SCANNER_BIN}, ${RECOVER_BIN}"
+    info "settings and state: ${HY2_DIR}, ${XRAY_DIR}, ${TT_DIR}, ${SCANNER_DIR}, ${PANEL_ETC}, ${STATE_DIR}, ${PANEL_LIB}"
+    info "the firewall table inet veiltrium and its lines in /etc/nftables.conf (everything but SSH becomes reachable"
+    info "again unless another firewall is in place), the service users ${UNINSTALL_USERS[*]}"
+    if [[ -d "${VT_ROOT_DIR}" ]]; then
+        warn "${VT_ROOT_DIR} holds the client connection details, the probe profile and the panel password."
+        warn "Anything not saved elsewhere is lost: every client stops working."
+    fi
+    info "It does NOT touch SSH, fail2ban, automatic updates, journald, the kernel hardening or the audit log."
+    printf '\n'
+    uninstall_confirm
+    step_mark stop
+    for svc in "${UNINSTALL_RUNTIME_UNITS[@]}"; do systemctl stop "${svc}" >/dev/null 2>&1 || true; done
+    systemctl stop 'veiltrium-helper@*.service' >/dev/null 2>&1 || true
+    for u in veiltrium-panel.service veiltrium-helper.socket veiltrium-russia-check.timer veiltrium-scanner-block.timer \
+             hysteria-server.service xray.service trusttunnel.service veiltrium-recover.service; do
+        systemctl disable --now "${u}" >/dev/null 2>&1 || true
+    done
+    for u in "${UNINSTALL_UNITS[@]}"; do systemctl disable "${u}" >/dev/null 2>&1 || true; done
+    step_mark remove
+    uninstall_firewall
+    while IFS= read -r p; do uninstall_rm "${p}"; done < <(uninstall_paths)
+    rmdir "${TRIAL_DROPIN_DIR}" 2>/dev/null || true
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    for u in "${UNINSTALL_UNITS[@]}" "${UNINSTALL_RUNTIME_UNITS[@]}"; do systemctl reset-failed "${u}" >/dev/null 2>&1 || true; done
+    for u in "${UNINSTALL_USERS[@]}"; do
+        if uninstall_user_ours "${u}"; then
+            userdel "${u}" >/dev/null 2>&1 || warn "could not remove the user ${u} (is a process of it still running?)"
+            if getent group "${u}" >/dev/null 2>&1; then groupdel "${u}" >/dev/null 2>&1 || true; fi
+            info "removed the user ${u}"
+        fi
+    done
+    ok "Veiltrium removed."
+    uninstall_kept_report
+    return 0
+}
+
 usage() {
     banner
     printf '\n'
@@ -2987,8 +3282,12 @@ trap 'die "interrupted"' INT TERM
 trap '' HUP
 
 cleanup() {
-    local rc=$?
+    local rc=$? audit_result="ok"
     trap '' INT TERM
+    if (( rc != 0 )); then
+        audit_result="failed"
+        if (( AUDIT_ROLLBACK == 1 || ${#TXN_OPEN[@]} > 0 )); then audit_result="rolled-back"; fi
+    fi
     stop_pid "${CLIENT_PID}"
     stop_pid "${SERVER_PID}"
     if (( ${#TXN_OPEN[@]} )); then
@@ -3005,6 +3304,7 @@ cleanup() {
         printf '    ! the run stopped after these changes were made: %s\n' "${CHANGES[*]}"
         printf '      %s may be out of date: run the script again to rewrite it.\n' "${CLIENT_FILE}"
     fi
+    if [[ -n "${AUDIT_ACTION}" ]]; then audit_append "${AUDIT_ACTION}" "${AUDIT_TARGET}" "${audit_result}"; fi
     [[ -n "${TMPD}" && -d "${TMPD}" ]] && rm -rf -- "${TMPD}"
     if [[ -n "${TEE_PID}" ]]; then
         exec 1>&- 2>&-
@@ -3021,6 +3321,7 @@ EXPORT_FILE=""
 NODE_IMPORT_FILE=""
 TRIAL_SITES=""
 JSON_OUT=""
+AUDIT_N=50
 while (( $# )); do
     case "$1" in
         --diagnose) MODE="diagnose" ;;
@@ -3031,8 +3332,10 @@ while (( $# )); do
         --trial-minutes) TRIAL_MINUTES="${2:-}"; shift ;;
         --trial-stop) MODE="trial-stop" ;;
         --json) JSON_OUT="${2:-}"; [[ -n "${JSON_OUT}" ]] || die "--json needs a file name"; shift ;;
-        --add-client|--remove-client|--show-client)
+        --add-client|--remove-client|--show-client|--reset-client)
             MODE="${1#--}"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "$1 needs a client name"; shift ;;
+        --audit) MODE="audit"; if [[ "${2:-}" =~ ^[0-9]{1,5}$ ]]; then AUDIT_N="$2"; shift; fi ;;
+        --uninstall) MODE="uninstall" ;;
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
         --check-russia) MODE="check-russia" ;;
@@ -3045,6 +3348,9 @@ while (( $# )); do
     esac
     shift
 done
+if [[ "${MODE}" == "reset-client" && "${CLIENT_ARG}" == "main" ]]; then
+    die "the main client's credentials are the node's own: to replace them (and those of every added client) run  VT_RECONFIGURE=1 bash $0"
+fi
 [[ "${REALITY_RESELECT}" == "0" || "${REALITY_RESELECT}" == "1" ]] || die "REALITY_RESELECT must be 0 or 1."
 if [[ -n "${NODE_IMPORT_FILE}" ]]; then
     [[ "${MODE}" == "install" ]] || die "--import is an installation: it cannot be combined with another mode."
@@ -3083,14 +3389,36 @@ fi
 # lock held, no other run is using them.
 rm -rf /root/.veiltrium.* 2>/dev/null || true
 
+# What goes into the audit log when this run ends (cleanup writes the line; the lock is ours).
+case "${MODE}" in
+    install)
+        if [[ -n "${NODE_IMPORT_FILE}" ]]; then AUDIT_ACTION="import"; AUDIT_TARGET="${NODE_IMPORT_FILE##*/}"
+        else AUDIT_ACTION="install"; fi ;;
+    add-client|remove-client|reset-client) AUDIT_ACTION="${MODE}"; AUDIT_TARGET="${CLIENT_ARG}" ;;
+    export) AUDIT_ACTION="export"; AUDIT_TARGET="${EXPORT_FILE##*/}" ;;
+    panel-password|uninstall) AUDIT_ACTION="${MODE}" ;;
+esac
+
 # =============================================================================
 # Maintenance modes: no install log, no package changes.
 # =============================================================================
 if [[ "${MODE}" != "install" ]]; then
     LIGHT=1
     if [[ "${JSON_OUT}" == "-" ]]; then exec 8>&1 1>&2; fi
+    if [[ "${MODE}" == "audit" ]]; then
+        AUDIT_N=$((10#${AUDIT_N}))
+        if (( AUDIT_N < 1 )); then AUDIT_N=1; fi
+        if [[ -n "${JSON_OUT}" ]]; then command -v jq >/dev/null 2>&1 || die "jq is missing: run the installer once (bash $0) first."; fi
+        audit_show "${AUDIT_N}"
+        exit 0
+    fi
     if old_layout_present; then
         die "this node was installed by hy2-secure-install.sh: run the installer once (bash veiltrium.sh) to move it to the Veiltrium names first."
+    fi
+    if [[ "${MODE}" == "uninstall" ]]; then
+        banner
+        uninstall_main
+        exit 0
     fi
     TMPD="$(mktemp -d /root/.veiltrium.XXXXXX)"
     chmod 700 "${TMPD}"
@@ -3108,7 +3436,7 @@ if [[ "${MODE}" != "install" ]]; then
     load_tt_state
     load_probe_env
     load_ports
-    case "${MODE}" in list-clients|show-client|add-client|remove-client|trial) load_clients ;; esac
+    case "${MODE}" in list-clients|show-client|add-client|remove-client|reset-client|trial) load_clients ;; esac
     load_node_name
     set_hy2_auth_main
     PUBLIC_IP="${PUBLIC_IP:-${PROBE_SERVER}}"
@@ -3149,13 +3477,14 @@ if [[ "${MODE}" != "install" ]]; then
                 status_json | jq -r '"\(.node_name) \(.server), \(.os); Veiltrium \(.script_version)",
                     (.services | to_entries[] | "  \(.key): \(.value)"),
                     "  clients: main + \(.clients.added) added; reboot required: \(.reboot_required)",
+                    "  load \(.resources.load.m1) \(.resources.load.m5) \(.resources.load.m15) (\(.resources.cpus) CPU); memory \(.resources.memory_mb.used)/\(.resources.memory_mb.total) MiB; disk / \(.resources.disk_mb.used)/\(.resources.disk_mb.total) MiB; up \((.uptime_seconds / 86400) | floor) d \(((.uptime_seconds % 86400) / 3600) | floor) h",
                     (if (.standby | length) > 0 then "  standby servers: \(.standby | join(", "))" else empty end),
                     (if ((.russia.bad_streak // 0) >= 2) then
                         "  WARNING: not reachable from Russia in \(.russia.bad_streak) checks in a row: \(.russia.verdict) (\((.russia.networks // []) | join(", "))); consider moving to a new server or switching clients to a standby address"
                      else empty end)'
             fi
             exit 0 ;;
-        list-clients|show-client|add-client|remove-client)
+        list-clients|show-client|add-client|remove-client|reset-client)
             [[ -n "${H_PASSWORD}" && -n "${PUBLIC_IP}" && -s "${CLIENT_FILE}" ]] \
                 || die "this server has no installed node yet: run the installer once (bash $0) first."
             node_context
@@ -3176,7 +3505,7 @@ if [[ "${MODE}" != "install" ]]; then
                     else
                         cat "${CLIENT_TXT}"
                     fi ;;
-                add-client|remove-client)
+                add-client|remove-client|reset-client)
                     [[ "${CLIENT_ARG}" =~ ${CLIENT_RE} && "${CLIENT_ARG}" != "main" ]] \
                         || die "a client name is 1-32 characters: a-z, 0-9, _ and - (not \"main\")."
                     [[ -x "${RECOVER_BIN}" ]] || die "run the installer once (bash $0) first."
@@ -3198,7 +3527,19 @@ if [[ "${MODE}" != "install" ]]; then
                     else
                         [[ -n "$(client_index "${CLIENT_ARG}")" ]] || die "no client ${CLIENT_ARG} (see --list-clients)."
                         AUTH_BEFORE="${H_AUTH}"
-                        clients_change remove "${CLIENT_ARG}"
+                        if [[ "${MODE}" == "reset-client" ]]; then
+                            i="$(client_index "${CLIENT_ARG}")"
+                            write_client_env "${TMPD}/client.env" "${CLIENT_ARG}" "$(cat /proc/sys/kernel/random/uuid)" \
+                                "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" "${CL_CREATED[i]}"
+                            clients_change reset "${CLIENT_ARG}"
+                            if [[ -z "${JSON_OUT}" ]]; then
+                                printf '\n'
+                                cat "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
+                                printf '\n(Saved in %s, root only.)\n' "${CLIENT_FILES_DIR}/${CLIENT_ARG}.txt"
+                            fi
+                        else
+                            clients_change remove "${CLIENT_ARG}"
+                        fi
                     fi
                     step_mark finished
                     if [[ -n "${JSON_OUT}" ]]; then
@@ -3568,6 +3909,7 @@ cat > /etc/needrestart/conf.d/50-veiltrium.conf <<'EOF'
 # veiltrium: do not restart the proxies automatically (clients would drop)
 $nrconf{override_rc}->{qr(^(hysteria-server|xray|trusttunnel)\.service$)} = 0;
 EOF
+audit_setup
 APT_GET=(apt-get -q -o DPkg::Lock::Timeout=900
          -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 # If a previous run was cut off in the middle of package installation, finish it.
