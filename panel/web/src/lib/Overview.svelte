@@ -30,7 +30,10 @@
   // home-network results: ok | fail | degraded | route_unverified | stale | untested
   const good = (v) => v === 'ok' || v === 'verified';
 
-  let services = $derived(st ? Object.values(st.services) : []);
+  // a protocol that is switched off is not a service that is down
+  let services = $derived(st ? Object.entries(st.services)
+    .filter(([k]) => (k !== 'xray' || st.reality) && (k !== 'trusttunnel' || st.trusttunnel))
+    .map(([, v]) => v) : []);
   // the last check from Russian networks (Globalping): reachable | partly | blocked | unchecked
   let ru = $derived(st?.russia ?? null);
   let ruState = $derived(!st ? '' : !st.globalping && !ru ? 'off' : (ru?.verdict ?? 'unchecked'));
@@ -42,14 +45,17 @@
   const ruLabel = { reachable: 'ov.ruReachable', partly: 'ov.ruPartly', blocked: 'ov.ruBlocked', unchecked: 'ov.ruUnchecked', off: 'ov.ruOff' };
   const ruColor = { reachable: 'text-ok', partly: 'text-warn', blocked: 'text-danger' };
   let checking = $state(false);
+  let ruMsg = $state('');
   async function checkRussia() {
     checking = true;
+    ruMsg = '';
     try {
-      await api.russiaCheck();
+      const res = await api.russiaCheck();
+      if (res?.verdict === 'unchecked') ruMsg = t('ov.ruNoAnswer');
       await load();
     } catch (err) {
       if (err instanceof AuthError) return onAuthLost();
-      error = err.message;
+      ruMsg = err.message;
     } finally {
       checking = false;
     }
@@ -123,6 +129,7 @@
           {:else if ruTally && ruTally.total}{t('ov.ruNote', { ok: ruTally.ok, total: ruTally.total, when: day(ru.checked_at) })}
           {:else}{t('ov.ruNoteNone')}{/if}
         </span>
+        {#if ruMsg}<span role="alert" class="text-xs text-warn">{ruMsg}</span>{/if}
       </div>
       <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
         <span class="text-xs text-muted">{t('ov.system')}</span>

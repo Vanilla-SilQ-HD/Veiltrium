@@ -193,9 +193,10 @@ die()  {
     trap - ERR
     printf '\n\033[1;31m✖ ERROR: %s\033[0m\n' "$*" >&2
     if (( LIGHT == 0 )); then printf '  Full log: %s\n' "${LOG_FILE}" >&2; fi
-    exit 1
+    exit "${DIE_CODE:-1}"
 }
 
+DIE_CODE=""
 TMPD=""
 TEE_PID=""
 CLIENT_PID=""
@@ -2230,7 +2231,7 @@ helper_relay() {
 }
 
 helper_main() {
-    local line="" verb arg="" out rc=0
+    local line="" verb arg="" d rc=0 wait=90
     trap '' PIPE     # the panel going away must not cut a change short: it runs to the end
     IFS= read -r -t 10 line || true
     line="${line%$'\r'}"
@@ -2246,14 +2247,17 @@ helper_main() {
         printf '::log ERROR: request refused\n::exit 2\n'
         return 0
     fi
-    out="$(mktemp)"
+    case "${verb}" in status|list-clients|show-client|check-russia) wait=10 ;; esac
+    d="$(mktemp -d /run/veiltrium-helper.XXXXXX 2>/dev/null || mktemp -d)"   # /run: root-only tmpfs; tests run without root
     # stdout (the JSON) to the file, stderr (human text, progress) through the relay
     # stdin is the socket: the child must never wait on it
-    { env VEILTRIUM_PROGRESS=1 NEEDRESTART_SUSPEND=1 bash "${SCRIPT_PATH}" "--${verb}" ${arg:+"${arg}"} --json - \
-        2>&1 > "${out}" </dev/null || printf '%s' "$?" > "${out}.rc"; } | helper_relay
-    rc="$(cat "${out}.rc" 2>/dev/null || echo 0)"
-    printf '::json %s\n' "$(jq -c . "${out}" 2>/dev/null || echo null)" 2>/dev/null || true
-    rm -f "${out}" "${out}.rc"
+    # PIPE is ignored here and would stay ignored in the child: restore its default
+    { env --default-signal=PIPE VEILTRIUM_PROGRESS=1 VEILTRIUM_LOCK_WAIT="${wait}" NEEDRESTART_SUSPEND=1 \
+        bash "${SCRIPT_PATH}" "--${verb}" ${arg:+"${arg}"} --json - \
+        2>&1 > "${d}/out" </dev/null || printf '%s' "$?" > "${d}/rc"; } | helper_relay
+    rc="$(cat "${d}/rc" 2>/dev/null || echo 0)"
+    printf '::json %s\n' "$(jq -c . "${d}/out" 2>/dev/null || echo null)" 2>/dev/null || true
+    rm -rf "${d}"
     printf '::exit %s\n' "${rc}" 2>/dev/null || true
     return 0
 }
@@ -2400,7 +2404,12 @@ if [[ "${MODE}" == "install" ]]; then
     flock -n 9 || die "the script is already running (perhaps a previous run is still going after a dropped connection); wait a couple of minutes and run it again."
 else
     # Maintenance modes are short: wait for a panel request or another command instead of failing.
-    flock -w 90 9 || die "the script is already running (an install, or a client change from the panel); wait for it to finish and try again."
+    LOCK_WAIT="${VEILTRIUM_LOCK_WAIT:-90}"
+    [[ "${LOCK_WAIT}" =~ ^[1-9][0-9]{0,2}$ ]] || LOCK_WAIT=90
+    if ! flock -w "${LOCK_WAIT}" 9; then
+        DIE_CODE=75   # a busy lock, not a failure of the request
+        die "the script is already running (an install, or a client change from the panel); wait for it to finish and try again."
+    fi
 fi
 # Temp dirs of a run that was killed (they may hold client configs with keys): with the
 # lock held, no other run is using them.
@@ -2457,7 +2466,7 @@ if [[ "${MODE}" != "install" ]]; then
             [[ -n "${H_PASSWORD}" && -n "${PUBLIC_IP}" ]] || die "this server has no installed node yet: run the installer once (bash $0) first."
             russia_check force
             if [[ -n "${JSON_OUT}" ]]; then
-                if [[ -s "${TMPD}/russia.json" ]]; then json_emit < "${TMPD}/russia.json"; else echo null | json_emit; fi
+                if [[ -s "${TMPD}/russia.json" ]]; then json_emit < "${TMPD}/russia.json"; else echo '{"verdict":"unchecked"}' | json_emit; fi
             fi
             exit 0 ;;
         status)
@@ -3964,7 +3973,9 @@ else
         PANEL_NEW="${PANEL_BINARY}"
         warn "Web panel from a local file (PANEL_BINARY), not from a checksum-pinned release."
     elif [[ "${PANEL_SHA}" =~ ^[0-9a-f]{64}$ ]]; then
-        if [[ "$("${PANEL_BIN}" version 2>/dev/null || true)" != "${PANEL_VERSION#panel-v}" ]]; then
+        # a matching version is not enough: the file itself must be the pinned one
+        if [[ "$("${PANEL_BIN}" version 2>/dev/null || true)" != "${PANEL_VERSION#panel-v}" ]] \
+            || ! sha_ok "${PANEL_BIN}" "${PANEL_SHA}"; then
             # The VPN is complete at this point: a failed download skips the panel, it does not fail the run.
             if fetch "https://github.com/Vanilla-SilQ-HD/Veiltrium/releases/download/${PANEL_VERSION}/veiltrium-panel-linux-${ARCH}" \
                 "${TMPD}/veiltrium-panel"; then

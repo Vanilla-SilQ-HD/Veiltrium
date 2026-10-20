@@ -230,13 +230,22 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, verb, arg string) {
 		writeError(w, http.StatusConflict, "a client change is running; try again when it finishes")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
+	limit := 2 * time.Minute
+	if verb == "check-russia" {
+		limit = 4 * time.Minute
+	}
 	s.callMu.Lock()
+	// the budget starts once we hold the turn: time spent queued must not eat it
+	ctx, cancel := context.WithTimeout(r.Context(), limit)
 	res, err := s.helper.Call(ctx, verb, arg, nil)
+	cancel()
 	s.callMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if res.Code == helperBusyCode {
+		writeError(w, http.StatusServiceUnavailable, busyText(res))
 		return
 	}
 	if res.Code != 0 || res.JSON == nil {
@@ -245,6 +254,19 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request, verb, arg string) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(res.JSON)
+}
+
+// helperBusyCode: the helper's exit code when the installer lock is taken (an install or
+// another change is running).
+const helperBusyCode = 75
+
+func busyText(res *HelperResult) string {
+	for _, l := range res.Log {
+		if strings.Contains(l, "ERROR: ") {
+			return res.ErrorText()
+		}
+	}
+	return "the server is busy (an install is running); try again in a few minutes"
 }
 
 func (s *Server) addClient(w http.ResponseWriter, r *http.Request) {
@@ -291,18 +313,20 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request, verb, name strin
 			flusher.Flush()
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
-	defer cancel()
 	s.callMu.Lock()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Minute)
 	res, err := s.helper.Call(ctx, verb, name, func(ev HelperEvent) {
 		if ev.Kind == "step" {
 			emit(map[string]string{"step": ev.Text})
 		}
 	})
+	cancel()
 	s.callMu.Unlock()
 	switch {
 	case err != nil:
 		emit(map[string]string{"error": err.Error() + "; the change may still finish on the server: check the list"})
+	case res.Code == helperBusyCode:
+		emit(map[string]string{"error": busyText(res)})
 	case res.Code != 0 || res.JSON == nil:
 		emit(map[string]string{"error": res.ErrorText()})
 	default:
@@ -315,6 +339,11 @@ func (s *Server) change(w http.ResponseWriter, r *http.Request, verb, name strin
 func (s *Server) staticHandler() http.Handler {
 	files := http.FileServerFS(s.static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			// an unknown API path is an error, not the web app's page
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		p := strings.TrimPrefix(r.URL.Path, "/")
 		if p == "" {
 			p = "index.html"

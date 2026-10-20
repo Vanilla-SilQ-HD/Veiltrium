@@ -36,6 +36,7 @@
   "ov.ruOff": "Check off",
   "ov.ruNote": "{ok} of {total} probes answered · {when}",
   "ov.ruNoteNone": "Globalping probes in Russian networks",
+  "ov.ruNoAnswer": "Globalping did not answer; the last result is kept. Try again later.",
   "ov.ruOffNote": "GLOBALPING=0 on this server",
   "ov.ruBlockedNote": "No Russian network reaches this address: ask the hoster for another IP.",
   "ov.ruCheck": "Check now",

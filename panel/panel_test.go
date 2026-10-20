@@ -319,3 +319,45 @@ func TestHelperTimeout(t *testing.T) {
 		t.Fatal("the timeout was not honoured")
 	}
 }
+
+// TestBusyAndUnknownAPI: helper exit 75 is "the installer lock is busy" (503, and the same
+// text in the change stream); an unregistered /api/ path is a JSON 404, not the web page.
+func TestBusyAndUnknownAPI(t *testing.T) {
+	sock, _ := fakeHelper(t, func(req string) string {
+		if strings.HasPrefix(req, "add-client") {
+			return "::exit 75\n"
+		}
+		if req == "status" {
+			return "::log ERROR: another run holds the lock\n::exit 75\n"
+		}
+		return "::exit 1\n"
+	})
+	ts, c := newTestServer(t, sock)
+	u := ts.URL
+	ck, _ := login(t, ts, c, "correct horse battery")
+	h := map[string]string{"Cookie": sessionCookie + "=" + ck.Value, "Origin": u, csrfHeader: "1"}
+
+	r := do(t, c, "GET", u+"/api/status", "", h)
+	b, _ := io.ReadAll(r.Body)
+	if r.StatusCode != 503 || !strings.Contains(string(b), "another run holds the lock") {
+		t.Fatalf("busy status: %d %s", r.StatusCode, b)
+	}
+	r = do(t, c, "GET", u+"/api/clients", "", h)
+	b, _ = io.ReadAll(r.Body)
+	if r.StatusCode != 409 {
+		t.Fatalf("other failure: %d %s", r.StatusCode, b)
+	}
+	r = do(t, c, "POST", u+"/api/clients", `{"name":"anna"}`, h)
+	b, _ = io.ReadAll(r.Body)
+	if !strings.Contains(string(b), `"error":"the server is busy`) {
+		t.Fatalf("busy change: %s", b)
+	}
+	r = do(t, c, "GET", u+"/api/nope", "", h)
+	b, _ = io.ReadAll(r.Body)
+	if r.StatusCode != 404 || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") || !strings.Contains(string(b), `"error"`) {
+		t.Fatalf("unknown API path: %d %s", r.StatusCode, b)
+	}
+	if r := do(t, c, "GET", u+"/some/page", "", nil); r.StatusCode != 200 {
+		t.Fatalf("SPA fallback: %d", r.StatusCode)
+	}
+}

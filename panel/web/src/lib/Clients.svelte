@@ -41,7 +41,7 @@
       const d = await api.client(n);
       if (selected === n) detail = d;
     } catch (err) {
-      fail(err, (m) => (detailError = m));
+      if (selected === n) fail(err, (m) => (detailError = m));
     }
   }
   loadList();
@@ -71,8 +71,11 @@
       finished = true;
       if (res.main_hysteria_link_changed) notice = t('add.mainChanged');
       await loadList();
+      loadDetail(selected);
     } catch (err) {
       fail(err, (m) => (changeError = t('add.failed', { reason: m })));
+      // the change may have finished on the server
+      if (!(err instanceof AuthError)) { await loadList(); loadDetail(selected); }
     } finally {
       running = false;
     }
@@ -83,6 +86,7 @@
     selected = n;
   }
   async function revoke() {
+    if (running) return;
     const n = selected;
     running = true; steps = []; changeError = '';
     try {
@@ -93,6 +97,8 @@
       await loadList();
     } catch (err) {
       fail(err, (m) => (changeError = t('rm.failed', { reason: m })));
+      // the change may have finished on the server
+      if (!(err instanceof AuthError)) { await loadList(); loadDetail(selected); }
     } finally {
       running = false;
     }
