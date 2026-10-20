@@ -72,8 +72,8 @@ standby_parse 192.168.1.5 || true
 [[ "${STANDBY_ERR}" == *"192.168.1.5"* ]]; check $? 0 "bad address message names the address"
 
 # ---- no standby: byte-identical to the previous version ------------------------
-# BASELINE = the installer before this feature (commit 463d5bf of the private history);
-# without that object (a clone of the public history) only 'none' is compared with the empty list.
+# BASELINE = the installer before this feature (463d5bf = v2026.10.20.1);
+# without that object (a shallow clone, as in CI) only 'none' is compared with the empty list.
 BASELINE="${BASELINE_REF:-463d5bf}"
 if [[ -n "${BASELINE_FILE:-}" ]]; then HEAD_REF="${BASELINE_FILE}"   # an installer file given directly
 elif git show "${BASELINE}:veiltrium.sh" > "${TMPD}/head.sh" 2>/dev/null; then HEAD_REF="${TMPD}/head.sh"
