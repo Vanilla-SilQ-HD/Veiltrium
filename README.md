@@ -160,6 +160,32 @@ bash veiltrium.sh --import /root/node.vt        # new server; a normal install t
 - The import checks the file name by name (regular files from the fixed list only, sizes, SHA-256 manifest, the exact format of every state file, certificate and key pairs) before it places anything. It runs only on a server with no node, or with the same node (a standby copy being refreshed); a different node is refused.
 - The new server gets a new web panel password and detects its country name again. Ports of the old node are kept unless you set `REALITY_PORT` / `TT_PORT` yourself.
 
+## Alerts
+
+Off by default. With a channel set, the server tells you when something breaks; it only sends out, nothing listens.
+
+```bash
+ALERT_TG_TOKEN=123456789:AAH... ALERT_TG_CHAT=123456789 bash veiltrium.sh   # Telegram bot (from @BotFather) and the chat id
+ALERT_WEBHOOK=https://example.com/hook bash veiltrium.sh                     # or a webhook: JSON POST {node, server, event, text, time}
+bash veiltrium.sh --test-alert                                               # a test message; reports per channel
+ALERT_TG_TOKEN=none ALERT_WEBHOOK=none bash veiltrium.sh                     # turn off
+```
+
+- Settings are validated strictly, saved in `/etc/veiltrium/alerts.env` (root only, 600) and kept on later runs. The token is never printed back (only `123456789:****`) and not written to the install log. It reaches `curl` through its config on stdin, so it is not on any command line. Note that a variable typed in the shell stays in your shell history.
+- Events, each sent once per change: a proxy service not active in 2 checks in a row (`veiltrium-watch.timer`, every 5 minutes, exists only while a channel is set) and again when it recovers; the check from Russia reaching `bad_streak` 2 (with the hint to move to a new server or use a standby address) and again when it is reachable; a rollback (an install run or a client change that did not pass its checks and was restored).
+- A failed delivery goes to the journal (`journalctl -t veiltrium-alert`) and never stops anything. The messages hold the node name, the server address and a short hint; no secrets.
+
+## Updates
+
+```bash
+bash veiltrium.sh --check-update      # is a newer release out? (--json - for JSON); no changes
+bash veiltrium.sh --update            # download it, check it, ask, then run it as a normal install
+```
+
+- `--check-update` reads the release feed of this repository (installer tags `vYYYY.MM.DD[.N]` only; panel tags are ignored) and compares it numerically with the installed version.
+- `--update` downloads `veiltrium.sh` of that tag from `raw.githubusercontent.com` into a private file, checks that it is a bash script of exactly that version (`SCRIPT_VERSION` equal to the tag, complete, `bash -n`), shows `current -> new` and asks you to type `yes` (`VT_YES=1` skips the question). It replaces nothing itself: it runs the new script as an ordinary install with your environment, which refreshes the installed copy as usual (keys, passwords and clients are kept).
+- Trust is the same as for the `curl` one-liner: GitHub and HTTPS. There is no signature yet.
+
 ## Clients
 
 The first client, `main`, is created by the installer (`/root/veiltrium/client.txt`). More clients get their own credentials for all three protocols: a Hysteria user and password, a VLESS UUID and a TrustTunnel login. Revoking one never affects the others.

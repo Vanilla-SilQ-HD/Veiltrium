@@ -51,6 +51,9 @@
 #    bash veiltrium.sh --show-client NAME  connection details of a client (main: the first one)
 #    bash veiltrium.sh --status --json -   a fast overview as JSON (no tests, no secrets)
 #    bash veiltrium.sh --check-russia      can Russian networks reach this server? (Globalping)
+#    bash veiltrium.sh --test-alert        send a test message to the alert channels (ALERT_*)
+#    bash veiltrium.sh --check-update      is a newer release out? (no changes)
+#    bash veiltrium.sh --update            download the newest release, check it, run it as an install
 #    bash veiltrium.sh --panel-password    a new web panel password (signs everybody out)
 #    bash veiltrium.sh --export FILE       pack this node (all secrets, encrypted with a passphrase)
 #    bash veiltrium.sh --import FILE       install on a new server with the same secrets (links differ
@@ -1604,6 +1607,10 @@ russia_check() {
             mv -f "${TMPD}/russia.merged" "${TMPD}/russia.json"
         fi
         install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"
+        if (( A_ENABLED == 1 )) && [[ "${RU_VERDICT}" != "unchecked" ]]; then
+            alert_russia_eval "${RU_VERDICT}" "$(jq -r '.bad_streak // 0' "${RUSSIA_FILE}" 2>/dev/null || echo 0)" \
+                "$(jq -r '(.networks // []) | join(", ")' "${RUSSIA_FILE}" 2>/dev/null || true)"
+        fi
     fi
     line="$(jq -r '"ping \(.icmp.ok)/\(.icmp.total)"
         + (if .tcp_reality then ", TCP \(.tcp_reality.port) \(.tcp_reality.ok)/\(.tcp_reality.total)" else "" end)
@@ -2387,6 +2394,7 @@ clients_change() {
         txn_restore hysteria
         if (( HAVE_REALITY == 1 )); then txn_restore reality; fi
         if (( HAVE_TT == 1 )); then txn_restore trusttunnel; fi
+        alert_notify rollback "a client change did not pass the checks; the previous clients and settings were restored."
         die "the change did not pass the checks; the previous clients and settings were restored."
     fi
     # The registry entry belongs to the Hysteria change, committed last: if the run is cut
@@ -2947,6 +2955,301 @@ import_node() {
     return 0
 }
 
+# ---- Alerts (outbound only, opt-in) -------------------------------------------
+# Telegram bot (ALERT_TG_TOKEN + ALERT_TG_CHAT) and/or a webhook (ALERT_WEBHOOK, https; POST JSON).
+# Saved in ${ALERTS_ENV} (600). "none" clears. The token is never printed or logged, and goes to
+# curl through its config on stdin, so it is not on a command line.
+ALERTS_ENV="${SCANNER_DIR}/alerts.env"
+ALERT_STATE="${STATE_DIR}/alert-state"
+A_TOKEN=""; A_CHAT=""; A_HOOK=""; A_ENABLED=0; A_DIRTY=0
+A_RES_TG="off"; A_RES_HOOK="off"
+ALERT_TOKEN_RE='^[0-9]{5,12}:[A-Za-z0-9_-]{30,64}$'
+ALERT_CHAT_RE='^(-?[0-9]{1,20}|@[A-Za-z0-9_]{5,32})$'
+ALERT_HOOK_RE='^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~%&=+:@/-]*)?(\?[A-Za-z0-9._~%&=+:@/?-]*)?$'
+
+alert_valid_token() { [[ "$1" =~ ${ALERT_TOKEN_RE} ]]; }
+alert_valid_chat() { [[ "$1" =~ ${ALERT_CHAT_RE} ]]; }
+alert_valid_hook() { (( ${#1} <= 512 )) && [[ "$1" =~ ${ALERT_HOOK_RE} ]]; }
+alert_mask_token() { printf '%s:****' "${1%%:*}"; }
+alert_hook_host() { local h="${1#https://}"; h="${h%%[/?]*}"; printf '%s' "${h}"; }
+
+# Reads the saved settings (only values that pass the validation).
+alert_load_saved() {
+    local k v
+    A_TOKEN=""; A_CHAT=""; A_HOOK=""
+    [[ -f "${ALERTS_ENV}" ]] || return 0
+    while IFS='=' read -r k v || [[ -n "${k}" ]]; do
+        case "${k}" in
+            ALERT_TG_TOKEN) if alert_valid_token "${v}"; then A_TOKEN="${v}"; fi ;;
+            ALERT_TG_CHAT) if alert_valid_chat "${v}"; then A_CHAT="${v}"; fi ;;
+            ALERT_WEBHOOK) if alert_valid_hook "${v}"; then A_HOOK="${v}"; fi ;;
+        esac
+    done < "${ALERTS_ENV}"
+    return 0
+}
+
+# Settings: the variables given now, else the saved ones. Sets A_TOKEN, A_CHAT, A_HOOK,
+# A_ENABLED, A_DIRTY (1: something was given and must be saved). Dies on an invalid value.
+alert_prepare() {
+    local t="${ALERT_TG_TOKEN:-}" c="${ALERT_TG_CHAT:-}" w="${ALERT_WEBHOOK:-}"
+    alert_load_saved
+    A_DIRTY=0
+    if [[ "${t}" == "none" || "${c}" == "none" ]]; then
+        A_TOKEN=""; A_CHAT=""; A_DIRTY=1
+    else
+        if [[ -n "${t}" ]]; then
+            alert_valid_token "${t}" || die "ALERT_TG_TOKEN is not a Telegram bot token (like 123456789:AAH..., from @BotFather)."
+            A_TOKEN="${t}"; A_DIRTY=1
+        fi
+        if [[ -n "${c}" ]]; then
+            alert_valid_chat "${c}" || die "ALERT_TG_CHAT must be a numeric chat id (like 123456789 or -100123456789) or @channelname."
+            A_CHAT="${c}"; A_DIRTY=1
+        fi
+    fi
+    if [[ "${w}" == "none" ]]; then A_HOOK=""; A_DIRTY=1
+    elif [[ -n "${w}" ]]; then
+        alert_valid_hook "${w}" || die "ALERT_WEBHOOK must be an https:// URL without spaces or quotes (up to 512 characters)."
+        A_HOOK="${w}"; A_DIRTY=1
+    fi
+    if { [[ -n "${A_TOKEN}" && -z "${A_CHAT}" ]] || [[ -z "${A_TOKEN}" && -n "${A_CHAT}" ]]; }; then
+        if (( A_DIRTY == 1 )); then die "Telegram alerts need both ALERT_TG_TOKEN and ALERT_TG_CHAT."; fi
+        A_TOKEN=""; A_CHAT=""
+    fi
+    A_ENABLED=0
+    if [[ -n "${A_TOKEN}" || -n "${A_HOOK}" ]]; then A_ENABLED=1; fi
+    return 0
+}
+
+# Writes the settings given in this run (nothing given: no change). No channel left: the file and the state go.
+alert_save() {
+    (( A_DIRTY == 1 )) || return 0
+    if (( A_ENABLED == 0 )); then
+        rm -f "${ALERTS_ENV}" "${ALERT_STATE}"
+        return 0
+    fi
+    install -d -m 700 "${SCANNER_DIR}"
+    install -m 600 /dev/null "${ALERTS_ENV}.new"
+    {
+        printf '# veiltrium: alert channels (secret: root only)\n'
+        if [[ -n "${A_TOKEN}" ]]; then printf 'ALERT_TG_TOKEN=%s\nALERT_TG_CHAT=%s\n' "${A_TOKEN}" "${A_CHAT}"; fi
+        if [[ -n "${A_HOOK}" ]]; then printf 'ALERT_WEBHOOK=%s\n' "${A_HOOK}"; fi
+    } > "${ALERTS_ENV}.new"
+    mv -f "${ALERTS_ENV}.new" "${ALERTS_ENV}"
+    return 0
+}
+
+alert_describe() {   # one line, no secrets
+    local s=()
+    if [[ -n "${A_TOKEN}" ]]; then s+=("Telegram (bot $(alert_mask_token "${A_TOKEN}"), chat ${A_CHAT})"); fi
+    if [[ -n "${A_HOOK}" ]]; then s+=("webhook ($(alert_hook_host "${A_HOOK}"))"); fi
+    (IFS=';'; printf '%s' "${s[*]}")
+}
+
+# Sends $1 (text) for the event $2 to every channel. Sets A_RES_TG and A_RES_HOOK
+# (off | ok | failed: ...). Never fails; failures go to the journal.
+alert_send() {
+    local text="$1" event="${2:-info}" code rc json why
+    A_RES_TG="off"; A_RES_HOOK="off"
+    if [[ -n "${A_TOKEN}" ]]; then
+        rc=0
+        code="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "${A_TOKEN}" \
+            | curl -K - --proto '=https' --tlsv1.2 --max-time 10 -sS -o /dev/null -w '%{http_code}' \
+                --data-urlencode "chat_id=${A_CHAT}" --data-urlencode "text=${text}" 2>/dev/null)" || rc=$?
+        if (( rc == 0 )) && [[ "${code}" == "200" ]]; then A_RES_TG="ok"
+        else
+            if (( rc != 0 )); then why="curl exit ${rc}"; else why="HTTP ${code}"; fi
+            A_RES_TG="failed: ${why}"
+        fi
+    fi
+    if [[ -n "${A_HOOK}" ]]; then
+        rc=0
+        if ! command -v jq >/dev/null 2>&1; then A_RES_HOOK="failed: jq is missing"
+        else
+            json="$(jq -nc --arg node "${LABEL}" --arg server "${PUBLIC_IP:-unknown}" --arg event "${event}" \
+                --arg text "${text}" --arg time "$(date -u +%FT%TZ)" \
+                '{node: $node, server: $server, event: $event, text: $text, time: $time}')"
+            code="$(printf 'url = "%s"\n' "${A_HOOK}" \
+                | curl -K - --proto '=https' --tlsv1.2 --max-time 10 -sS -o /dev/null -w '%{http_code}' \
+                    -H 'Content-Type: application/json' --data-binary "${json}" 2>/dev/null)" || rc=$?
+            if (( rc == 0 )) && [[ "${code}" == 2* ]]; then A_RES_HOOK="ok"
+            else
+                if (( rc != 0 )); then why="curl exit ${rc}"; else why="HTTP ${code}"; fi
+                A_RES_HOOK="failed: ${why}"
+            fi
+        fi
+    fi
+    if [[ "${A_RES_TG}" == failed* || "${A_RES_HOOK}" == failed* ]]; then
+        logger -t veiltrium-alert "alert '${event}' not delivered: telegram ${A_RES_TG}; webhook ${A_RES_HOOK}" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# An event for the owner: the text starts with the node name and address. A no-op without channels.
+alert_notify() {   # event, text
+    (( A_ENABLED == 1 )) || return 0
+    alert_send "${LABEL} (${PUBLIC_IP:-unknown}): $2" "$1"
+    return 0
+}
+
+# State between runs (${ALERT_STATE}: key=value lines) so that each change alerts once.
+astate_get() {   # key -> value, 0 if unset
+    local v=""
+    if [[ -f "${ALERT_STATE}" ]]; then v="$(sed -n "s/^$1=//p" "${ALERT_STATE}" | tail -n 1 || true)"; fi
+    printf '%s' "${v:-0}"
+}
+astate_set() {   # key value
+    local tmp="${ALERT_STATE}.new"
+    install -d -m 700 "$(dirname "${ALERT_STATE}")"
+    install -m 600 /dev/null "${tmp}"
+    { if [[ -f "${ALERT_STATE}" ]]; then grep -v "^$1=" "${ALERT_STATE}" || true; fi; printf '%s=%s\n' "$1" "$2"; } > "${tmp}"
+    mv -f "${tmp}" "${ALERT_STATE}"
+    return 0
+}
+
+svc_is_active() { systemctl is-active --quiet "$1"; }
+
+# One check of the given services: "down" after 2 checks in a row without "active", "recovered" once.
+alert_watch_services() {
+    local svc key bad
+    for svc in "$@"; do
+        key="${svc//-/_}"
+        if svc_is_active "${svc}"; then
+            if [[ "$(astate_get "svc_${key}_down")" == "1" ]]; then
+                alert_notify recovered "${svc} is running again."
+                astate_set "svc_${key}_down" 0
+            fi
+            if [[ "$(astate_get "svc_${key}_bad")" != "0" ]]; then astate_set "svc_${key}_bad" 0; fi
+        else
+            bad=$(( $(astate_get "svc_${key}_bad") + 1 ))
+            astate_set "svc_${key}_bad" "${bad}"
+            if (( bad >= 2 )) && [[ "$(astate_get "svc_${key}_down")" != "1" ]]; then
+                alert_notify down "${svc} is down (not active in ${bad} checks in a row). Look at: journalctl -u ${svc} -n 50"
+                astate_set "svc_${key}_down" 1
+            fi
+        fi
+    done
+    return 0
+}
+
+# The check from Russia: $1 = verdict, $2 = bad_streak, $3 = networks. Alerts when the streak reaches 2 and
+# when it is reachable again after that alert.
+alert_russia_eval() {
+    if (( $2 >= 2 )) && [[ "$(astate_get russia_alerted)" != "1" ]]; then
+        alert_notify russia "not reachable from Russia in $2 checks in a row: $1 (${3:-no networks}). Move to a new server (--export / --import) or switch the clients to a standby address."
+        astate_set russia_alerted 1
+    elif [[ "$1" == "reachable" && "$(astate_get russia_alerted)" == "1" ]]; then
+        alert_notify recovered "reachable from Russia again."
+        astate_set russia_alerted 0
+    fi
+    return 0
+}
+
+# ---- Updates ----------------------------------------------------------------
+UPD_REPO="Vanilla-SilQ-HD/Veiltrium"
+UPD_TAG=""; UPD_ERR=""; UPD_DIR="/root"
+
+# A number to compare versions by: "2026-10-20.2" or "v2026.10.20.2" (no .N means 0); fails on other text.
+ver_key() {
+    local vs="${1#v}" y m d n
+    vs="${vs//-/.}"
+    [[ "${vs}" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})(\.([0-9]{1,3}))?$ ]] || return 1
+    y="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[2]}"; d="${BASH_REMATCH[3]}"; n="${BASH_REMATCH[5]:-0}"
+    printf '%d' $(( ((10#${y} * 100 + 10#${m}) * 100 + 10#${d}) * 1000 + 10#${n} ))
+}
+ver_to_tag() { local vs="${1#v}"; printf 'v%s' "${vs//-/.}"; }
+
+# Installer release tags (vYYYY.MM.DD[.N]) found in an atom feed or the tags API (stdin); one per line.
+update_tags_from_text() {
+    { grep -oE '(/tag/|"name": ?")v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]{1,3})?"' || true; } | sed -E 's/.*(v[0-9.]+)"$/\1/'
+    return 0
+}
+update_max_tag() {   # tags on stdin -> the newest
+    local t k best="" bk=-1
+    while read -r t; do
+        k="$(ver_key "${t}")" || continue
+        if (( k > bk )); then bk="${k}"; best="${t}"; fi
+    done
+    printf '%s' "${best}"
+    return 0
+}
+# Sets UPD_TAG to the newest release tag; fails if no source answers.
+update_latest() {
+    local src txt tag
+    UPD_TAG=""
+    for src in "https://github.com/${UPD_REPO}/releases.atom" "https://github.com/${UPD_REPO}/tags.atom" \
+               "https://api.github.com/repos/${UPD_REPO}/tags?per_page=100"; do
+        txt="$(curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 30 --max-filesize 2000000 "${src}" 2>/dev/null || true)"
+        tag="$(printf '%s\n' "${txt}" | update_tags_from_text | update_max_tag)"
+        if [[ -n "${tag}" ]]; then UPD_TAG="${tag}"; return 0; fi
+    done
+    return 1
+}
+# $1 = a downloaded script, $2 = its release tag: is it a bash installer of exactly that version?
+update_verify() {
+    local f="$1" tag="$2" line v
+    UPD_ERR=""
+    if [[ ! -s "${f}" ]] || (( $(stat -c %s "${f}") > 5000000 )); then UPD_ERR="the download is empty or too big"; return 1; fi
+    if [[ "$(head -n 1 "${f}")" != "#!/usr/bin/env bash" ]]; then UPD_ERR="the download is not a bash script"; return 1; fi
+    if ! grep -q '^# ==== VEILTRIUM END ====$' "${f}"; then UPD_ERR="the download is incomplete"; return 1; fi
+    line="$(grep -m1 '^SCRIPT_VERSION="' "${f}" || true)"
+    if [[ ! "${line}" =~ ^SCRIPT_VERSION=\"([0-9.-]+)\"$ ]]; then UPD_ERR="the download has no SCRIPT_VERSION"; return 1; fi
+    v="${BASH_REMATCH[1]}"
+    if [[ "$(ver_to_tag "${v}")" != "${tag}" ]]; then UPD_ERR="the script says version ${v}, not ${tag#v}"; return 1; fi
+    if ! bash -n "${f}" 2>/dev/null; then UPD_ERR="the download does not pass bash -n"; return 1; fi
+    return 0
+}
+
+update_check_main() {
+    local cur_key new_key state="up_to_date"
+    if [[ "${JSON_OUT}" == "-" ]]; then exec 8>&1 1>&2; fi
+    update_latest || die "could not read the latest release of ${UPD_REPO} from GitHub (no network?)."
+    cur_key="$(ver_key "${SCRIPT_VERSION}")"; new_key="$(ver_key "${UPD_TAG}")"
+    if (( new_key > cur_key )); then
+        state="update_available"
+        printf 'New version %s available (installed: %s): run veiltrium --update (or bash %s --update)\n' "${UPD_TAG#v}" "${SCRIPT_VERSION}" "$0"
+    else
+        printf 'Up to date (%s; latest release %s)\n' "${SCRIPT_VERSION}" "${UPD_TAG#v}"
+    fi
+    if [[ -n "${JSON_OUT}" ]]; then
+        printf '{"schema":"veiltrium-update/1","installed":"%s","latest":"%s","status":"%s"}\n' \
+            "${SCRIPT_VERSION}" "${UPD_TAG#v}" "${state}" | json_emit
+    fi
+    return 0
+}
+
+update_main() {
+    local f old ans="" cur_key new_key
+    update_latest || die "could not read the latest release of ${UPD_REPO} from GitHub (no network?)."
+    cur_key="$(ver_key "${SCRIPT_VERSION}")"; new_key="$(ver_key "${UPD_TAG}")"
+    if (( new_key <= cur_key )); then
+        printf 'Up to date (%s; latest release %s). Nothing to do.\n' "${SCRIPT_VERSION}" "${UPD_TAG#v}"
+        return 0
+    fi
+    for old in "${UPD_DIR}"/veiltrium-update.*; do
+        if [[ -f "${old}" && "$(readlink -f -- "${old}")" != "$(readlink -f -- "$0" 2>/dev/null || true)" ]]; then rm -f -- "${old}"; fi
+    done
+    f="$(mktemp --suffix=.sh "${UPD_DIR}/veiltrium-update.XXXXXX")"
+    chmod 700 "${f}"
+    if ! curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 120 --max-filesize 5000000 \
+            -o "${f}" "https://raw.githubusercontent.com/${UPD_REPO}/${UPD_TAG}/veiltrium.sh"; then
+        rm -f -- "${f}"; die "could not download veiltrium.sh ${UPD_TAG} from GitHub."
+    fi
+    if ! update_verify "${f}" "${UPD_TAG}"; then rm -f -- "${f}"; die "refusing to update: ${UPD_ERR}."; fi
+    printf 'Veiltrium %s -> %s (https://github.com/%s/releases/tag/%s)\n' "${SCRIPT_VERSION}" "${UPD_TAG#v}" "${UPD_REPO}" "${UPD_TAG}"
+    printf 'The new script runs as a normal install: it keeps your keys, passwords and clients.\n'
+    printf 'Trust: GitHub over HTTPS (the same as the curl one-liner); there is no signature yet.\n'
+    if [[ "${VT_YES:-0}" != "1" ]]; then
+        printf 'Type yes to continue: ' >&2
+        read -r ans < /dev/tty 2>/dev/null || ans=""
+        if [[ "${ans}" != "yes" ]]; then
+            rm -f -- "${f}"
+            printf 'Cancelled (to run without a question: VT_YES=1).\n'
+            return 0
+        fi
+    fi
+    exec bash "${f}"
+}
+
 usage() {
     banner
     printf '\n'
@@ -2965,6 +3268,11 @@ Settings (environment variables, saved where noted):
                                     to Globalping probes, also every 6 hours; saved; default 1)
   STANDBY_HOSTS=1.2.3.4[,...] | none   standby servers (max 3, same ports) added to every client
                                     link and config, so clients switch if this address is blocked (saved)
+  ALERT_TG_TOKEN + ALERT_TG_CHAT    Telegram bot token and chat id for alerts (saved in
+                                    /etc/veiltrium/alerts.env, root only; "none" clears)
+  ALERT_WEBHOOK=https://...         a URL that gets a JSON POST on every alert (saved; "none" clears)
+                                    Alerts: a service down, no reach from Russia, a rollback. Outbound only.
+  VT_YES=1                          --update without the question
   NODE_NAME=PL | auto | none        node name in client apps: Veiltrium-PL (saved; default:
                                     the server's country, detected once)
   VT_EXPORT_PASSPHRASE / VT_IMPORT_PASSPHRASE   passphrase for --export / --import without a
@@ -3036,6 +3344,10 @@ while (( $# )); do
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
         --check-russia) MODE="check-russia" ;;
+        --watch) MODE="watch" ;;
+        --test-alert) MODE="test-alert" ;;
+        --check-update) MODE="check-update" ;;
+        --update) MODE="update" ;;
         --panel-password) MODE="panel-password" ;;
         --export) MODE="export"; EXPORT_FILE="${2:-}"; [[ -n "${EXPORT_FILE}" ]] || die "--export needs a file name"; shift ;;
         --import) NODE_IMPORT_FILE="${2:-}"; [[ -n "${NODE_IMPORT_FILE}" ]] || die "--import needs the file made by --export"; shift ;;
@@ -3051,9 +3363,11 @@ if [[ -n "${NODE_IMPORT_FILE}" ]]; then
     [[ "${VT_RECONFIGURE}" != "1" ]] || die "--import keeps the secrets of the old node; it cannot be combined with VT_RECONFIGURE=1."
 fi
 [[ "${MTS_MAX_AGE_DAYS}" =~ ^[0-9]{1,3}$ ]] || die "MTS_MAX_AGE_DAYS must be a number of days."
+if [[ "${MODE}" == "check-update" ]]; then LIGHT=1; update_check_main; exit 0; fi
 
 # ---- Preliminary checks (before any changes) --------------------------------
 [[ ${EUID} -eq 0 ]] || die "run as root (for example: sudo -i, then run again)."
+alert_prepare
 
 SCRIPT_PATH="$(readlink -f -- "$0" 2>/dev/null || true)"
 if [[ -n "${SCRIPT_PATH}" && -f "${SCRIPT_PATH}" ]] && \
@@ -3067,9 +3381,14 @@ if [[ "${MODE}" == "helper" ]]; then
     exit 0
 fi
 
+if [[ "${MODE}" == "update" ]]; then LIGHT=1; update_main; exit 0; fi
+
 exec 9>/run/veiltrium.lock
 if [[ "${MODE}" == "install" ]]; then
     flock -n 9 || die "the script is already running (perhaps a previous run is still going after a dropped connection); wait a couple of minutes and run it again."
+elif [[ "${MODE}" == "watch" ]]; then
+    # the timer's check: an install or a client change in progress restarts services on purpose
+    flock -n 9 || exit 0
 else
     # Maintenance modes are short: wait for a panel request or another command instead of failing.
     LOCK_WAIT="${VEILTRIUM_LOCK_WAIT:-90}"
@@ -3096,6 +3415,7 @@ if [[ "${MODE}" != "install" ]]; then
     chmod 700 "${TMPD}"
     # An interrupted change first: its half-written files must not be read as "damaged".
     if txn_pending; then
+        if [[ "${MODE}" == "watch" ]]; then exit 0; fi
         if [[ "${MODE}" == "diagnose" || "${MODE}" == "dry-run" || "${MODE}" == "status" ]]; then
             die "an interrupted change is pending; it is restored automatically within a minute (or by the next install run). Try again then."
         fi
@@ -3119,6 +3439,31 @@ if [[ "${MODE}" != "install" ]]; then
             exit 0 ;;
         import-mts)
             mts_import "${IMPORT_FILE}" || die "no usable results for this server in ${IMPORT_FILE}."
+            exit 0 ;;
+        watch)
+            (( A_ENABLED == 1 )) || exit 0
+            command -v jq >/dev/null 2>&1 || exit 0
+            WATCH_SVCS=()
+            if [[ -n "${H_PASSWORD}" ]]; then WATCH_SVCS+=(hysteria-server); fi
+            if [[ -n "${R_SITE}" ]]; then WATCH_SVCS+=(xray); fi
+            if [[ -n "${T_USER}" ]]; then WATCH_SVCS+=(trusttunnel); fi
+            alert_watch_services "${WATCH_SVCS[@]+"${WATCH_SVCS[@]}"}"
+            exit 0 ;;
+        test-alert)
+            (( A_ENABLED == 1 )) || die "no alert channel is set: give ALERT_TG_TOKEN and ALERT_TG_CHAT and/or ALERT_WEBHOOK."
+            alert_save
+            command -v jq >/dev/null 2>&1 || warn "jq is missing: the webhook cannot be tested (run the installer once)."
+            info "Channels: $(alert_describe)"
+            alert_send "${LABEL} (${PUBLIC_IP:-unknown}): test alert from veiltrium --test-alert. Alerts work." test
+            TA_FAIL=0
+            for TA_CH in "Telegram:${A_RES_TG}" "Webhook:${A_RES_HOOK}"; do
+                case "${TA_CH#*:}" in
+                    off) ;;
+                    ok) ok "${TA_CH%%:*}: delivered" ;;
+                    *) warn "${TA_CH%%:*}: ${TA_CH#*:}"; TA_FAIL=1 ;;
+                esac
+            done
+            if (( TA_FAIL == 1 )); then DIE_CODE=1; die "a test alert was not delivered (see above)."; fi
             exit 0 ;;
         trial-stop)
             trial_stop
@@ -4345,6 +4690,7 @@ if (( HY2_TXN == 1 && HY2_RESTART == 1 )); then
     else
         journalctl -u hysteria-server --no-pager -n 30 || true
         txn_restore hysteria
+        alert_notify rollback "the new Hysteria settings did not work; the previous settings were restored."
         die "the new Hysteria settings did not work; the previous settings (password, certificate, link) were restored."
     fi
 else
@@ -4681,6 +5027,48 @@ else
     systemctl disable --now veiltrium-russia-check.timer >/dev/null 2>&1 || true
 fi
 
+# ---- Alerts: the watch timer exists only while a channel is set -----------------
+alert_save
+cat > "${TMPD}/watch.service" <<EOF
+# veiltrium: service watch for alerts
+[Unit]
+Description=Alert if a proxy service is down (Veiltrium)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${PANEL_LIB}/veiltrium.sh --watch
+EOF
+cat > "${TMPD}/watch.timer" <<'EOF'
+# veiltrium: service watch for alerts
+[Unit]
+Description=Check the proxy services every 5 minutes (Veiltrium)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+WT_CHANGED=0
+for u in service timer; do
+    if ! cmp -s "${TMPD}/watch.${u}" "/etc/systemd/system/veiltrium-watch.${u}"; then
+        install -m 644 "${TMPD}/watch.${u}" "/etc/systemd/system/veiltrium-watch.${u}"
+        WT_CHANGED=1
+    fi
+done
+(( WT_CHANGED == 0 )) || systemctl daemon-reload
+if (( A_ENABLED == 1 )); then
+    systemctl enable veiltrium-watch.timer >/dev/null 2>&1 || true
+    if (( WT_CHANGED == 1 )); then systemctl restart veiltrium-watch.timer >/dev/null 2>&1 || true
+    else systemctl start veiltrium-watch.timer >/dev/null 2>&1 || true; fi
+    info "Alerts on: $(alert_describe); services are checked every 5 minutes (test: bash $0 --test-alert)"
+else
+    systemctl disable --now veiltrium-watch.timer >/dev/null 2>&1 || true
+fi
+
 # =============================================================================
 step 13 "Web panel"
 PANEL_UP=0
@@ -4894,6 +5282,7 @@ fi
 if (( ${#ROLLBACKS[@]} )); then
     printf '\n\033[33mRolled back:\033[0m\n'
     for c in "${ROLLBACKS[@]}"; do info "${c}"; done
+    alert_notify rollback "an install run rolled back: $(printf '%s; ' "${ROLLBACKS[@]}")"
 fi
 info "Report without secrets: ${REPORT_FILE}"
 printf '\n\033[1mServer protection:\033[0m\n'
