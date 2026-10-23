@@ -11,10 +11,9 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
-## [Unreleased]
+## [2026-10-23] - 2026-10-23
 
 Web panel: 0.1.7
-
 
 ### Added
 - The web panel through the VPN, without SSH (`PANEL_VPN`, on by default, saved): a separate
@@ -260,6 +259,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 - First release: Overview and Clients (links, QR codes, AWG Manager JSON, add, revoke), loopback
   only with password login.
 
+[2026-10-23]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.21...v2026.10.23
 [2026-10-21]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.5...v2026.10.21
 [2026-10-20.5]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.4...v2026.10.20.5
 [2026-10-20.4]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.3...v2026.10.20.4
