@@ -13,6 +13,9 @@
 
 ## [Unreleased]
 
+Веб-панель: 0.1.7
+
+
 ### Добавлено
 - Веб-панель через VPN, без SSH (`PANEL_VPN`, включено по умолчанию, сохраняется): отдельный
   профиль VLESS Reality только для администратора, в `/root/veiltrium/panel.txt`. Когда он
@@ -240,6 +243,10 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 
 Панель выпускается отдельно (`panel-vX.Y.Z`; amd64 и arm64 с SHA256SUMS).
 
+### [0.1.7] - 2026-10-23
+- `--host IP`: собственный адрес сервера принимается как имя хоста (панель через VPN).
+- Неудачные попытки входа приостанавливают вход для всех с растущей паузой (от 1 мин, вдвое, до 1 ч).
+
 ### [0.1.6] - 2026-10-21
 - Раздел «Импорт в приложения»: подписка, профиль sing-box и подсказки по приложениям.
 - Резервные ссылки в скачиваемом `.txt` клиента.
@@ -283,6 +290,7 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7
 [0.1.6]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.5...panel-v0.1.6
 [0.1.5]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.4...panel-v0.1.5
 [0.1.4]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.3...panel-v0.1.4

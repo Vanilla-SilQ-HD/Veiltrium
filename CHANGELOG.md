@@ -13,6 +13,9 @@ All notable changes to Veiltrium are recorded here. The format follows
 
 ## [Unreleased]
 
+Web panel: 0.1.7
+
+
 ### Added
 - The web panel through the VPN, without SSH (`PANEL_VPN`, on by default, saved): a separate
   VLESS Reality profile only for the admin, in `/root/veiltrium/panel.txt`. With it connected,
@@ -224,6 +227,10 @@ blocking and transactional changes with automatic rollback.
 
 The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUMS).
 
+### [0.1.7] - 2026-10-23
+- `--host IP`: the server's own address is accepted as a host name (the panel through the VPN).
+- Failed logins pause all logins with an escalating delay (1 min doubling up to 1 h).
+
 ### [0.1.6] - 2026-10-21
 - "Import to apps" section: subscription, sing-box profile and app hints.
 - Standby links in the downloaded client `.txt`.
@@ -264,6 +271,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7
 [0.1.6]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.5...panel-v0.1.6
 [0.1.5]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.4...panel-v0.1.5
 [0.1.4]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.3...panel-v0.1.4

@@ -114,9 +114,9 @@ TT_SHA256_ARM64="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b968
 
 # Veiltrium web panel: this repository's own release, SHA-256 pinned like the proxies.
 # Empty sums: no release pinned yet (the panel is skipped unless PANEL_BINARY is given).
-PANEL_VERSION="panel-v0.1.6"
-PANEL_SHA256_AMD64="a9407f57653b9780b3999c1063a086fb2894427f68c111ab23234b9bab9a71d6"
-PANEL_SHA256_ARM64="54bc82bf7ba148d67a25036c2ba09193b40851034559879c18e252d51ccd9fe5"
+PANEL_VERSION="panel-v0.1.7"
+PANEL_SHA256_AMD64="05de4e5105b7f9d7fb55b47cb4ee9447db5c2a70478e8cf351988a4e9f87bcf0"
+PANEL_SHA256_ARM64="656edd1808f89eeb2ae0a079f1661bb7c3c56e7904263ee090f624f256a126a6"
 
 # ---- Settings (can be overridden with environment variables) ---------------
 HY2_PORT="${HY2_PORT:-443}"
