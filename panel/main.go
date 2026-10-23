@@ -1,5 +1,6 @@
 // veiltrium-panel: the Veiltrium web panel. It listens on the loopback interface only and is
-// reached through an SSH tunnel; every action goes to the root helper (the installer in
+// reached through an SSH tunnel or, by default, through Xray's panel route for the admin
+// VLESS profile (veiltrium.sh, PANEL_VPN); every action goes to the root helper (the installer in
 // --helper mode) over a unix socket, so this process needs no privileges at all.
 package main
 
@@ -46,7 +47,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  veiltrium-panel serve [--listen 127.0.0.1:2096] [--helper /run/veiltrium/helper.sock] [--auth /etc/veiltrium-panel/auth]
+  veiltrium-panel serve [--listen 127.0.0.1:2096] [--helper /run/veiltrium/helper.sock] [--auth /etc/veiltrium-panel/auth] [--host IP]
   veiltrium-panel hash-password   (reads the password from stdin, prints the hash line)
   veiltrium-panel version`)
 }
@@ -56,6 +57,7 @@ func serve(args []string) {
 	listen := fl.String("listen", "127.0.0.1:2096", "address to listen on (loopback only)")
 	socket := fl.String("helper", "/run/veiltrium/helper.sock", "root helper socket")
 	auth := fl.String("auth", "/etc/veiltrium-panel/auth", "file with the password hash")
+	hostIP := fl.String("host", "", "the server's IP address, accepted as the host name (the panel through the VPN)")
 	_ = fl.Parse(args)
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil || !(host == "127.0.0.1" || host == "::1" || host == "localhost") {
@@ -65,9 +67,15 @@ func serve(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	panel := NewServer(&Helper{Socket: *socket}, *auth, static)
+	if *hostIP != "" {
+		if err := panel.AllowHost(*hostIP); err != nil {
+			log.Fatal(err)
+		}
+	}
 	srv := &http.Server{
 		Addr:    *listen,
-		Handler: NewServer(&Helper{Socket: *socket}, *auth, static).Handler(),
+		Handler: panel.Handler(),
 		// no ReadTimeout: it would cancel a request's context while a long helper call
 		// (check-russia, a client change) is still running; bodies are limited in the handlers
 		ReadHeaderTimeout: 10 * time.Second,

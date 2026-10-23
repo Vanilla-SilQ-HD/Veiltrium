@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # CI only: the web panel on an installed node (installed with PANEL_BINARY=<this commit's
-# build>). Loopback only, nothing for the proxies or the outside, a helper that runs only
-# known requests, login and CSRF rules, a real client change through the API, a new
-# password, and a re-run that changes nothing.
+# build>). Loopback only, nothing for the proxies or the outside, the panel's own VLESS Reality
+# profile (and only it) gets through, a helper that runs only known requests, login and CSRF
+# rules, a real client change through the API, a new password, and a re-run that changes nothing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 W="$(mktemp -d)"
@@ -81,6 +81,89 @@ jq -e '.clients[0].name == "main"' "$W/body"
 test "$(code -b "$J" -X POST "$U/api/russia-check")" = 403                     # no CSRF header
 test "$(code -b "$J" -X POST "$U/api/russia-check" "${h[@]}")" = 200
 jq -e '.schema == "veiltrium-russia/1"' "$W/body"
+
+# ---- the panel through VLESS Reality (PANEL_VPN=1, the default) ----------------------------
+# A real Xray client in the outside namespace with the panel's profile from panel.txt: the panel answers on
+# the server's address and a login works; the main client gets nothing there; no raw socket of a proxy
+# service reaches the panel, except Xray's own panel outbound (source 127.0.0.2, the panel's port only).
+sudo cat /root/veiltrium/panel.txt > "$W/panel.txt"
+ADMIN="$(sudo awk -F= '$1=="R_ADMIN_UUID"{print $2}' /usr/local/etc/xray/reality.env)"
+[[ "$ADMIN" =~ ^[0-9a-f-]{36}$ ]]
+grep -E "^  vless://${ADMIN}@[0-9.]+:443\?.*#Veiltrium.*-panel$" "$W/panel.txt" >/dev/null
+SRV="$(sed -n 's#^.*open in the browser:  http://\([0-9.]*\):'"$P"'/$#\1#p' "$W/panel.txt" | tail -n 1)"
+[[ -n "$SRV" && "$SRV" != 127.0.0.1 ]]
+sudo jq -e --arg a "$ADMIN" '(.inbounds[0].settings.clients[-1] == {id: $a, flow: "xtls-rprx-vision", email: "@panel"})
+    and .routing.rules == [{type: "field", user: ["@panel"], network: "tcp", port: "2096", outboundTag: "panel"}]
+    and .outbounds[0].tag == "direct"' /usr/local/etc/xray/config.json
+systemctl show veiltrium-panel -p ExecStart --value | grep -F -- "--host $SRV" >/dev/null
+sudo nft list chain inet veiltrium output | grep -E 'ip saddr 127\.0\.0\.2 ip daddr 127\.0\.0\.1 tcp dport 2096 accept' >/dev/null
+xray_client() {   # $1 = UUID, $2 = SOCKS port: a client like the one in an app, in the outside namespace
+    local pub sid sni
+    pub="$(sudo awk -F= '$1=="R_PUB"{print $2}' /usr/local/etc/xray/reality.env)"
+    sid="$(sudo awk -F= '$1=="R_SID"{print $2}' /usr/local/etc/xray/reality.env)"
+    sni="$(sudo awk -F= '$1=="R_SITE"{print $2}' /usr/local/etc/xray/reality.env)"
+    cat > "$W/x-$2.json" <<EOF
+{"log":{"loglevel":"warning"},"inbounds":[{"listen":"127.0.0.1","port":$2,"protocol":"socks"}],
+ "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"192.0.2.1","port":443,
+   "users":[{"id":"$1","encryption":"none","flow":"xtls-rprx-vision"}]}]},
+   "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"$sni",
+   "fingerprint":"chrome","publicKey":"$pub","shortId":"$sid"}}}]}
+EOF
+    sudo ip netns exec ext /usr/local/bin/xray run -c "$W/x-$2.json" > "$W/x-$2.log" 2>&1 &
+    for _ in $(seq 1 30); do [ -n "$(sudo ip netns exec ext ss -Htln "sport = :$2")" ] && break; sleep 0.3; done
+}
+via() {   # $1 = SOCKS port, then curl arguments: the HTTP code through that client
+    local port="$1"; shift
+    sudo ip netns exec ext curl -s -o "$W/vbody" -w '%{http_code}' --max-time 10 --socks5-hostname "127.0.0.1:$port" "$@" || true
+}
+xray_client "$ADMIN" 18131
+MAINU="$(sudo awk -F= '$1=="R_UUID"{print $2}' /usr/local/etc/xray/reality.env)"
+xray_client "$MAINU" 18132
+VU="http://$SRV:$P"
+test "$(via 18131 "$VU/api/session")" = 401
+test "$(via 18131 "$VU/")" = 200; grep -F '<title>Veiltrium</title>' "$W/vbody" >/dev/null
+test "$(via 18131 -H "Host: evil.example:$P" "$VU/")" = 421
+VJ="$W/vpn-cookies"
+test "$(via 18131 -c "$VJ" -X POST "$VU/api/login" "${h[@]}" -H "Origin: $VU" -d "{\"password\":\"$PW\"}")" = 200
+test "$(via 18131 -b "$VJ" "$VU/api/status")" = 200
+jq -e '.schema == "veiltrium-status/1"' "$W/vbody"
+test "$(via 18131 https://www.gstatic.com/generate_204)" = 204          # the profile is a normal VPN profile too
+test "$(via 18131 http://192.0.2.1:22/)" != 401                       # only the panel's port goes to the panel
+c="$(via 18132 "$VU/api/session")"; echo "main client -> panel: $c"; test "$c" != 401
+c="$(via 18132 "http://127.0.0.1:$P/api/session")"; echo "main client -> 127.0.0.1:$P: $c"; test "$c" != 401
+c="$(via 18132 https://www.gstatic.com/generate_204)"; test "$c" = 204   # the main client itself works
+sudo pkill -f "$W/x-1813" || true
+# raw sockets of the services: only Xray, only from 127.0.0.2, only to the panel's port
+bindto() {   # $1 = user, $2 = source, $3 = port: 0 if the connection was made
+    sudo timeout 5 runuser -u "$1" -- python3 -c 'import socket,sys
+s=socket.socket(); s.settimeout(3); s.bind((sys.argv[1],0)); s.connect(("127.0.0.1",int(sys.argv[2])))' "$2" "$3" 2>/dev/null
+}
+bindto xray 127.0.0.2 "$P"
+for u in hysteria trusttunnel; do if bindto "$u" 127.0.0.2 "$P"; then echo "$u reached the panel from 127.0.0.2"; exit 1; fi; done
+if bindto xray 127.0.0.2 "$(sudo awk -F= '$1=="R_STATS_PORT"{print $2}' /usr/local/etc/xray/reality.env)"; then
+    echo "xray reached another loopback port from 127.0.0.2"; exit 1
+fi
+
+# ---- PANEL_VPN=0 removes the profile (saved); PANEL_VPN=1 brings a new one ---------------------
+sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=0 bash ./veiltrium.sh > "$W/pv0.log" 2>&1 || { tail -40 "$W/pv0.log"; exit 1; }
+if sudo grep -E 'R_ADMIN_UUID|@panel' /usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json; then echo "the panel profile stayed"; exit 1; fi
+sudo jq -e 'has("routing") | not' /usr/local/etc/xray/config.json
+if sudo grep -E '^  vless://' /root/veiltrium/panel.txt; then echo "panel.txt still offers the profile"; exit 1; fi
+if systemctl show veiltrium-panel -p ExecStart --value | grep -F -- '--host'; then echo "the panel still accepts the server address"; exit 1; fi
+if sudo nft list chain inet veiltrium output | grep -F '127.0.0.2'; then echo "the firewall still lets Xray reach the panel"; exit 1; fi
+sudo grep -x 'N_PANEL_VPN=0' /etc/veiltrium/node.env >/dev/null
+test "$(sudo sed -n 's/^Password: //p' /root/veiltrium/panel.txt)" = "$PW"     # the password is kept
+sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=1 bash ./veiltrium.sh > "$W/pv1.log" 2>&1 || { tail -40 "$W/pv1.log"; exit 1; }
+grep -F 'The panel is also reachable through VLESS Reality with its own profile' "$W/pv1.log" >/dev/null   # the installer's own check
+ADMIN2="$(sudo awk -F= '$1=="R_ADMIN_UUID"{print $2}' /usr/local/etc/xray/reality.env)"
+[[ "$ADMIN2" =~ ^[0-9a-f-]{36}$ && "$ADMIN2" != "$ADMIN" ]]
+xray_client "$ADMIN" 18133; xray_client "$ADMIN2" 18134
+c="$(via 18133 "$VU/api/session")"; echo "the old panel profile -> $c"; test "$c" != 401
+test "$(via 18134 "$VU/api/session")" = 401
+sudo pkill -f "$W/x-1813" || true
+# the panel restarted with its new command line: sign in again
+for _ in $(seq 1 20); do [ -n "$(ss -Htln "sport = :$P")" ] && break; sleep 0.3; done
+test "$(code -c "$J" -X POST "$U/api/login" "${h[@]}" -d "{\"password\":\"$PW\"}")" = 200
 
 # ---- a client change through the panel ------------------------------------------------
 test "$(code -b "$J" -X POST "$U/api/clients" -H 'Content-Type: application/json' -d '{"name":"web1"}')" = 403   # no CSRF header

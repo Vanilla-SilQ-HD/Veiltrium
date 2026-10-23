@@ -107,7 +107,7 @@ How Veiltrium compares with typical one-click VPN install scripts (generic; no p
 | Changing a working node | edits in place, a failure leaves a half-configured server | transaction with a real-client check; automatic rollback on error, signal or power loss |
 | Re-running | often regenerates secrets or restarts services | keeps secrets and configs byte for byte, no restarts, no reboot |
 | Service isolation | proxies run as root | own user per proxy, systemd sandbox, egress filter against the server itself, private ranges and port 25 |
-| Admin interface | a public port with a panel | none open: panel on `127.0.0.1`, reached through an SSH tunnel, actions through a root helper with a fixed list of requests |
+| Admin interface | a public port with a panel | none open: panel on `127.0.0.1`, reached through an SSH tunnel or a separate admin VLESS profile, actions through a root helper with a fixed list of requests |
 | Self-signed TLS | `insecure=true` in the link | certificate pinning in links and sing-box JSON |
 | Reachability from Russia | not checked | RKN list filter, Globalping check at install and every 6 hours, optional probe from a home router |
 | Moving a node | reinstall and re-issue every link | encrypted export and import, only the address changes |
@@ -127,6 +127,8 @@ flowchart TB
     E --> I(("Internet"))
 
     A["Admin"] -.->|"ssh -N -L 2096:127.0.0.1:2096"| P["Web panel<br/>127.0.0.1:2096"]
+    A -.->|"admin VLESS profile<br/>http://SERVER_IP:2096/"| R
+    R -.->|"@panel only"| P
     P -->|"unix socket"| HP["Root helper<br/>fixed list of requests"]
     HP --> S["veiltrium.sh<br/>--helper"]
 
@@ -189,6 +191,8 @@ Options without a short form: `--reselect-reality`, `--dry-run`, `--trial-realit
 ```bash
 ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP
 ```
+
+Or without SSH: import the admin VLESS profile from `/root/veiltrium/panel.txt` into a VPN app, connect with it and open `http://SERVER_IP:2096/`.
 
 The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt`. The details are in the web panel entry of the [reference](#reference) below.
 
@@ -258,6 +262,7 @@ Optional settings are environment variables written before the command: `VAR=val
 | `REALITY_FP` | `chrome` | TLS client fingerprint in the VLESS link |
 | `PUBLIC_IP` | detected | server address for the links (behind NAT) |
 | `PANEL_ENABLE`, `PANEL_PORT` | `1`, `2096` | `0` turns the web panel off; the panel's port on `127.0.0.1` (saved) |
+| `PANEL_VPN` | `1` | `0`: the panel through the SSH tunnel only, no admin VLESS profile (saved) |
 | `GLOBALPING` | `1` | `0` turns off the check from Russian networks (it sends the server's address to Globalping); saved |
 | `RU_BLOCKLISTS` | itdoginfo `Categories/block.lst` | URLs of RKN block lists (domains, one per line) |
 | `NODE_NAME` | the server's country | node name in client apps, `Veiltrium-<NODE_NAME>`; saved; `auto` detects the country again, `none` gives just `Veiltrium` |
@@ -436,9 +441,10 @@ ssh -N -L 2096:127.0.0.1:2096 root@SERVER_IP     # keep it open, then browse to 
 ```
 
 - The password is printed at the end of the install and kept in `/root/veiltrium/panel.txt` (root only). `bash /root/veiltrium.sh --panel-password` sets a new one and signs everybody out.
-- **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only; the SSH tunnel is the way in. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
+- **Nothing new is open on the internet.** The panel listens on `127.0.0.1` only. The proxies cannot reach it (the firewall keeps them off the server's own addresses), and the panel itself has no internet access (systemd `IPAddressDeny`).
+- **Two ways in.** The SSH tunnel above, or, by default (`PANEL_VPN=1`), a separate VLESS Reality profile only for the admin: it is in `/root/veiltrium/panel.txt`, not in any client's files. Connect with it in a VPN app and open `http://SERVER_IP:2096/`; the password is still asked. Xray sends that profile's TCP connections to the panel's port (to whatever address) to the panel, from the source address `127.0.0.2`; the firewall lets Xray reach `127.0.0.1:2096` from that address only. So no client profile, no other protocol and nobody on the internet gets to the panel, and no new port is open. The profile works as a normal VPN profile too. Open that address only while the profile is connected: without it the browser goes to the server's address over the open network in plain HTTP, and anyone on the way could answer with a fake page (the SSH tunnel has no such case: `localhost` never leaves the computer). `PANEL_VPN=0` removes the profile (saved); turning it on again gives a new one.
 - **No privileges in the web process.** `veiltrium-panel` (Go, one static binary with the interface embedded) runs as its own user in a systemd sandbox. Every action goes over a unix socket, open only to that user's group, to a root helper that systemd starts per request: this installer in `--helper` mode, which accepts a fixed list of requests (status, list, show, add, remove, reset, set, disable, enable, audit, check-russia) with checked names and runs the same tested code as the command line.
-- Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` host names (no DNS rebinding), a strict Content Security Policy with no external resources, and a lockout after failed logins.
+- Web rules: a session cookie (`HttpOnly`, `SameSite=Strict`), a custom header and same-origin check on every change, only `localhost` and the server's own IP address as host names (no DNS rebinding), a strict Content Security Policy with no external resources. After 5 failed logins every further failure pauses all logins: 1, 2, 4 minutes and so on, up to an hour; the pause stays at an hour; a successful login or a day without failures starts the count again.
 - The binary comes from this repository's releases (`panel-v*`), SHA-256 pinned in the installer like the proxies. `PANEL_ENABLE=0` leaves it out.
 - The command line has the same machine interface: `--status`, `--list-clients`, `--show-client NAME`, `--add-client NAME`, `--remove-client NAME`, `--check-russia`, `--diagnose` and `--dry-run` take `--json -`.
 
@@ -619,7 +625,7 @@ Two levels:
 - reboot simulation;
 - re-runs with live connections through all three protocols;
 - added clients: real clients on every protocol, a re-run with clients, rollback of a failed change, revocation;
-- the web panel: loopback only, out of reach of the proxies, the helper's request rules, login and CSRF rules, a client change through the API, a new password, a re-run that changes nothing;
+- the web panel: loopback only, out of reach of the proxies, the admin VLESS profile from outside (it reaches the panel and signs in, the main profile and the raw sockets of the services do not; `PANEL_VPN=0` and back), the helper's request rules, login and CSRF rules, a client change through the API, a new password, a re-run that changes nothing;
 - rollback: SIGINT, SIGTERM, SIGKILL with the watchdog, a simulated power loss, systemd start failures;
 - local test sites for Reality selection (invalid certificate, no HTTP/2, a dead CDN address, timeouts, NXDOMAIN);
 - the Keenetic probe under BusyBox with policy routing, redirects, NAT and a VPN given as the WAN;

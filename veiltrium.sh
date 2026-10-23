@@ -158,6 +158,8 @@ PANEL_ENABLE="${PANEL_ENABLE:-1}"              # 0: no web panel
 PANEL_PORT_GIVEN="${PANEL_PORT:+1}"             # given explicitly: change the port; else keep the node's
 PANEL_PORT="${PANEL_PORT:-2096}"               # the panel listens on 127.0.0.1 only (SSH tunnel)
 PANEL_BINARY="${PANEL_BINARY:-}"               # a local panel binary instead of the release (tests)
+PANEL_VPN="${PANEL_VPN:-}"                     # 1 (default, saved): the panel also through VLESS Reality, with a
+                                               # separate admin profile (no new open port); 0: SSH tunnel only
 SCANNER_BLOCK="${SCANNER_BLOCK:-1}"            # 1: proxy ports stay silent for known scanner networks
 VT_RECONFIGURE="${VT_RECONFIGURE:-${HY2_RECONFIGURE:-0}}"   # 1: new passwords, keys and certificates
 VT_AUTO_REBOOT="${VT_AUTO_REBOOT:-${HY2_AUTO_REBOOT:-1}}"   # 1: a NEW node reboots in a minute if updates require it
@@ -260,6 +262,10 @@ CLIENT_LIMIT_MAX=1000000000000000
 H_AUTH=""; HY2_AUTH_MAIN=""
 # Loopback statistics endpoints of the proxies (traffic counters); empty on a node from before them.
 H_STATS_PORT=""; H_STATS_SECRET=""; R_STATS_PORT=""; T_STATS_PORT=""
+# The panel's VLESS profile (PANEL_VPN=1): its own UUID, only in the production config; empty = off.
+R_ADMIN_UUID=""
+PANEL_VPN_EMAIL="@panel"                       # never a client name (CLIENT_RE): the routing and statistics key
+PANEL_VPN_SRC="127.0.0.2"                      # the source address of Xray's way to the panel (the firewall's key)
 N_NAME=""; LABEL="Veiltrium"
 N_STANDBY=""; STANDBY=(); STANDBY_ERR=""
 
@@ -459,7 +465,7 @@ HELPER_SET_RE='^set-client ([a-z0-9][a-z0-9_-]{0,31}) limit=(none|[0-9]{1,16}) e
 
 # The saved node name. Sets N_NAME (may be empty), N_SAVED (1: a choice was saved) and LABEL.
 load_node_name() {
-    N_NAME=""; N_SAVED=0; N_GLOBALPING=""; N_STANDBY=""
+    N_NAME=""; N_SAVED=0; N_GLOBALPING=""; N_STANDBY=""; N_PANEL_VPN=""
     if [[ -s "${NODE_ENV}" ]]; then
         # shellcheck disable=SC1090
         source "${NODE_ENV}"
@@ -471,6 +477,9 @@ load_node_name() {
     # GLOBALPING: explicit setting, else the saved one, else on
     if [[ -z "${GLOBALPING}" ]]; then GLOBALPING="${N_GLOBALPING:-1}"; fi
     [[ "${GLOBALPING}" == "0" || "${GLOBALPING}" == "1" ]] || GLOBALPING=1
+    # PANEL_VPN: explicit setting, else the saved one, else on
+    if [[ -z "${PANEL_VPN}" ]]; then PANEL_VPN="${N_PANEL_VPN:-1}"; fi
+    [[ "${PANEL_VPN}" == "0" || "${PANEL_VPN}" == "1" ]] || PANEL_VPN=1
     # STANDBY_HOSTS: explicit setting ("none" clears), else the saved list, else none
     if [[ -n "${STANDBY_HOSTS}" ]]; then N_STANDBY="${STANDBY_HOSTS}"; fi
     standby_parse "${N_STANDBY}" || die "${STANDBY_ERR}"
@@ -525,6 +534,7 @@ save_node_name() {   # $1 = 1: the name is a choice (explicit, detected or "none
         if [[ "${1:-1}" == "1" ]]; then printf 'N_NAME=%q\n' "${N_NAME}"; fi
         printf 'N_GLOBALPING=%q\n' "${GLOBALPING}"
         if [[ -n "${N_STANDBY}" ]]; then printf 'N_STANDBY=%q\n' "${N_STANDBY}"; fi
+        printf 'N_PANEL_VPN=%q\n' "${PANEL_VPN:-1}"
     } > "${NODE_ENV}.new"
     mv -f "${NODE_ENV}.new" "${NODE_ENV}"
     LABEL="Veiltrium${N_NAME:+-${N_NAME}}"
@@ -660,7 +670,7 @@ tt_export_link() {
 
 # Reality keys and site from a previous run. Sets R_UUID, R_PRIV, R_PUB, R_SID, R_SITE.
 load_reality_state() {
-    R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""; R_STATS_PORT=""
+    R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""; R_STATS_PORT=""; R_ADMIN_UUID=""
     if [[ "${VT_RECONFIGURE}" != "1" && -s "${XRAY_STATE}" ]]; then
         # shellcheck disable=SC1090
         source "${XRAY_STATE}"
@@ -671,10 +681,11 @@ load_reality_state() {
         if [[ "${VT_RECONFIGURE}" != "1" && -e "${XRAY_STATE}" && -e "${CLIENT_FILE}" ]]; then
             die "${XRAY_STATE} is damaged; nothing was changed. New keys (clients must be updated): VT_RECONFIGURE=1 bash $0"
         fi
-        R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""; R_STATS_PORT=""
+        R_UUID=""; R_PRIV=""; R_PUB=""; R_SID=""; R_SITE=""; R_STATS_PORT=""; R_ADMIN_UUID=""
     fi
     [[ -z "${R_SITE}" || "${R_SITE}" =~ ${DOMAIN_RE} ]] || R_SITE=""
     [[ "${R_STATS_PORT}" =~ ^[0-9]{1,5}$ ]] || R_STATS_PORT=""   # empty: a node from before the traffic counters
+    [[ "${R_ADMIN_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || R_ADMIN_UUID=""
     return 0
 }
 
@@ -847,6 +858,7 @@ tunnel_probe() {
 # the text is exactly what earlier versions wrote, so updates do not restart Xray.
 reality_server_json() {
     local out="$1" listen="$2" port="$3" site="$4" names n listen_line="" clients i stats_lines="" main_email=""
+    local routing_lines="" panel_outbound=""
     shift 4
     names="\"${site}\""
     for n in "$@"; do names+=", \"${n}\""; done
@@ -866,6 +878,14 @@ reality_server_json() {
         if [[ "${CL_STATE[i]:-}" == "disabled" ]]; then continue; fi
         clients+=", {\"id\": \"${CL_UUID[i]}\", \"flow\": \"xtls-rprx-vision\", \"email\": \"${CL_NAMES[i]}\"}"
     done
+    # The panel profile (production and trial configs only): its TCP connections to the panel's port, whatever
+    # the address, go to the panel on 127.0.0.1 from PANEL_VPN_SRC. The firewall lets Xray reach the panel
+    # from that source address only, so no other user (and no other outbound) gets there.
+    if [[ -n "${R_ADMIN_UUID}" && -z "${listen}" ]]; then
+        clients+=", {\"id\": \"${R_ADMIN_UUID}\", \"flow\": \"xtls-rprx-vision\", \"email\": \"${PANEL_VPN_EMAIL}\"}"
+        routing_lines="  \"routing\": {\"rules\": [{\"type\": \"field\", \"user\": [\"${PANEL_VPN_EMAIL}\"], \"network\": \"tcp\", \"port\": \"${PANEL_PORT}\", \"outboundTag\": \"panel\"}]},"$'\n'
+        panel_outbound=", {\"protocol\": \"freedom\", \"tag\": \"panel\", \"sendThrough\": \"${PANEL_VPN_SRC}\", \"settings\": {\"redirect\": \"127.0.0.1:${PANEL_PORT}\"}}"
+    fi
     cat > "${out}" <<EOF
 {
   "log": {"loglevel": "warning"},
@@ -884,7 +904,7 @@ ${listen_line}    "port": ${port},
       }
     }
   }],
-  "outbounds": [{"protocol": "freedom", "tag": "direct"}]
+${routing_lines}  "outbounds": [{"protocol": "freedom", "tag": "direct"}${panel_outbound}]
 }
 EOF
 }
@@ -908,6 +928,25 @@ EOF
     wait_tcp_port "$4" || true
 }
 reality_client_stop() { stop_pid "${CLIENT_PID}"; CLIENT_PID=""; rm -f "${TMPD}/reality-client.json"; }
+
+# The panel through VLESS Reality, with a real client of the panel's profile: the panel answers on the
+# server's address (401: sign in first), and the main client does not get there. PV_STATUS = ok | fail.
+panel_vpn_check() {
+    local cport code main
+    PV_STATUS="fail"
+    cport="$(free_port)"
+    RC_UUID="${R_ADMIN_UUID}" reality_client_start "${R_SITE}" 127.0.0.1 "${REALITY_PORT}" "${cport}"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --socks5-hostname "127.0.0.1:${cport}" \
+        "http://${PUBLIC_IP}:${PANEL_PORT}/api/session" 2>/dev/null || true)"
+    reality_client_stop
+    cport="$(free_port)"
+    reality_client_start "${R_SITE}" 127.0.0.1 "${REALITY_PORT}" "${cport}"
+    main="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --socks5-hostname "127.0.0.1:${cport}" \
+        "http://${PUBLIC_IP}:${PANEL_PORT}/api/session" 2>/dev/null || true)"
+    reality_client_stop
+    if [[ "${code}" == "401" && "${main}" != "401" ]]; then PV_STATUS="ok"; fi
+    return 0
+}
 
 # What a prober without the key sees on $1:$2 with SNI $3: the real, valid certificate?
 fallback_ok() {
@@ -1379,6 +1418,7 @@ save_reality_state() {
     printf 'R_UUID=%q\nR_PRIV=%q\nR_PUB=%q\nR_SID=%q\nR_SITE=%q\n' \
         "${R_UUID}" "${R_PRIV}" "${R_PUB}" "${R_SID}" "${R_SITE}" > "${XRAY_STATE}.new"
     if [[ -n "${R_STATS_PORT}" ]]; then printf 'R_STATS_PORT=%q\n' "${R_STATS_PORT}" >> "${XRAY_STATE}.new"; fi
+    if [[ -n "${R_ADMIN_UUID}" ]]; then printf 'R_ADMIN_UUID=%q\n' "${R_ADMIN_UUID}" >> "${XRAY_STATE}.new"; fi
     mv -f "${XRAY_STATE}.new" "${XRAY_STATE}"
 }
 
@@ -3452,22 +3492,64 @@ panel_new_password() {
     install -m 640 -o root -g veiltrium-panel /dev/null "${PANEL_AUTH}.new"
     printf '%s\n' "${pw}" | "${PANEL_BIN}" hash-password > "${PANEL_AUTH}.new" || die "could not hash the panel password."
     mv -f "${PANEL_AUTH}.new" "${PANEL_AUTH}"
+    panel_file_write "$1" "${pw}" "Veiltrium web panel ($(date '+%Y-%m-%d %H:%M %Z'))"
+    systemctl try-restart veiltrium-panel.service >/dev/null 2>&1 || true
+    return 0
+}
+
+# panel.txt: the password and both ways in. $1 = server address, $2 = password, $3 = the first line
+# (when the password was set). Replaced only when the text changes.
+panel_file_write() {
     install -d -m 700 "${VT_ROOT_DIR}"
     install -m 600 /dev/null "${PANEL_FILE}.new"
-    cat > "${PANEL_FILE}.new" <<EOF
-Veiltrium web panel ($(date '+%Y-%m-%d %H:%M %Z'))
+    {
+        cat <<EOF
+$3
 Keep this secret.
 
-Password: ${pw}
+Password: $2
 
 The panel listens on 127.0.0.1 only: nothing new is open on the internet.
 Open it through an SSH tunnel from your computer (PowerShell or a terminal):
   ssh -N -L ${PANEL_PORT}:127.0.0.1:${PANEL_PORT} root@$1
 then in the browser:  http://localhost:${PANEL_PORT}/
-New password (signs everybody out):  bash veiltrium.sh --panel-password
 EOF
-    mv -f "${PANEL_FILE}.new" "${PANEL_FILE}"
-    systemctl try-restart veiltrium-panel.service >/dev/null 2>&1 || true
+        if [[ -n "${R_ADMIN_UUID}" && -n "${R_SITE}" ]] && panel_vpn_live; then
+            cat <<EOF
+
+Or through the VPN, without SSH (phone or computer):
+1. Import this VLESS profile into a VPN app (v2rayN, Hiddify, NekoBox, sing-box) and connect with it.
+   It is for you only: it opens the panel's page (the password is still asked) and is not a client's link.
+  $(vless_link "${R_ADMIN_UUID}" "$1" "${LABEL}-panel")
+2. While it is connected, open in the browser:  http://$1:${PANEL_PORT}/
+   (Other profiles and the internet cannot reach this address: the port is not open.)
+   Only with this profile connected: without it the browser goes to that address over the open
+   network in plain HTTP, where anyone on the way could answer with a fake page. Never type the
+   password into a page you opened without the profile.
+Turn it off: PANEL_VPN=0 bash veiltrium.sh (turning it on again gives a new profile).
+EOF
+        fi
+        printf 'New password (signs everybody out):  bash veiltrium.sh --panel-password\n'
+    } > "${PANEL_FILE}.new"
+    if cmp -s "${PANEL_FILE}.new" "${PANEL_FILE}"; then rm -f "${PANEL_FILE}.new"; else mv -f "${PANEL_FILE}.new" "${PANEL_FILE}"; fi
+    return 0
+}
+
+# Does the installed panel accept the server's address as its host name (the VPN way works)?
+panel_vpn_live() {
+    grep -E '^ExecStart=.* --host [0-9.]+$' /etc/systemd/system/veiltrium-panel.service >/dev/null 2>&1
+}
+
+# Keeps panel.txt in step with the node (the VPN profile, the port) without a new password.
+# $1 = server address. A file without the password line (deleted by hand) says how to get a new one.
+panel_file_refresh() {
+    local pw="" head=""
+    if [[ -s "${PANEL_FILE}" ]]; then
+        head="$(head -n 1 "${PANEL_FILE}")"
+        pw="$(sed -n 's/^Password: \([A-Za-z0-9]\{12,256\}\)$/\1/p' "${PANEL_FILE}" | head -n 1 || true)"
+    fi
+    [[ "${head}" == "Veiltrium web panel ("*")" ]] || head="Veiltrium web panel"
+    panel_file_write "$1" "${pw:-(not stored here; a new one: bash veiltrium.sh --panel-password)}" "${head}"
     return 0
 }
 
@@ -3560,13 +3642,13 @@ env_value_ok() {
             p=$((10#${v})); (( p >= 1 && p <= 65535 )) ;;
         H_MASQ) [[ "${v}" == "auto" || "${v}" =~ ^https?://[A-Za-z0-9._~:/?#@\&+,=%-]+$ ]] ;;
         H_AUTH) [[ "${v}" == "password" || "${v}" == "userpass" ]] ;;
-        R_UUID|C_UUID) [[ "${v}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ;;
+        R_UUID|R_ADMIN_UUID|C_UUID) [[ "${v}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ;;
         R_PRIV|R_PUB) [[ "${v}" =~ ^[A-Za-z0-9_-]{43}$ ]] ;;
         R_SID) [[ "${v}" =~ ^[0-9a-f]{16}$ ]] ;;
         T_USER) [[ "${v}" =~ ^[A-Za-z0-9_-]{1,32}$ ]] ;;
         T_IPV6) [[ -z "${v}" || "${v}" == "true" || "${v}" == "false" ]] ;;
         N_NAME) [[ -z "${v}" || "${v}" =~ ${NAME_RE} ]] ;;
-        N_GLOBALPING) [[ "${v}" == "0" || "${v}" == "1" ]] ;;
+        N_GLOBALPING|N_PANEL_VPN) [[ "${v}" == "0" || "${v}" == "1" ]] ;;
         N_STANDBY)   # what save_node_name writes: 1-3 distinct public IPv4 addresses, comma-separated
             ( standby_parse "${v}" ) && [[ -n "${v}" && "${v}" != "none" && "${v}" =~ ^[0-9.]+(,[0-9.]+){0,2}$ ]] ;;
         PROBE_KEY) [[ "${v}" =~ ^[0-9a-f]{64}$ ]] ;;
@@ -3666,9 +3748,9 @@ export_tree_ok() {
         case "${rel}" in
             meta|MANIFEST) ;;
             hysteria/node.env) env_file_ok "${f}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET" || { echo "bad ${rel}"; return 1; } ;;
-            reality/reality.env) env_file_ok "${f}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT" || { echo "bad ${rel}"; return 1; } ;;
+            reality/reality.env) env_file_ok "${f}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT R_ADMIN_UUID" || { echo "bad ${rel}"; return 1; } ;;
             trusttunnel/node.env) env_file_ok "${f}" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT" || { echo "bad ${rel}"; return 1; } ;;
-            veiltrium/node.env) env_file_ok "${f}" "" "N_NAME N_GLOBALPING N_STANDBY" || { echo "bad ${rel}"; return 1; } ;;
+            veiltrium/node.env) env_file_ok "${f}" "" "N_NAME N_GLOBALPING N_STANDBY N_PANEL_VPN" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/probe.env) env_file_ok "${f}" "PROBE_KEY PROBE_SERVER" "" || { echo "bad ${rel}"; return 1; } ;;
             veiltrium/reality-candidates)
                 cnt=0
@@ -4610,6 +4692,8 @@ Settings (environment variables, saved where noted):
   TT_SNI=name | auto                TrustTunnel hostname and certificate name (saved)
   PANEL_ENABLE=0                    no web panel (it listens on 127.0.0.1 only; SSH tunnel)
   PANEL_PORT=2096                   the panel's port on 127.0.0.1 (saved)
+  PANEL_VPN=0                       the panel through the SSH tunnel only (default 1: also through
+                                    VLESS Reality with a separate admin profile, see panel.txt; saved)
   GLOBALPING=0                      no check from Russian networks (it sends the server's address
                                     to Globalping probes, also every 6 hours; saved; default 1)
   STANDBY_HOSTS=1.2.3.4[,...] | none   standby servers (max 3, same ports) added to every client
@@ -5165,7 +5249,11 @@ apply_firewall() {
     local scan_rules="" scan_include=""
     if [[ "${reality_on}" == "1" ]]; then
         reality_in="        # VLESS Reality (TCP)"$'\n'"        tcp dport ${REALITY_PORT} accept"$'\n'
-        reality_out="        meta skuid ${XRAY_UID} jump proxy_egress"$'\n'
+        if [[ "${PANEL_ENABLE}" == "1" && "${PANEL_VPN}" == "1" ]]; then
+            # the panel through VLESS Reality: only Xray's panel outbound binds this source address
+            reality_out="        meta skuid ${XRAY_UID} ip saddr ${PANEL_VPN_SRC} ip daddr 127.0.0.1 tcp dport ${PANEL_PORT} accept"$'\n'
+        fi
+        reality_out+="        meta skuid ${XRAY_UID} jump proxy_egress"$'\n'
         reality_egress="        tcp sport ${REALITY_PORT} accept"$'\n'
     fi
     if [[ "${TT_ENABLE}" == "1" ]]; then
@@ -5331,6 +5419,7 @@ load_ports
     || die "TT_PORT must be a number from 1 to 65535."
 [[ "${PANEL_PORT}" =~ ^[0-9]{1,5}$ ]] && (( PANEL_PORT >= 1 && PANEL_PORT <= 65535 )) \
     || die "PANEL_PORT must be a number from 1 to 65535."
+[[ -z "${PANEL_VPN}" || "${PANEL_VPN}" == "0" || "${PANEL_VPN}" == "1" ]] || die "PANEL_VPN must be 0 or 1."
 if [[ "${TT_ENABLE}" == "1" ]] && (( TT_PORT == HY2_PORT || TT_PORT == REALITY_PORT )); then
     die "TT_PORT must differ from HY2_PORT and REALITY_PORT (TrustTunnel uses both TCP and UDP)."
 fi
@@ -5995,6 +6084,25 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
     [[ "${R_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ && \
        "${R_PRIV}" =~ ^[A-Za-z0-9_-]{43}$ && "${R_PUB}" =~ ^[A-Za-z0-9_-]{43}$ && \
        "${R_SID}" =~ ^[0-9a-f]{16}$ ]] || die "Xray produced keys in an unexpected format."
+    # The panel's own VLESS profile (PANEL_VPN=1): kept between runs; turning it off removes it, and
+    # turning it on again gives a new one.
+    PREV_ADMIN="${R_ADMIN_UUID}"
+    if [[ "${PANEL_ENABLE}" == "1" && "${PANEL_VPN}" == "1" ]]; then
+        if [[ -z "${R_ADMIN_UUID}" ]]; then R_ADMIN_UUID="$("${XRAY_BIN}" uuid)"; fi
+        [[ "${R_ADMIN_UUID}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+            || die "Xray produced a UUID in an unexpected format."
+    else
+        R_ADMIN_UUID=""
+    fi
+    if [[ -n "${PREV_SITE}" && "${PREV_ADMIN}" != "${R_ADMIN_UUID}" ]]; then
+        if [[ -n "${R_ADMIN_UUID}" && -n "${PREV_ADMIN}" ]]; then
+            CHANGES+=("panel: a new VLESS profile for the panel (see ${PANEL_FILE}); the old one no longer works")
+        elif [[ -n "${R_ADMIN_UUID}" ]]; then
+            CHANGES+=("panel: also reachable through VLESS Reality with its own profile (see ${PANEL_FILE}; off: PANEL_VPN=0)")
+        else
+            CHANGES+=("panel: no longer reachable through VLESS Reality (its profile was removed)")
+        fi
+    fi
     # Traffic counters: the statistics API listens on a loopback port of its own (kept between runs).
     R_STATS_PORT="$(stats_port_pick "${R_STATS_PORT}" xray "${REALITY_PORT}" "${HY2_PORT}" "${TT_PORT}" "${PANEL_PORT}" "${H_STATS_PORT}")"
     systemctl enable xray.service >/dev/null 2>&1
@@ -6640,6 +6748,10 @@ info "Traffic per client is counted (read every 5 minutes): bash $0 --traffic"
 # =============================================================================
 step 13 "Web panel"
 PANEL_UP=0
+# The panel's VLESS profile only if Xray runs with it (a rolled-back Reality change keeps the previous config).
+if [[ -n "${R_ADMIN_UUID}" ]] && ! grep -F -- "\"${R_ADMIN_UUID}\"" "${XRAY_DIR}/config.json" >/dev/null 2>&1; then
+    R_ADMIN_UUID=""
+fi
 PANEL_SKIPPED=0
 if [[ "${PANEL_ENABLE}" != "1" ]]; then
     if systemctl cat veiltrium-panel.service >/dev/null 2>&1; then
@@ -6722,8 +6834,16 @@ StandardOutput=socket
 StandardError=journal
 TimeoutStopSec=6min
 EOF
+        # Through VLESS Reality the browser names the server's address: the panel accepts that host name too.
+        # (Only a panel that knows the option: an older one would not start with it.)
+        PANEL_HOST_ARG=""
+        if [[ -n "${R_ADMIN_UUID}" && "$("${PANEL_BIN}" 2>&1 || true)" == *"[--host IP]"* ]]; then
+            PANEL_HOST_ARG=" --host ${PUBLIC_IP}"
+        elif [[ -n "${R_ADMIN_UUID}" ]]; then
+            warn "This web panel is too old for the way through the VPN; the SSH tunnel works. Run the script again later."
+        fi
         cat > /etc/systemd/system/veiltrium-panel.service <<EOF
-# veiltrium: Veiltrium web panel; 127.0.0.1 only, reached through an SSH tunnel
+# veiltrium: Veiltrium web panel; 127.0.0.1 only, reached through an SSH tunnel or the panel's VLESS profile
 [Unit]
 Description=Veiltrium web panel
 After=network.target veiltrium-helper.socket
@@ -6732,7 +6852,7 @@ Wants=veiltrium-helper.socket
 [Service]
 User=veiltrium-panel
 Group=veiltrium-panel
-ExecStart=${PANEL_BIN} serve --listen 127.0.0.1:${PANEL_PORT} --helper ${HELPER_SOCK} --auth ${PANEL_AUTH}
+ExecStart=${PANEL_BIN} serve --listen 127.0.0.1:${PANEL_PORT} --helper ${HELPER_SOCK} --auth ${PANEL_AUTH}${PANEL_HOST_ARG}
 CapabilityBoundingSet=
 AmbientCapabilities=
 NoNewPrivileges=true
@@ -6777,6 +6897,8 @@ EOF
         if [[ ! -s "${PANEL_AUTH}" ]]; then
             panel_new_password "${PUBLIC_IP}"
             CHANGES+=("panel: installed; its password is in ${PANEL_FILE}")
+        else
+            panel_file_refresh "${PUBLIC_IP}"
         fi
         chown root:veiltrium-panel "${PANEL_ETC}" "${PANEL_AUTH}"
         chmod 750 "${PANEL_ETC}"; chmod 640 "${PANEL_AUTH}"
@@ -6791,6 +6913,14 @@ EOF
         done
         if (( PANEL_UP == 1 )) && [[ -S "${HELPER_SOCK}" ]]; then
             ok "Web panel $("${PANEL_BIN}" version 2>/dev/null || echo '?') on 127.0.0.1:${PANEL_PORT} (not reachable from outside; SSH tunnel)"
+            if [[ -n "${R_ADMIN_UUID}" ]] && panel_vpn_live; then
+                panel_vpn_check
+                if [[ "${PV_STATUS}" == "ok" ]]; then
+                    ok "The panel is also reachable through VLESS Reality with its own profile (in ${PANEL_FILE}; checked)"
+                else
+                    warn "The panel's VLESS profile did not reach the panel in a check; the SSH tunnel works as before."
+                fi
+            fi
             SECURITY_SCORE="$(systemd-analyze security veiltrium-panel.service --no-pager 2>/dev/null | tail -1 | grep -oE '[0-9]+\.[0-9]+ [A-Z_]+' || true)"
             if [[ -n "${SECURITY_SCORE}" ]]; then ok "systemd sandbox score for the panel: ${SECURITY_SCORE}"; fi
         else

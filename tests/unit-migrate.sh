@@ -44,6 +44,7 @@ mknode() {   # $1 = root, $2 = Hysteria password
     save_hy2_state
     newcert "${HY2_CERT}" "${HY2_KEY}" www.sony.com
     R_UUID="11111111-2222-4333-8444-555555555551"; R_PRIV="${key43}"; R_PUB="${pub43}"; R_SID="0123456789abcdef"; R_SITE="www.amazon.com"
+    R_ADMIN_UUID="11111111-2222-4333-8444-555555555559"
     save_reality_state
     T_USER="u1234abcd"; T_PASS="${c48}"; T_SNI="www.nvidia.com"; TT_IPV6=false
     printf 'T_USER=%q\nT_PASS=%q\nT_SNI=%q\nT_IPV6=%q\nT_STATS_PORT=%q\n' "${T_USER}" "${T_PASS}" "${T_SNI}" "${TT_IPV6}" 34569 > "${TT_STATE}"
@@ -64,7 +65,8 @@ mknode "${T}/src" "${a48}"
 check "$(env_file_ok "${HY2_STATE}" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET"; echo $?)" 0 "validator: the Hysteria state with a URL (printf %q escapes) and the counters passes"
 check "$(grep -c '\\' "${HY2_STATE}")" 1 "the saved masquerade URL really contains escapes"
 check "$(grep -c '^H_STATS_PORT=34567$' "${HY2_STATE}")" 1 "the state files written by the installer carry the counter keys (Hysteria)"
-check "$(env_file_ok "${XRAY_STATE}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; echo $?)" 0 "validator: reality.env (with the counter port) passes"
+check "$(env_file_ok "${XRAY_STATE}" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT R_ADMIN_UUID"; echo $?)" 0 "validator: reality.env (with the counter port and the panel profile) passes"
+check "$(grep -c '^R_ADMIN_UUID=11111111-2222-4333-8444-555555555559$' "${XRAY_STATE}")" 1 "reality.env carries the panel profile"
 check "$(env_file_ok "${TT_STATE}" "T_USER T_PASS T_SNI" "T_IPV6 T_STATS_PORT"; echo $?)" 0 "validator: the TrustTunnel state (with the counter port) passes"
 # state files from before the counters (no such keys) still pass: old exports import
 printf 'H_PASSWORD=%s\nH_SNI=www.sony.com\nH_PORT=443\nH_MASQ=auto\nH_AUTH=userpass\n' "${a48}" > "${T}/old-h.env"
@@ -78,9 +80,10 @@ for v in "H_STATS_PORT=80" "H_STATS_PORT=65536" "H_STATS_PORT=abc" "H_STATS_PORT
     if env_file_ok "${T}/bad-h.env" "H_PASSWORD H_SNI H_PORT" "H_MASQ H_AUTH H_STATS_PORT H_STATS_SECRET"; then r=accepted; else r=refused; fi
     check "${r}" refused "validator refuses ${v}"
 done
-for v in "R_STATS_PORT=0" "R_STATS_PORT=1023" "R_STATS_PORT=70000" "R_STATS_PORT=\`id\`"; do
+for v in "R_STATS_PORT=0" "R_STATS_PORT=1023" "R_STATS_PORT=70000" "R_STATS_PORT=\`id\`" "R_ADMIN_UUID=main" "R_ADMIN_UUID=\$(id)" \
+         "R_ADMIN_UUID=11111111-2222-4333-8444-55555555555"; do
     { cat "${T}/old-r.env"; printf '%s\n' "${v}"; } > "${T}/bad-r.env"
-    if env_file_ok "${T}/bad-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; then r=accepted; else r=refused; fi
+    if env_file_ok "${T}/bad-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT R_ADMIN_UUID"; then r=accepted; else r=refused; fi
     check "${r}" refused "validator refuses ${v}"
 done
 for v in "T_STATS_PORT=99999" "T_STATS_PORT=-1" "T_STATS_PORT=1 2"; do
@@ -92,11 +95,15 @@ done
 { cat "${T}/old-r.env"; printf 'H_STATS_PORT=34567\n'; } > "${T}/bad-r.env"
 if env_file_ok "${T}/bad-r.env" "R_UUID R_PRIV R_PUB R_SID R_SITE" "R_STATS_PORT"; then r=accepted; else r=refused; fi
 check "${r}" refused "validator refuses a Hysteria counter key in reality.env"
-check "$(env_file_ok "${NODE_ENV}" "" "N_NAME N_GLOBALPING N_STANDBY"; echo $?)" 0 "validator: the node file with its comment and the standby list passes"
+check "$(env_file_ok "${NODE_ENV}" "" "N_NAME N_GLOBALPING N_STANDBY N_PANEL_VPN"; echo $?)" 0 "validator: the node file with its comment and the standby list passes"
+check "$(grep -c '^N_PANEL_VPN=1$' "${NODE_ENV}")" 1 "save_node_name writes the panel-through-VPN choice (default on)"
+printf 'N_PANEL_VPN=2\n' > "${T}/bad-n.env"
+if env_file_ok "${T}/bad-n.env" "" "N_PANEL_VPN"; then r=accepted; else r=refused; fi
+check "${r}" refused "validator refuses N_PANEL_VPN=2"
 check "$(grep -cF 'N_STANDBY=8.8.8.8\,1.1.1.1' "${NODE_ENV}")" 1 "save_node_name writes the standby list (comma escaped by printf %q)"
 badnode() {   # name, N_STANDBY value as written to node.env
     printf 'N_GLOBALPING=1\nN_STANDBY=%s\n' "$2" > "${T}/bad-n.env"
-    if env_file_ok "${T}/bad-n.env" "" "N_NAME N_GLOBALPING N_STANDBY"; then check accepted refused "validator refuses $1"; else check refused refused "validator refuses $1"; fi
+    if env_file_ok "${T}/bad-n.env" "" "N_NAME N_GLOBALPING N_STANDBY N_PANEL_VPN"; then check accepted refused "validator refuses $1"; else check refused refused "validator refuses $1"; fi
 }
 printf 'N_STANDBY=9.9.9.9\n' > "${T}/ok-n.env"
 check "$(env_file_ok "${T}/ok-n.env" "" "N_STANDBY"; echo $?)" 0 "validator: a single standby address passes"

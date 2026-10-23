@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -378,6 +379,114 @@ func TestHostAndRateLimit(t *testing.T) {
 	}
 	if ck, code := login(t, ts, c, "correct horse battery"); ck != nil || code != 429 {
 		t.Fatalf("after 5 failures the right password must wait: %d", code)
+	}
+}
+
+// TestServerHost: the server's own address (the panel through the VPN) is accepted only when given,
+// and only as an IP address.
+func TestServerHost(t *testing.T) {
+	s := NewServer(&Helper{}, "", fstest.MapFS{})
+	for _, bad := range []string{"", "panel.example", "203.0.113.7:2096", "localhost"} {
+		if s.AllowHost(bad) == nil {
+			t.Errorf("AllowHost(%q) accepted", bad)
+		}
+	}
+	h := s.Handler()
+	get := func(host string) int {
+		req := httptest.NewRequest("GET", "/api/session", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := get("203.0.113.7:2096"); code != http.StatusMisdirectedRequest {
+		t.Fatalf("server address before AllowHost: %d", code)
+	}
+	if err := s.AllowHost("203.0.113.7"); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"203.0.113.7:2096", "203.0.113.7"} {
+		if code := get(host); code != http.StatusUnauthorized {
+			t.Errorf("%s: %d (want 401: allowed, not signed in)", host, code)
+		}
+	}
+	for _, host := range []string{"203.0.113.8:2096", "203.0.113.7.nip.io:2096", "evil.example"} {
+		if code := get(host); code != http.StatusMisdirectedRequest {
+			t.Errorf("%s: %d", host, code)
+		}
+	}
+}
+
+// TestLoginBackoff: after 5 failures every further one pauses logins for 1, 2, 4 ... 60 min;
+// the pause stays at an hour; a success or a day without failures starts the count again.
+func TestLoginBackoff(t *testing.T) {
+	sock, _ := fakeHelper(t, func(string) string { return "::exit 0\n" })
+	auth := filepath.Join(t.TempDir(), "auth")
+	hash, _ := HashPassword("correct horse battery")
+	if err := os.WriteFile(auth, []byte(hash+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := NewServer(&Helper{Socket: sock}, auth, fstest.MapFS{})
+	clock := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return clock }
+	h := s.Handler()
+	try := func(pw string) (int, string) {
+		req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"password":"`+pw+`"}`))
+		req.Host = "127.0.0.1:2096"
+		req.Header.Set(csrfHeader, "1")
+		req.Header.Set("Origin", "http://127.0.0.1:2096")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Header().Get("Retry-After")
+	}
+	for i := 0; i < 4; i++ {
+		if code, _ := try("wrong password!"); code != http.StatusUnauthorized {
+			t.Fatalf("failure %d: %d", i+1, code)
+		}
+	}
+	if code, _ := try("wrong password!"); code != http.StatusUnauthorized { // the 5th: checked, then the pause
+		t.Fatalf("failure 5: %d", code)
+	}
+	for _, want := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute} {
+		code, ra := try("correct horse battery")
+		if code != http.StatusTooManyRequests || ra != strconv.Itoa(int(want/time.Second)) {
+			t.Fatalf("paused for %v: %d, Retry-After %q", want, code, ra)
+		}
+		clock = clock.Add(want)
+		if code, _ := try("wrong password!"); code != http.StatusUnauthorized {
+			t.Fatalf("after the pause of %v: %d", want, code)
+		}
+	}
+	for i := 0; i < 10; i++ { // the pause stops growing at an hour and stays there
+		clock = clock.Add(time.Hour + time.Second)
+		if code, _ := try("wrong password!"); code != http.StatusUnauthorized {
+			t.Fatalf("failure after the pause %d: %d", i, code)
+		}
+	}
+	if _, ra := try("correct horse battery"); ra != "3600" {
+		t.Fatalf("the longest pause: Retry-After %q", ra)
+	}
+	clock = clock.Add(time.Hour + time.Second)
+	if code, _ := try("correct horse battery"); code != http.StatusOK {
+		t.Fatalf("right password after the pause: %d", code)
+	}
+	for i := 0; i < 4; i++ { // a success started the count again
+		try("wrong password!")
+	}
+	if code, _ := try("correct horse battery"); code != http.StatusOK {
+		t.Fatalf("4 failures after a success must not pause: %d", code)
+	}
+	for i := 0; i < 5; i++ {
+		try("wrong password!")
+	}
+	clock = clock.Add(25 * time.Hour) // a day without failures: the pause is over and the count forgotten
+	for i := 0; i < 4; i++ {
+		if code, _ := try("wrong password!"); code != http.StatusUnauthorized {
+			t.Fatalf("a day later, failure %d: %d", i+1, code)
+		}
+	}
+	if code, _ := try("correct horse battery"); code != http.StatusOK {
+		t.Fatalf("a day later the count starts again: %d", code)
 	}
 }
 

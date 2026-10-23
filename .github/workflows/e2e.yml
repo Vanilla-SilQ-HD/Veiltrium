@@ -696,9 +696,9 @@ jobs:
           keyview() {
             sudo sha256sum $KEYS
             for f in /etc/hysteria/node.env /usr/local/etc/xray/reality.env /etc/trusttunnel/node.env; do
-              echo "== $f"; sudo grep -v '_STATS_' "$f"
+              echo "== $f"; sudo grep -v -e '_STATS_' -e '^R_ADMIN_UUID=' "$f"
             done
-            sudo jq -S '{port: .inbounds[0].port, clients: [.inbounds[0].settings.clients[] | {id, flow}],
+            sudo jq -S '{port: .inbounds[0].port, clients: [.inbounds[0].settings.clients[] | select(.email != "@panel") | {id, flow}],
               reality: .inbounds[0].streamSettings.realitySettings}' /usr/local/etc/xray/config.json
           }
           keys0="$(keyview)"
@@ -739,6 +739,9 @@ jobs:
           # the one expected restart of the move: the new config has its statistics endpoints
           sudo grep -E '^H_STATS_PORT=' /etc/hysteria/node.env >/dev/null
           sudo jq -e '.inbounds[0].settings.clients[0].email == "main"' /usr/local/etc/xray/config.json >/dev/null
+          # and the panel's own VLESS profile (PANEL_VPN, on by default), offered in panel.txt
+          sudo jq -e '.inbounds[0].settings.clients[-1].email == "@panel" and .routing.rules[0].outboundTag == "panel"' /usr/local/etc/xray/config.json >/dev/null
+          sudo grep -E '^  vless://.*-panel$' /root/veiltrium/panel.txt >/dev/null
           creds1="$(creds /root/veiltrium/client.txt /root/veiltrium/clients/anna.txt)"
           [ "$creds0" = "$creds1" ] || { echo "links changed"; diff <(echo "$creds0") <(echo "$creds1") | sed -E 's/[0-9a-f]{20,}/<secret>/g'; exit 1; }
           [ "$state0" = "$(sudo cat /etc/veiltrium/probe.env; sudo grep -E '^C_(UUID|HY2_PASS|TT_PASS)=' /etc/veiltrium/clients/anna.env)" ] || { echo "probe key or client secrets changed"; exit 1; }

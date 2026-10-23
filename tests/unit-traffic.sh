@@ -64,6 +64,33 @@ check "$(grep -cE '"api"|"stats"|"policy"' "${T}/xr-test.json")" 0 "a loopback t
 reality_server_json "${T}/xr-trial.json" "" 443 www.amazon.com www.yahoo.com
 check "$(jq -r '.api.listen' "${T}/xr-trial.json")" "127.0.0.1:34568" "a trial config keeps the statistics endpoint (counters survive a trial)"
 
+# ---- the panel through VLESS Reality (PANEL_VPN) ------------------------------------------
+check "$(grep -cE 'routing|"panel"|@panel' "${T}/xr-1.json")" 0 "Xray config without the panel profile: no routing, no panel outbound"
+R_ADMIN_UUID="11111111-2222-4333-8444-555555555559"; PANEL_PORT=2096
+reality_server_json "${T}/xr-pv.json" "" 443 www.amazon.com; reality_server_json "${T}/xr-pv2.json" "" 443 www.amazon.com
+check "$(cmp -s "${T}/xr-pv.json" "${T}/xr-pv2.json" && echo same)" same "Xray config with the panel profile: two generations are byte-identical"
+check "$(jq -r '[.inbounds[0].settings.clients[] | .email + "=" + .id] | join(",")' "${T}/xr-pv.json")" \
+    "main=${R_UUID},anna=11111111-2222-4333-8444-555555555552,@panel=${R_ADMIN_UUID}" "the panel profile is the last client, email @panel"
+check "$(jq -c '.routing.rules' "${T}/xr-pv.json")" \
+    '[{"type":"field","user":["@panel"],"network":"tcp","port":"2096","outboundTag":"panel"}]' "routing: only the @panel user, TCP to the panel port"
+check "$(jq -c '.outbounds' "${T}/xr-pv.json")" \
+    '[{"protocol":"freedom","tag":"direct"},{"protocol":"freedom","tag":"panel","sendThrough":"127.0.0.2","settings":{"redirect":"127.0.0.1:2096"}}]' \
+    "outbounds: direct stays first (the default), the panel outbound binds 127.0.0.2 and goes to the panel only"
+check "$(diff <(jq -S 'del(.routing) | .outbounds |= .[:1] | .inbounds[0].settings.clients |= .[:-1]' "${T}/xr-pv.json") \
+    <(jq -S . "${T}/xr-1.json") >/dev/null && echo same)" same "the panel profile adds nothing else"
+reality_server_json "${T}/xr-pv-test.json" 127.0.0.1 40000 www.amazon.com
+check "$(grep -cE 'routing|@panel|127\.0\.0\.2' "${T}/xr-pv-test.json")" 0 "a loopback test server never carries the panel profile"
+reality_server_json "${T}/xr-pv-trial.json" "" 443 www.amazon.com www.yahoo.com
+check "$(jq -r '.routing.rules[0].user[0]' "${T}/xr-pv-trial.json")" "@panel" "a trial config keeps the panel profile"
+check "$([[ "${PANEL_VPN_EMAIL}" =~ ${CLIENT_RE} ]] && echo clash || echo distinct)" distinct "the panel profile's email can never be a client name"
+save_reality_state
+check "$(env_get "${XRAY_STATE}" R_ADMIN_UUID)" "${R_ADMIN_UUID}" "reality.env keeps the panel profile"
+R_ADMIN_UUID=""; VT_RECONFIGURE=0; load_reality_state
+check "${R_ADMIN_UUID}" "11111111-2222-4333-8444-555555555559" "load_reality_state reads the panel profile back"
+sed -i 's/^R_ADMIN_UUID=.*/R_ADMIN_UUID=bad/' "${XRAY_STATE}"; load_reality_state
+check "${R_ADMIN_UUID}|${R_SITE}" "|www.amazon.com" "a damaged panel profile is dropped, the keys stay"
+R_ADMIN_UUID=""; sed -i '/^R_ADMIN_UUID=/d' "${XRAY_STATE}"
+
 # ---- saved state -------------------------------------------------------------------------
 HY2_SNI="www.sony.com"; H_MASQ=auto
 save_hy2_state

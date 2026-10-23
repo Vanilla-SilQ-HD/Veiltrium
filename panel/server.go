@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"log"
@@ -23,6 +24,14 @@ const (
 	sessionIdle   = 2 * time.Hour
 	sessionMax    = 12 * time.Hour
 	csrfHeader    = "X-Veiltrium"
+
+	// Failed logins: the first loginFree are free, then every failure pauses all logins, for
+	// loginPause doubling up to loginPauseMax. A day without failures (or a success) starts the
+	// count again: longer than the longest pause, so the pause stays at its cap.
+	loginFree     = 5
+	loginPause    = time.Minute
+	loginPauseMax = time.Hour
+	loginForget   = 24 * time.Hour
 )
 
 type session struct {
@@ -34,10 +43,15 @@ type Server struct {
 	authFile string
 	static   fs.FS
 
-	mu       sync.Mutex
-	sessions map[string]*session
-	failures []time.Time // failed logins, for the rate limit
-	busy     bool        // a client change is running
+	hosts map[string]bool // host names besides localhost: the server's address (the panel through the VPN)
+	now   func() time.Time
+
+	mu          sync.Mutex
+	sessions    map[string]*session
+	failCount   int       // failed logins in a row, for the rate limit
+	lastFail    time.Time // the latest of them
+	lockedUntil time.Time // no password check before this
+	busy        bool      // a client change is running
 
 	// one helper call at a time: each one runs the installer, which takes a lock on the
 	// server; concurrent page loads (status + clients) would otherwise collide on it
@@ -47,7 +61,19 @@ type Server struct {
 }
 
 func NewServer(helper *Helper, authFile string, static fs.FS) *Server {
-	return &Server{helper: helper, authFile: authFile, static: static, sessions: map[string]*session{}}
+	return &Server{helper: helper, authFile: authFile, static: static, sessions: map[string]*session{},
+		hosts: map[string]bool{}, now: time.Now}
+}
+
+// AllowHost lets the browser name the server by this IP address (the panel reached through the
+// VPN: http://IP:PORT/). Only an address: a host name could be pointed elsewhere (DNS rebinding).
+func (s *Server) AllowHost(addr string) error {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return errors.New("--host must be an IP address, got " + strconv.Quote(addr))
+	}
+	s.hosts[ip.String()] = true
+	return nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -72,7 +98,7 @@ func (s *Server) Handler() http.Handler {
 	return s.guard(mux)
 }
 
-// guard: local host names only (a DNS-rebinding page cannot talk to the panel), the same
+// guard: local host names and the server's own address only (a DNS-rebinding page cannot talk to the panel), the same
 // origin and a custom header on every API change (no cross-site requests), strict headers.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -84,8 +110,8 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
-		if !localHost(r.Host) {
-			http.Error(w, "use the SSH tunnel: http://localhost:<port>/", http.StatusMisdirectedRequest)
+		if !localHost(r.Host) && !s.hosts[hostIP(r.Host)] {
+			http.Error(w, "use the SSH tunnel (http://localhost:<port>/) or the panel's VPN profile", http.StatusMisdirectedRequest)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -110,6 +136,18 @@ func localHost(hostport string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
+// hostIP: the address in a Host header in canonical form, or "" if it is not an IP address.
+func hostIP(hostport string) string {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
 // sameOrigin: an Origin header (browsers send it on POST and DELETE) must name this host.
 func sameOrigin(r *http.Request) bool {
 	o := r.Header.Get("Origin")
@@ -132,19 +170,18 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
-	now := time.Now()
+	now := s.now()
 	s.mu.Lock()
-	recent := s.failures[:0]
-	for _, t := range s.failures {
-		if now.Sub(t) < 5*time.Minute {
-			recent = append(recent, t)
-		}
+	if s.failCount > 0 && now.Sub(s.lastFail) > loginForget {
+		s.failCount = 0
 	}
-	s.failures = recent
-	limited := len(recent) >= 5
+	wait := s.lockedUntil.Sub(now)
 	s.mu.Unlock()
-	if limited {
-		writeError(w, http.StatusTooManyRequests, "too many failed attempts; try again in a few minutes")
+	if wait > 0 {
+		secs := int((wait + time.Second - 1) / time.Second)
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		writeError(w, http.StatusTooManyRequests,
+			"too many failed attempts; try again in "+strconv.Itoa((secs+59)/60)+" min")
 		return
 	}
 	hash, err := readHash(s.authFile)
@@ -155,14 +192,26 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if !VerifyPassword(hash, body.Password) {
 		s.mu.Lock()
-		s.failures = append(s.failures, now)
+		s.failCount++
+		s.lastFail = now
+		if n := s.failCount - loginFree; n >= 0 {
+			pause := loginPauseMax
+			if n < 7 { // 1, 2, 4 ... 64 min: the cap is reached before the shift overflows
+				pause = min(loginPause<<n, loginPauseMax)
+			}
+			s.lockedUntil = now.Add(pause)
+		}
+		count := s.failCount
 		s.mu.Unlock()
+		log.Printf("login: wrong password (%d in a row)", count)
 		time.Sleep(500 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "wrong password")
 		return
 	}
 	id := randomID()
 	s.mu.Lock()
+	s.failCount = 0
+	s.lockedUntil = time.Time{}
 	s.sessions[id] = &session{created: now, seen: now}
 	s.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: id, Path: "/", HttpOnly: true,

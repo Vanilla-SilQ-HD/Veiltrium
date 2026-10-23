@@ -11,6 +11,28 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
+## [Unreleased]
+
+### Added
+- The web panel through the VPN, without SSH (`PANEL_VPN`, on by default, saved): a separate
+  VLESS Reality profile only for the admin, in `/root/veiltrium/panel.txt`. With it connected,
+  `http://SERVER_IP:2096/` opens the panel (the password is still asked). Xray routes only that
+  profile's connections to the panel's port to the panel, from the source address `127.0.0.2`,
+  and the firewall lets Xray reach the panel from that address only: client profiles, the other
+  protocols and the internet do not get there, and no port is opened. The installer checks it
+  with a real client. `PANEL_VPN=0` removes the profile.
+- Web panel: `--host IP` accepts the server's own address as a host name (IP addresses only).
+
+### Changed
+- Web panel: failed logins pause all logins after the fifth, for 1, 2, 4 minutes and so on up
+  to an hour (was: 5 failures in 5 minutes, then a fixed pause); a success or a day without
+  failures starts the count again.
+- `panel.txt` is kept up to date on every run (the password stays).
+
+### Upgrade notes
+- The first run of this version adds the panel profile to the Xray config, so Xray restarts
+  once. Client links do not change.
+
 ## [2026-10-21] - 2026-10-21
 
 Web panel: 0.1.6
