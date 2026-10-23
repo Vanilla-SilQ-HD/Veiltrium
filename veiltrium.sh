@@ -6748,8 +6748,9 @@ info "Traffic per client is counted (read every 5 minutes): bash $0 --traffic"
 # =============================================================================
 step 13 "Web panel"
 PANEL_UP=0
-# The panel's VLESS profile only if Xray runs with it (a rolled-back Reality change keeps the previous config).
-if [[ -n "${R_ADMIN_UUID}" ]] && ! grep -F -- "\"${R_ADMIN_UUID}\"" "${XRAY_DIR}/config.json" >/dev/null 2>&1; then
+# The panel's VLESS profile only if Xray runs with it (a rolled-back Reality change keeps the previous config;
+# Reality that works with no site is stopped).
+if [[ -n "${R_ADMIN_UUID}" ]] && { [[ -z "${R_SITE}" ]] || ! grep -F -- "\"${R_ADMIN_UUID}\"" "${XRAY_DIR}/config.json" >/dev/null 2>&1; }; then
     R_ADMIN_UUID=""
 fi
 PANEL_SKIPPED=0
@@ -6757,6 +6758,7 @@ if [[ "${PANEL_ENABLE}" != "1" ]]; then
     if systemctl cat veiltrium-panel.service >/dev/null 2>&1; then
         systemctl disable --now veiltrium-panel.service veiltrium-helper.socket >/dev/null 2>&1 || true
         info "The web panel was turned off (PANEL_ENABLE=0)."
+        if [[ -s "${PANEL_FILE}" ]]; then panel_file_refresh "${PUBLIC_IP}"; fi   # no VPN profile in it any more
     else
         info "The web panel is off (PANEL_ENABLE=0)."
     fi
