@@ -167,7 +167,7 @@
   </div>
 
   {#key c.name + c.hysteria2.link + (c.vless?.link ?? '') + c.state}
-    <DeviceSetup {c} />
+    <DeviceSetup {c} bind:reveal />
   {/key}
 
   <details>

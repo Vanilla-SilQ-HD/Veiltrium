@@ -4,11 +4,10 @@
   import CopyField from './CopyField.svelte';
   import QR from './QR.svelte';
 
-  let { c } = $props();
+  let { c, reveal = $bindable(false) } = $props();
   let step = $state(1);
   let device = $state('android');
   let kind = $state('vless');
-  let reveal = $state(false);
   let opened = $state(false);
   let transfer = $state(false);
   let done = $state(false);
