@@ -460,9 +460,12 @@ test -n "$(ssh-keyscan -T 5 127.0.0.1 2> /dev/null | grep -F 'ssh-')" || fail "s
 # a second uninstall finds nothing
 instenv VT_YES=uninstall --uninstall > "$W/un2.log" 2>&1 || { cat "$W/un2.log"; exit 1; }
 # a fresh install from the export
-instenv GLOBALPING=0 PANEL_BINARY=/tmp/veiltrium-panel VT_IMPORT_PASSPHRASE="$PASS" --import "$EXPF" > "$W/imp.log" 2>&1 \
+panel_args=()
+if [[ "${RELEASE_PANEL:-false}" != true ]]; then panel_args+=(PANEL_BINARY=/tmp/veiltrium-panel); fi
+instenv GLOBALPING=0 "${panel_args[@]}" VT_IMPORT_PASSPHRASE="$PASS" --import "$EXPF" > "$W/imp.log" 2>&1 \
     || { tail -60 "$W/imp.log"; exit 1; }
 grep -F 'Imported the node of' "$W/imp.log" > /dev/null
+if [[ "${RELEASE_PANEL:-false}" == true ]]; then bash tests/release-panel-ci.sh; fi
 if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then fail "the import logged an error"; fi
 links1="$(creds "$MAIN" "$CF")"
 [ "$links0" = "$links1" ] || { echo "links changed:"; diff <(echo "$links0") <(echo "$links1") | sed -E 's/[0-9a-f]{20,}/<secret>/g'; exit 1; }
