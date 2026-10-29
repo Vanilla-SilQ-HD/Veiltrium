@@ -53,6 +53,7 @@
     flash(t('cl.downloaded', { file }));
   }
   let profileManual = $state(false);
+  $effect(() => { void profileText; void reveal; profileManual = false; });
   async function copyProfile() {
     try {
       await navigator.clipboard.writeText(profileText);

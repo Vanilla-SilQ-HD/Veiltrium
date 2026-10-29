@@ -10,7 +10,13 @@ SKIPPED=()
 have() { command -v "$1" >/dev/null 2>&1; }
 run() {
     local out
-    if out="$("$@" 2>&1)"; then echo "ok    $*"; else echo "FAIL  $*"; printf '%s\n' "${out}" | tail -n 40; FAIL=1; fi
+    if out="$("$@" 2>&1)"; then echo "ok    $*"; else
+        echo "FAIL  $*"
+        # Keep the actual failed assertions even when a long suite ends with many successes.
+        printf '%s\n' "${out}" | awk '/^FAIL|^ERROR/ { print }'
+        printf '%s\n' "${out}" | tail -n 40
+        FAIL=1
+    fi
 }
 
 for f in veiltrium.sh tests/*.sh; do run bash -n "${f}"; done

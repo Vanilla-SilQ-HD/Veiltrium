@@ -5,6 +5,8 @@
 
   let { title, hint, value, shown, multiline = false } = $props();
   let manual = $state(false);
+  // Changing clients or hiding secrets must also close a previously revealed fallback.
+  $effect(() => { void value; void shown; manual = false; });
 
   async function copy() {
     try {

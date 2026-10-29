@@ -64,8 +64,8 @@
       <p class="m-0 text-xs text-muted">{t('setup.activate.' + device)}</p>
     {:else}
       <p class="m-0 text-sm">{t('setup.testIntro')}</p>
-      <label class="flex items-start gap-3"><input type="checkbox" bind:checked={opened} class="mt-1" /><span>{t('setup.opened')}</span></label>
-      <label class="flex items-start gap-3"><input type="checkbox" bind:checked={transfer} class="mt-1" /><span>{t('setup.transfer')}</span></label>
+      <label class="flex items-start gap-3"><input type="checkbox" bind:checked={opened} onchange={() => (done = false)} class="mt-1" /><span>{t('setup.opened')}</span></label>
+      <label class="flex items-start gap-3"><input type="checkbox" bind:checked={transfer} onchange={() => (done = false)} class="mt-1" /><span>{t('setup.transfer')}</span></label>
       <p class="m-0 text-xs text-muted">{t('setup.testNote')}</p>
       {#if done}<p role="status" class="m-0 rounded-lg bg-ok-soft p-3 text-ok">{t('setup.done')}</p>{/if}
       <details class="text-sm"><summary class="cursor-pointer text-accent">{t('setup.trouble')}</summary><p class="text-muted">{t('setup.troubleText')}</p></details>
