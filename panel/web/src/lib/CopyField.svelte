@@ -4,13 +4,15 @@
   import { flash } from './toast.svelte.js';
 
   let { title, hint, value, shown, multiline = false } = $props();
+  let manual = $state(false);
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(value);
+      manual = false;
       flash(t('common.copied', { what: title }));
     } catch {
-      flash(t('common.error'));
+      manual = true;
     }
   }
 </script>
@@ -28,4 +30,11 @@
       <Icon name="copy" size={16} />
     </button>
   </div>
+  {#if manual}
+    <label class="flex flex-col gap-1 text-xs text-muted">
+      {t('common.copyManual')}
+      <textarea readonly value={value} onfocus={(e) => e.currentTarget.select()} rows={multiline ? 6 : 3}
+        class="w-full min-w-0 rounded-lg border border-line bg-bg p-2 font-mono text-xs text-fg" aria-label={t('common.copy', { what: title })}></textarea>
+    </label>
+  {/if}
 </div>

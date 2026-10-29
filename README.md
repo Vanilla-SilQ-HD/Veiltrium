@@ -242,6 +242,35 @@ To switch clients automatically instead, deploy the second VPS from an export an
 
 </details>
 
+### Connection health and device setup
+
+The web overview separates service status, Globalping address reachability and actual home-network tunnel transfers. Every result has a timestamp. Address evidence expires after 12 hours; home probes after `MTS_MAX_AGE_DAYS` (14 days by default). A TCP reply is not proof of a working VPN, and a missing reply alone does not prove a block. The overview suggests diagnostics, another address check, a router probe or device setup.
+
+The client card offers a four-step guide: device → app and format → import → browsing and a transfer larger than 1 MB. Android, iPhone/iPad, Windows and Keenetic/AWG Manager are covered. Full JSON is for apps that explicitly import complete sing-box configurations; using the sing-box core alone does not guarantee this. Existing links and QR codes remain in expandable advanced details. Final checkboxes record the user's confirmation in this tab, not measurements by the panel.
+
+### Checking standby state
+
+On the standby server run:
+
+```bash
+veiltrium standby-receipt
+```
+
+Paste the full `vt-standby-1|…` line into the primary panel: Overview → Standby state → Check / instructions. Terminal equivalent:
+
+```bash
+veiltrium verify-standby 'vt-standby-1|…'
+veiltrium standby-status
+```
+
+Both servers need a script version that supports these commands. The standby must come from the same node export with the shared probe key, and its address must appear in the primary's `STANDBY_HOSTS`. A receipt contains no credentials: HMAC with the shared key authenticates both its snapshot and its fingerprint. It is a statement by a holder of that key, not independent server attestation.
+
+The comparison covers main and added client credentials, restrictions and states, certificates, protocol server names and ports. Local addresses, node labels, panel admin accounts, statistics ports and traffic counters may differ. A match means only **the saved configuration matched at the snapshot time**. It lasts 24 hours; the remote node may change afterwards. It does not verify reachability, the process's applied configuration or tunnel operation. Local changes are detected on the next overview refresh. Invalid signatures, unconfigured addresses, expired or future snapshots are rejected; older receipts cannot replace newer ones.
+
+Disable, revoke, credential reset and restrictions apply only to the local server. Old credentials may keep working on a standby. The panel warns before these changes. Export the primary to a new encrypted archive, copy it to the standby and run `bash veiltrium.sh --import /root/node-backup.enc` there; then generate and verify a new receipt. Exports with changed main-client shared credentials may require a clean target under the existing import identity rules. Reimport device profiles after port or server-name changes.
+
+Traffic quotas are **per server**, without a shared counter or automatic synchronization. Timers may independently disable a client for quota or expiry; that also changes the compared state.
+
 ## Settings
 
 Optional settings are environment variables written before the command: `VAR=value bash veiltrium.sh`. Most are saved, so later runs keep them.

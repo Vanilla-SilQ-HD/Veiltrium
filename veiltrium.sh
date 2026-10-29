@@ -36,6 +36,9 @@
 #  REALITY_CANDIDATES) are saved and stay in effect on later runs.
 #
 #  Modes:
+#    --standby-status          compare recorded standby state snapshots
+#    --standby-receipt         print a signed state snapshot (valid 24 h)
+#    --verify-standby TOKEN    record a configured standby's signed snapshot
 #    bash veiltrium.sh                     install / update / repair
 #    bash veiltrium.sh --update            download the newest release, check it, run it as an install
 #    bash veiltrium.sh --check-update      is a newer release out? (no changes)
@@ -1469,6 +1472,17 @@ mts_status() {
     return 0
 }
 
+# Timestamp of the newest non-skipped record used by mts_status (including stale records).
+mts_checked_at() {
+    local ts
+    [[ -s "${MTS_RECORDS}" ]] || return 0
+    ts="$(awk -F'|' -v t="$1" -v s="$2" '
+        $1 == "v2" && ($6 == t || (t == "reality" && $6 == "reality_trial")) && $7 == s && $10 != "skipped" {print $2}' \
+        "${MTS_RECORDS}" | sort -n | tail -n 1)"
+    if [[ "${ts}" =~ ^[0-9]{9,11}$ ]]; then date -u -d "@${ts}" +%FT%TZ 2>/dev/null || true; fi
+    return 0
+}
+
 # $1 = file or "-" (stdin)
 mts_import() {
     local src="$1" i n hdr hmac f_ts f_run f_ip f_wan f_n f_hash rec mac now ok
@@ -2446,6 +2460,95 @@ remove_old_names() {
     return 0
 }
 
+# ---- Standby state receipts: offline, authenticated snapshots, not live probes ----
+# A receipt contains no credentials. The shared probe key authenticates the snapshot
+# and keys its fingerprint, so the fingerprint is not a password-guessing oracle.
+# Local addresses, panel accounts, stats ports, counters and labels intentionally differ.
+STANDBY_RECEIPT_RE='^vt-standby-1\|([0-9.]{7,15})\|([0-9]{9,11})\|([0-9a-f]{64})\|([0-9a-f]{64})$'
+STANDBY_MAX_AGE=86400
+
+standby_fingerprint() {
+    local doc i hc="" tc=""
+    [[ "${PROBE_KEY:-}" =~ ^[0-9a-f]{64}$ ]] || return 1
+    if [[ -s "${HY2_CERT}" ]]; then hc="$(cert_sha256 "${HY2_CERT}")"; fi
+    if [[ -s "${TT_DIR}/cert.pem" ]]; then tc="$(cert_sha256 "${TT_DIR}/cert.pem")"; fi
+    doc="$({
+        printf '%s\n' vt-state-1 hysteria "${H_AUTH}" "${H_PASSWORD}" "${H_SNI}" "${HY2_PORT}" "${H_MASQ}" "${hc}"
+        printf '%s\n' reality "${R_SITE}" "${REALITY_PORT}" "${R_PRIV}" "${R_PUB}" "${R_UUID}" "${R_SID}"
+        printf '%s\n' trusttunnel "${T_USER}" "${T_PASS}" "${T_SNI}" "${TT_PORT}" "${tc}"
+        for (( i = 0; i < ${#CL_NAMES[@]}; i++ )); do
+            printf '%s\n' client "${CL_NAMES[i]}" "${CL_UUID[i]}" "${CL_HPASS[i]}" "${CL_TPASS[i]}" \
+                "${CL_LIMIT[i]:-}" "${CL_EXPIRES[i]:-}" "${CL_RESET[i]:-none}" "${CL_STATE[i]:-active}" "${CL_REASON[i]:-}"
+        done
+    })"
+    hmac_sha256_hex "${PROBE_KEY}" "${doc}"
+}
+
+standby_receipt() {
+    local fp line
+    is_public_ipv4 "${PUBLIC_IP:-}" || return 1
+    fp="$(standby_fingerprint)" || return 1
+    line="vt-standby-1|${PUBLIC_IP}|$(date +%s)|${fp}"
+    printf '%s|%s\n' "${line}" "$(hmac_sha256_hex "${PROBE_KEY}" "${line}")"
+}
+
+# Validates the full token before deriving a path or using a value. Sets SR_*.
+standby_receipt_valid() {
+    local token="$1" now="${2:-$(date +%s)}" line mac
+    [[ "${token}" =~ ${STANDBY_RECEIPT_RE} ]] || return 1
+    SR_IP="${BASH_REMATCH[1]}"; SR_TS="${BASH_REMATCH[2]}"; SR_FP="${BASH_REMATCH[3]}"; mac="${BASH_REMATCH[4]}"
+    [[ "${PROBE_KEY:-}" =~ ^[0-9a-f]{64}$ ]] || return 1
+    is_public_ipv4 "${SR_IP}" || return 1
+    (( 10#${SR_TS} <= now + 300 && now - 10#${SR_TS} <= STANDBY_MAX_AGE )) || return 1
+    line="${token%|*}"
+    [[ "$(hmac_sha256_hex "${PROBE_KEY}" "${line}")" == "${mac}" ]]
+}
+
+standby_status_json() {
+    local fp="" receipt="" ip token status ts rows="" now
+    now="$(date +%s)"
+    fp="$(standby_fingerprint)" || fp=""
+    receipt="$(standby_receipt)" || receipt=""
+    for ip in "${STANDBY[@]+"${STANDBY[@]}"}"; do
+        status=unverified; ts=""; token=""
+        if [[ -s "${STATE_DIR}/standby/${ip}.receipt" ]]; then
+            token="$(head -c 512 "${STATE_DIR}/standby/${ip}.receipt")"
+            if [[ "${token}" =~ ${STANDBY_RECEIPT_RE} ]]; then
+                # A previously stored receipt is reauthenticated, including after key rotation.
+                if standby_receipt_valid "${token}" "${BASH_REMATCH[2]}"; then
+                    ts="${SR_TS}"
+                    if [[ -z "${fp}" || "${SR_FP}" != "${fp}" ]]; then status=changed
+                    elif (( now - 10#${ts} > STANDBY_MAX_AGE || 10#${ts} > now + 300 )); then status=stale
+                    else status=matching; fi
+                fi
+            fi
+        fi
+        rows+="$(jq -nc --arg ip "${ip}" --arg state "${status}" --arg ts "${ts}" \
+            '{server:$ip,state:$state,checked_at:(if $ts == "" then null else ($ts|tonumber|todateiso8601) end)}')"$'\n'
+    done
+    printf '%s' "${rows}" | jq -s --arg receipt "${receipt}" --arg fp "${fp}" --argjson age "${STANDBY_MAX_AGE}" \
+        '{schema:"veiltrium-standby/1",fingerprint:(if $fp == "" then null else $fp end),
+          local_receipt:(if $receipt == "" then null else $receipt end),max_age_seconds:$age,servers:.}'
+}
+
+standby_verify() {
+    local token="$1" old="" ip="" receipt_configured=0
+    standby_receipt_valid "${token}" || die "invalid, foreign or expired standby receipt (valid for 24 hours; check the clocks and shared probe key)."
+    for ip in "${STANDBY[@]+"${STANDBY[@]}"}"; do [[ "${ip}" != "${SR_IP}" ]] || receipt_configured=1; done
+    (( receipt_configured == 1 )) || die "the receipt's address is not in STANDBY_HOSTS."
+    ip="${SR_IP}"
+    if [[ -s "${STATE_DIR}/standby/${ip}.receipt" ]]; then
+        old="$(head -c 512 "${STATE_DIR}/standby/${ip}.receipt")"
+        if [[ "${old}" =~ ${STANDBY_RECEIPT_RE} ]] && (( 10#${BASH_REMATCH[2]} > 10#${SR_TS} )); then
+            die "a newer receipt is already stored; refusing to replace it."
+        fi
+    fi
+    install -d -m 700 "${STATE_DIR}/standby"
+    write_if_changed "${STATE_DIR}/standby/${ip}.receipt" "${token}"
+    if [[ -n "${JSON_OUT}" ]]; then standby_status_json | json_emit
+    else standby_status_json | jq -r '.servers[] | "\(.server): \(.state) (snapshot \(.checked_at))"'; fi
+}
+
 # ---- Machine interface (--json -: JSON on stdout, for the panel) ------------
 # With "--json -" the human output goes to stderr and the JSON document to fd 8 (stdout).
 json_emit() {
@@ -2813,9 +2916,10 @@ clients_json() {
             printf '%s\t%s\t%s\n' "${CL_NAMES[i]}" "${CL_CREATED[i]}" "$(client_limits_json "${CL_NAMES[i]}" "${trc}")"
         done
     } | jq -R -s --arg label "${LABEL}" --arg server "${PUBLIC_IP}" --arg auth "${H_AUTH}" \
+        --argjson standby "$(jq -nc '$ARGS.positional' --args "${STANDBY[@]+"${STANDBY[@]}"}")" \
         --argjson tr "${trc}" '
         split("\n") | map(select(length > 0) | split("\t")) |
-        {schema: "veiltrium-clients/1", node_name: $label, server: $server, hysteria_auth: $auth,
+        {schema: "veiltrium-clients/1", node_name: $label, server: $server, hysteria_auth: $auth, standby: $standby,
          clients: map({name: .[0], main: (.[0] == "main"), created: (if (.[1] // "") == "" then null else .[1] end),
             traffic: ($tr[.[0]] // {up: 0, down: 0, last_seen: null, by_protocol: {}})} + (.[2] | fromjson))}'
 }
@@ -2889,18 +2993,24 @@ status_json() {
         --arg h_sni "${H_SNI}" --arg h_port "${HY2_PORT}" --arg h_mts "$(mts_status hysteria2 "${H_SNI:-none}")" \
         --arg t_sni "${T_SNI}" --arg t_port "${TT_PORT}" --arg t2 "$(mts_status tt_h2 "${T_SNI:-none}")" \
         --arg t3 "$(mts_status tt_h3 "${T_SNI:-none}")" --argjson report "${report:-null}" --argjson ru "${ru:-null}" \
+        --arg h_at "$(mts_checked_at hysteria2 "${H_SNI:-none}")" --arg r_at "$(mts_checked_at reality "${R_SITE:-none}")" \
+        --arg t2_at "$(mts_checked_at tt_h2 "${T_SNI:-none}")" --arg t3_at "$(mts_checked_at tt_h3 "${T_SNI:-none}")" \
+        --argjson home_age "$((10#${MTS_MAX_AGE_DAYS}))" --argjson standby_sync "$(standby_status_json | jq 'del(.local_receipt)')" \
         --arg globalping "${GLOBALPING}" --arg standby "${N_STANDBY}" --argjson resources "$(server_load_json)" --argjson traffic "${tr:-null}" '
         {schema: "veiltrium-status/1", generated_at: $now, script_version: $version, node_name: $label,
-         server: $server, standby: ($standby | split(",") | map(select(length > 0))),
+         server: $server, standby: ($standby | split(",") | map(select(length > 0))), standby_sync: $standby_sync,
+         home_max_age_days: $home_age,
          os: $os, uptime_seconds: ($uptime | tonumber), reboot_required: ($reboot == "1"),
          resources: $resources,
          services: ($st | split("\n") | map(select(length > 0) | split("=") | {key: .[0], value: .[1]}) | from_entries),
          versions: {hysteria: $vh, xray: $vx, trusttunnel: $vt},
          clients: {added: ($n | tonumber), hysteria_auth: $h_auth},
-         reality: (if $r_site == "" then null else {sni: $r_site, port: ($r_port | tonumber), home_network: $r_mts} end),
-         hysteria2: {sni: $h_sni, port: ($h_port | tonumber), home_network: $h_mts},
+         reality: (if $r_site == "" then null else {sni: $r_site, port: ($r_port | tonumber), home_network: $r_mts, home_checked_at: (if $r_at == "" then null else $r_at end)} end),
+         hysteria2: {sni: $h_sni, port: ($h_port | tonumber), home_network: $h_mts, home_checked_at: (if $h_at == "" then null else $h_at end)},
          trusttunnel: (if $t_sni == "" then null else
-           {hostname: $t_sni, port: ($t_port | tonumber), home_network_h2: $t2, home_network_h3: $t3} end),
+           {hostname: $t_sni, port: ($t_port | tonumber), home_network_h2: $t2, home_network_h3: $t3,
+           home_checked_at_h2: (if $t2_at == "" then null else $t2_at end),
+           home_checked_at_h3: (if $t3_at == "" then null else $t3_at end)} end),
          protection: {firewall: ($fw == "1"), ssh_ports: ($ssh | split(" ") | map(select(length > 0) | tonumber)),
            scanner_networks: ($scan | tonumber), fail2ban: $f2b},
          last_install_check: $report, russia: $ru, globalping: ($globalping == "1"), traffic: $traffic}'
@@ -3452,7 +3562,8 @@ helper_main() {
     verb="${line%% *}"
     if [[ "${line}" == *" "* ]]; then arg="${line#* }"; fi
     case "${verb}" in
-        status|list-clients|check-russia) [[ -z "${arg}" ]] || verb="" ;;
+        status|list-clients|check-russia|standby-status) [[ -z "${arg}" ]] || verb="" ;;
+        verify-standby) [[ "${arg}" =~ ${STANDBY_RECEIPT_RE} ]] || verb="" ;;
         audit) [[ -z "${arg}" ]] || verb=""; arg=20 ;;
         show-client) [[ "${arg}" == "main" || "${arg}" =~ ${CLIENT_RE} ]] || verb="" ;;
         add-client|remove-client|reset-client|disable-client|enable-client) [[ "${arg}" =~ ${CLIENT_RE} && "${arg}" != "main" ]] || verb="" ;;
@@ -3466,7 +3577,7 @@ helper_main() {
         printf '::log ERROR: request refused\n::exit 2\n'
         return 0
     fi
-    case "${verb}" in status|list-clients|show-client|check-russia|audit) wait=10 ;; esac
+    case "${verb}" in status|list-clients|show-client|check-russia|audit|standby-status|verify-standby) wait=10 ;; esac
     if (( ${#cargs[@]} == 0 )) && [[ -n "${arg}" ]]; then cargs=("${arg}"); fi
     d="$(mktemp -d /run/veiltrium-helper.XXXXXX 2>/dev/null || mktemp -d)"   # /run: root-only tmpfs; tests run without root
     # stdout (the JSON) to the file, stderr (human text, progress) through the relay
@@ -4031,6 +4142,9 @@ Usage: veiltrium COMMAND [NAME|FILE]
   qr NAME          QR codes of a client's links
   traffic          traffic per client
   export FILE      pack this node for a new server (encrypted with a passphrase)
+  standby-status   compare stored standby snapshots with the current node
+  standby-receipt  signed state snapshot to paste on the primary node (valid 24 h)
+  verify-standby TOKEN  record a configured standby's signed snapshot
   russia           can Russian networks reach this server?
   audit [N]        the last N lines of the audit log (default 50)
   test-alert       send a test message to the alert channels
@@ -4061,6 +4175,9 @@ case "${cmd}" in
     qr)             set -- --qr "$@" ;;
     traffic)        set -- --traffic "$@" ;;
     export)         set -- --export "$@" ;;
+    standby-status) set -- --standby-status "$@" ;;
+    standby-receipt) set -- --standby-receipt "$@" ;;
+    verify-standby) set -- --verify-standby "$@" ;;
     russia)         set -- --check-russia "$@" ;;
     audit)          set -- --audit "$@" ;;
     test-alert)     set -- --test-alert "$@" ;;
@@ -4821,6 +4938,8 @@ while (( $# )); do
         --uninstall) MODE="uninstall" ;;
         --list-clients) MODE="list-clients" ;;
         --status) MODE="status" ;;
+        --standby-status|--standby-receipt) MODE="${1#--}" ;;
+        --verify-standby) MODE="verify-standby"; CLIENT_ARG="${2:-}"; [[ -n "${CLIENT_ARG}" ]] || die "--verify-standby needs a signed receipt"; shift ;;
         --traffic) MODE="traffic" ;;
         --traffic-reset) MODE="traffic-reset" ;;
         --collect-traffic) MODE="collect-traffic" ;;   # internal: veiltrium-traffic.timer
@@ -4915,7 +5034,7 @@ case "${MODE}" in
     add-client|remove-client|reset-client|set-client|disable-client|enable-client) AUDIT_ACTION="${MODE}"; AUDIT_TARGET="${CLIENT_ARG}" ;;
     enforce) AUDIT_ACTION="enforce" ;;
     export) AUDIT_ACTION="export"; AUDIT_TARGET="${EXPORT_FILE##*/}" ;;
-    panel-password|uninstall|traffic-reset) AUDIT_ACTION="${MODE}" ;;
+    panel-password|uninstall|traffic-reset|verify-standby) AUDIT_ACTION="${MODE}" ;;
 esac
 
 # =============================================================================
@@ -4956,12 +5075,21 @@ if [[ "${MODE}" != "install" ]]; then
     load_tt_state
     load_probe_env
     load_ports
-    case "${MODE}" in list-clients|show-client|qr|add-client|remove-client|reset-client|set-client|disable-client|enable-client|enforce|trial) load_clients ;; esac
+    case "${MODE}" in status|standby-status|standby-receipt|verify-standby|list-clients|show-client|qr|add-client|remove-client|reset-client|set-client|disable-client|enable-client|enforce|trial) load_clients ;; esac
     load_node_name
     set_hy2_auth_main
     PUBLIC_IP="${PUBLIC_IP:-${PROBE_SERVER}}"
     if [[ -n "${H_PORT}" ]]; then HY2_PORT="${H_PORT}"; fi
     case "${MODE}" in
+        standby-status|standby-receipt|verify-standby)
+            [[ -n "${H_PASSWORD}" && -n "${PROBE_KEY}" ]] || die "no installed node with a probe key; run the installer first."
+            command -v jq >/dev/null 2>&1 || die "jq is missing."
+            if [[ "${MODE}" == "verify-standby" ]]; then standby_verify "${CLIENT_ARG}"
+            elif [[ "${MODE}" == "standby-receipt" ]]; then
+                if [[ -n "${JSON_OUT}" ]]; then standby_status_json | json_emit; else standby_receipt; fi
+            elif [[ -n "${JSON_OUT}" ]]; then standby_status_json | json_emit
+            else standby_status_json | jq -r '.servers[] | "\(.server): \(.state) (snapshot \(.checked_at // "never"))"'; fi
+            exit 0 ;;
         export)
             export_node "${EXPORT_FILE}"
             exit 0 ;;

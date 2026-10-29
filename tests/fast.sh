@@ -63,6 +63,7 @@ if have jq && have openssl; then
     run bash tests/unit.sh
     run bash tests/unit-migrate.sh
     run bash tests/unit-standby.sh
+    run bash tests/unit-standby-state.sh
     run bash tests/unit-stall.sh
     run bash tests/unit-cli.sh
     run bash tests/unit-alerts.sh
@@ -72,6 +73,13 @@ if have jq && have openssl; then
     run bash tests/unit-bundle.sh
 else
     SKIPPED+=("unit tests (need jq and openssl)")
+fi
+
+if have node; then
+    run node --test panel/web/scripts/guided.test.mjs
+    run node panel/web/scripts/check-locales.mjs
+else
+    SKIPPED+=("guided UI logic (needs node)")
 fi
 
 if (( ${#SKIPPED[@]} )); then printf 'SKIPPED: %s\n' "${SKIPPED[@]}"; fi

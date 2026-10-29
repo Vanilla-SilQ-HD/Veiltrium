@@ -5,6 +5,7 @@
   import Icon from './Icon.svelte';
   import Dialog from './Dialog.svelte';
   import Steps from './Steps.svelte';
+  import StandbyWarning from './StandbyWarning.svelte';
   import ClientDetail from './ClientDetail.svelte';
   import StateBadge from './StateBadge.svelte';
   import LimitUsage from './LimitUsage.svelte';
@@ -190,6 +191,9 @@
   </div>
 
   {#if error}<div role="alert" class="rounded-xl border border-danger-line p-4 text-danger">{error}</div>{/if}
+  {#if list?.standby?.length}
+    <p role="note" class="m-0 rounded-xl border border-line bg-warn-soft p-4 text-sm text-warn">{t('sb.changeWarning', { servers: list.standby.join(', ') })}</p>
+  {/if}
 
   <div class="flex flex-wrap items-start gap-5">
     <div class="min-w-0 flex-[1_1_300px] overflow-hidden rounded-xl border border-line bg-surface">
@@ -246,6 +250,7 @@
         <span class="text-xs {name && !canAdd ? 'text-danger' : 'text-muted'}">{nameHint}</span>
       </div>
       <p class="m-0 rounded-lg bg-surface2 px-3 py-2.5 text-xs text-muted">{t('add.note')}</p>
+      <StandbyWarning servers={list?.standby ?? []} />
       {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
@@ -270,6 +275,7 @@
       <Steps {order} seen={steps} />
     {:else}
       <p class="m-0 text-muted">{t('rm.text')}</p>
+      <StandbyWarning servers={list?.standby ?? []} />
       {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
@@ -286,6 +292,7 @@
       <Steps {order} seen={steps} />
     {:else}
       <p class="m-0 text-muted">{t('reset.text', { name: selected })}</p>
+      <StandbyWarning servers={list?.standby ?? []} />
       {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
@@ -326,6 +333,7 @@
         <span class="text-xs text-muted">{t('lim.fieldResetHint')}</span>
       </div>
       <p class="m-0 rounded-lg bg-surface2 px-3 py-2.5 text-xs text-muted">{t('lim.editNote')}</p>
+      <StandbyWarning servers={list?.standby ?? []} />
       {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
@@ -343,6 +351,7 @@
       <Steps {order} seen={steps} />
     {:else}
       <p class="m-0 text-muted">{t('lim.disableText', { name: selected })}</p>
+      <StandbyWarning servers={list?.standby ?? []} />
       {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
@@ -359,6 +368,7 @@
       <Steps {order} seen={steps} />
     {:else}
       <p class="m-0 text-muted">{t('lim.enableText', { name: selected })}</p>
+      <StandbyWarning servers={list?.standby ?? []} />
       {#if changeError}<p role="alert" class="m-0 text-[13px] text-danger">{changeError}</p>{/if}
       <div class="flex justify-end gap-2">
         <button type="button" onclick={close} class="h-11 rounded-lg border border-line px-4 text-fg">{t('common.cancel')}</button>
