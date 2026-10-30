@@ -35,3 +35,39 @@ jobs:
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes=
       - name: Fast checks (including one panel build and Go tests)
         run: bash tests/fast.sh
+      - name: Save the tested web build for browser regressions
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-web
+          path: panel/web/dist
+          retention-days: 1
+
+  browser:
+    needs: fast
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: panel-web
+          path: panel/web/dist
+      - name: Install locked test and preview dependencies
+        run: |
+          npm ci --prefix panel/web --ignore-scripts --no-audit --no-fund
+          npm ci --prefix tests/browser --ignore-scripts --no-audit --no-fund
+          cd tests/browser && npx playwright install --with-deps chromium
+      - name: Browser regressions (desktop/mobile, EN/RU)
+        run: npm test --prefix tests/browser
+      - name: Failed browser traces and screenshots (synthetic accounts only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure
+          path: |
+            tests/browser/test-results
+            tests/browser/playwright-report
+          retention-days: 7

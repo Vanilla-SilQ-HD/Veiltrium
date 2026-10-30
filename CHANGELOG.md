@@ -11,8 +11,10 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
-## Unreleased
+## [2026-10-30.1] - 2026-10-30
 
+- Added browser regression coverage for guided setup, clipboard fallbacks, shared secret hiding, account switching, JSON downloads and mobile layout, in both languages. FAST builds the interface once and shares it with the browser job.
+- Standby snapshot state notifications reuse configured Telegram/webhook channels. Per-channel transition history suppresses duplicates, retries failed channels and announces recovery; comparison remains offline and receipts require manual renewal.
 - CI now selects FAST, INTEGRATION or FULL by PR risk; draft installer changes defer FULL until ready for review. Removed duplicate FAST triggers/builds and preserved the tested source panel across installer re-runs. Final version/pin changes select published-panel FULL directly, with a source/tag comparison so the same run can serve as the release check.
 
 ## [2026-10-30] - 2026-10-30
@@ -304,3 +306,5 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 [0.1.2]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.1...panel-v0.1.2
 [0.1.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.0...panel-v0.1.1
 [0.1.0]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/panel-v0.1.0
+
+[2026-10-30.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.30...v2026.10.30.1

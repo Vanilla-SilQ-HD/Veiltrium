@@ -23,7 +23,7 @@ def risk(path):
         return "full"
     if path in CI_WORKFLOWS:
         return "integration"
-    if path.startswith("panel/web/"):
+    if path.startswith("tests/browser/") or path.startswith("panel/web/"):
         return "fast"
     if path.startswith("panel/") or path in {
         "tests/clients-ci.sh", "tests/panel-ci.sh", "tests/features-ci.sh",
