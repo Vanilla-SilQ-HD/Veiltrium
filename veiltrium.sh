@@ -98,7 +98,7 @@ fi
 set -Eeuo pipefail
 umask 022
 
-SCRIPT_VERSION="2026-10-30"
+SCRIPT_VERSION="2026-10-30.1"
 
 # ---- Pinned versions (change only together with the checksums) -------------
 HY2_VERSION="v2.13.0"
@@ -4310,7 +4310,7 @@ alert_prepare() {
 alert_save() {
     (( A_DIRTY == 1 )) || return 0
     if (( A_ENABLED == 0 )); then
-        rm -f "${ALERTS_ENV}" "${ALERT_STATE}"
+        rm -f "${ALERTS_ENV}" "${ALERT_STATE}" "${ALERT_STATE}.standby"
         return 0
     fi
     install -d -m 700 "${SCANNER_DIR}"
@@ -4414,6 +4414,69 @@ alert_watch_services() {
             fi
         fi
     done
+    return 0
+}
+
+# Standby snapshots are evidence of saved state, not live reachability. Keep a
+# separate per-channel ledger: a failed channel retries without repeating a delivered alert.
+alert_watch_standby() {
+    (( A_ENABLED == 1 )) || return 0
+    local doc rows ip state key prev channel pending_tg pending_hook event text channels standby_keep=" channels "
+    local token="${A_TOKEN}" hook="${A_HOOK}" ALERT_STATE="${ALERT_STATE}.standby"
+    if ! doc="$(load_clients && set_hy2_auth_main && standby_status_json)" || ! jq -e '
+        .schema == "veiltrium-standby/1" and (.servers | type == "array") and
+        all(.servers[]; (.server | type == "string") and (.state | IN("matching", "changed", "stale", "unverified")))
+        ' <<<"${doc}" >/dev/null; then
+        logger -t veiltrium-alert 'standby snapshot check failed; alert state preserved' 2>/dev/null || true
+        return 0
+    fi
+    rows="$(jq -r '.servers[] | [.server,.state] | @tsv' <<<"${doc}")"
+    while read -r ip state; do
+        [[ -n "${ip}" ]] || continue
+        is_public_ipv4 "${ip}" || return 0
+        key="s_${ip//./_}"
+        standby_keep+="${key}_tg ${key}_hook "
+    done <<<"${rows}"
+    channels="$(printf '%s\n' "${token}" "${A_CHAT}" "${hook}" | sha256sum | cut -c1-64)"
+    if [[ "$(astate_get channels)" != "${channels}" ]]; then
+        rm -f "${ALERT_STATE}"
+        astate_set channels "${channels}"
+    fi
+    # Forget removed addresses silently; re-adding them starts a new observation.
+    if [[ -f "${ALERT_STATE}" ]]; then
+        install -m 600 /dev/null "${ALERT_STATE}.new"
+        awk -F= -v keep="${standby_keep}" 'index(keep, " " $1 " ") { print }' "${ALERT_STATE}" > "${ALERT_STATE}.new"
+        mv -f "${ALERT_STATE}.new" "${ALERT_STATE}"
+    fi
+    while read -r ip state; do
+        [[ -n "${ip}" ]] || continue
+        key="s_${ip//./_}"; pending_tg=0; pending_hook=0
+        for channel in tg hook; do
+            if [[ "${channel}" == tg && -z "${token}" ]] || [[ "${channel}" == hook && -z "${hook}" ]]; then continue; fi
+            prev="$(astate_get "${key}_${channel}")"
+            if [[ "${prev}" == "${state}" ]]; then continue; fi
+            if [[ "${state}" == matching && "${prev}" == 0 ]]; then
+                astate_set "${key}_${channel}" matching
+            elif [[ "${channel}" == tg ]]; then pending_tg=1
+            else pending_hook=1; fi
+        done
+        if (( pending_tg == 0 && pending_hook == 0 )); then continue; fi
+        event=standby
+        case "${state}" in
+            changed) text="standby ${ip}: its signed snapshot differs from this node. Update the standby copy and exchange fresh receipts (--standby-receipt / --verify-standby)." ;;
+            stale) text="standby ${ip}: its matching snapshot is older than 24 hours. Exchange fresh receipts before relying on the standby." ;;
+            unverified) text="standby ${ip}: no authenticated snapshot is available. Exchange receipts (--standby-receipt / --verify-standby) to verify its saved state." ;;
+            matching) event=standby_recovered; text="standby ${ip}: a fresh signed snapshot matches this node again." ;;
+        esac
+        text+=" This is a snapshot comparison, not a live connectivity test."
+        A_TOKEN=""; A_HOOK=""
+        if (( pending_tg )); then A_TOKEN="${token}"; fi
+        if (( pending_hook )); then A_HOOK="${hook}"; fi
+        alert_notify "${event}" "${text}"
+        A_TOKEN="${token}"; A_HOOK="${hook}"
+        if (( pending_tg )) && [[ "${A_RES_TG}" == ok ]]; then astate_set "${key}_tg" "${state}"; fi
+        if (( pending_hook )) && [[ "${A_RES_HOOK}" == ok ]]; then astate_set "${key}_hook" "${state}"; fi
+    done <<<"${rows}"
     return 0
 }
 
@@ -5104,6 +5167,7 @@ if [[ "${MODE}" != "install" ]]; then
             if [[ -n "${R_SITE}" ]]; then WATCH_SVCS+=(xray); fi
             if [[ -n "${T_USER}" ]]; then WATCH_SVCS+=(trusttunnel); fi
             alert_watch_services "${WATCH_SVCS[@]+"${WATCH_SVCS[@]}"}"
+            alert_watch_standby
             exit 0 ;;
         test-alert)
             (( A_ENABLED == 1 )) || die "no alert channel is set: give ALERT_TG_TOKEN and ALERT_TG_CHAT and/or ALERT_WEBHOOK."
@@ -6797,7 +6861,7 @@ alert_save
 cat > "${TMPD}/watch.service" <<EOF
 # veiltrium: service watch for alerts
 [Unit]
-Description=Alert if a proxy service is down (Veiltrium)
+Description=Check proxy services and standby snapshots (Veiltrium)
 
 [Service]
 Type=oneshot
@@ -6806,7 +6870,7 @@ EOF
 cat > "${TMPD}/watch.timer" <<'EOF'
 # veiltrium: service watch for alerts
 [Unit]
-Description=Check the proxy services every 5 minutes (Veiltrium)
+Description=Check services and standby snapshots every 5 minutes (Veiltrium)
 
 [Timer]
 OnBootSec=5min

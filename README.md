@@ -491,6 +491,7 @@ bash veiltrium.sh --test-alert                                               # a
 ALERT_TG_TOKEN=none ALERT_WEBHOOK=none bash veiltrium.sh                     # turn off
 ```
 
+- Standby snapshot alerts run every five minutes while an alert channel is configured: `unverified` (no authenticated snapshot), `changed` (saved state differs), `stale` (matching snapshot older than 24 hours), and recovery to `matching`. This compares snapshots, not live connectivity. Refresh receipts manually; there is no cross-server credential sync. Each channel is notified once per state change; only failed channels are retried on subsequent checks. Initially matching and removed servers stay quiet. Channel changes start a fresh notification history; disabling all channels clears it.
 - Settings are validated strictly, saved in `/etc/veiltrium/alerts.env` (root only, 600) and kept on later runs. The token is never printed back (only `123456789:****`) and not written to the install log. It reaches `curl` through its config on stdin, so it is not on any command line. Note that a variable typed in the shell stays in your shell history.
 - Events, each sent once per change: a proxy service not active in 2 checks in a row (`veiltrium-watch.timer`, every 5 minutes, exists only while a channel is set) and again when it recovers; the check from Russia reaching `bad_streak` 2 (with the hint to move to a new server or use a standby address) and again when it is reachable; a rollback (an install run or a client change that did not pass its checks and was restored).
 - A failed delivery goes to the journal (`journalctl -t veiltrium-alert`) and never stops anything. The messages hold the node name, the server address and a short hint; no secrets.
@@ -658,6 +659,9 @@ Three levels:
   ```
 
   Manual short check: `gh workflow run e2e.yml --ref BRANCH -f profile=integration`. Upgrade only: `-f profile=full -f only_upgrade=true`. Merging requires green FAST and `CI policy`; important installer changes also require green FULL. Route installer changes through a PR.
+
+
+Browser regressions (`tests/browser`) exercise the built interface in Chromium on desktop/mobile layouts in EN/RU: four-step setup, disabled accounts, denied/missing/successful clipboard access, shared secret/QR hiding, client switching, JSON downloads and viewport overflow. The browser job reuses FAST's build, mocks API responses with synthetic accounts and retains traces/screenshots only on failure. Locally, build the panel, then run `npm ci --prefix tests/browser`, `cd tests/browser && npx playwright install chromium && npm test`.
 
 <details>
 <summary>What FULL covers</summary>
