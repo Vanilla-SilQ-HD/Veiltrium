@@ -96,6 +96,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Verify the release panel contains this source
+        if: ${{ inputs.release_panel }}
+        run: |
+          set -euo pipefail
+          ref="$(sed -n 's/^PANEL_VERSION="\(panel-v[0-9.]*\)"$/\1/p' veiltrium.sh)"
+          [[ "$ref" =~ ^panel-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags --depth=1 origin "refs/tags/$ref"
+          # Test-only files do not affect the shipped binary.
+          git diff --exit-code FETCH_HEAD HEAD -- panel ':(exclude)panel/*_test.go' ':(exclude)panel/web/scripts'
+
       - name: Build the web panel of this commit
         if: ${{ !inputs.release_panel }}
         run: bash panel/build.sh /tmp/veiltrium-panel amd64 ci

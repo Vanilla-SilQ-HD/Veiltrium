@@ -11,6 +11,10 @@ on:
         type: choice
         options: [integration, full]
         default: integration
+      release_panel:
+        description: "Use published checksum-pinned panel binaries"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +29,7 @@ jobs:
     outputs:
       profile: ${{ steps.plan.outputs.profile }}
       full_required: ${{ steps.plan.outputs.full_required }}
+      release_panel: ${{ steps.plan.outputs.release_panel }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,9 +42,12 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           DRAFT: ${{ github.event.pull_request.draft || false }}
           PROFILE: ${{ inputs.profile }}
+          RELEASE_PANEL: ${{ inputs.release_panel }}
         run: |
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            python3 tests/ci_policy.py --manual "$PROFILE"
+            args=(--manual "$PROFILE")
+            if [[ "$RELEASE_PANEL" == true ]]; then args+=(--release-panel); fi
+            python3 tests/ci_policy.py "${args[@]}"
           else
             python3 tests/ci_policy.py --base "$BASE" --head "$HEAD" --draft "$DRAFT"
           fi
@@ -50,6 +58,7 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       profile: ${{ needs.plan.outputs.profile }}
+      release_panel: ${{ needs.plan.outputs.release_panel == 'true' }}
 
   result:
     name: CI policy

@@ -13,7 +13,7 @@ All notable changes to Veiltrium are recorded here. The format follows
 
 ## Unreleased
 
-- CI now selects FAST, INTEGRATION or FULL by PR risk; draft installer changes defer FULL until ready for review. Removed duplicate FAST triggers/builds and preserved the tested source panel across installer re-runs.
+- CI now selects FAST, INTEGRATION or FULL by PR risk; draft installer changes defer FULL until ready for review. Removed duplicate FAST triggers/builds and preserved the tested source panel across installer re-runs. Final version/pin changes select published-panel FULL directly, with a source/tag comparison so the same run can serve as the release check.
 
 ## [2026-10-30] - 2026-10-30
 

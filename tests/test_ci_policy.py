@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from ci_policy import changed_files, plan
+from ci_policy import changed_files, plan, release_metadata_changed
 
 
 class Routing(unittest.TestCase):
@@ -93,6 +93,44 @@ class DiffHandling(unittest.TestCase):
         self.commit()
         Path("README.md").write_text("documentation")
         self.assertEqual(plan(changed_files(self.base, self.commit()))['profile'], "full")
+
+    def release_fixture(self):
+        self.fields = ('SCRIPT_VERSION="2026-10-30"\nPANEL_VERSION="panel-v0.1.8"\n'
+                       'PANEL_SHA256_AMD64="aaa"\nPANEL_SHA256_ARM64="bbb"\n')
+        Path("veiltrium.sh").write_text(self.fields)
+        return self.commit()
+
+    def test_release_cli_selects_published_panel_only_when_ready(self):
+        base = self.release_fixture()
+        Path("veiltrium.sh").write_text(self.fields.replace("2026-10-30", "2026-11-01"))
+        head = self.commit()
+        env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"}}
+        script = str(Path(__file__).resolve().with_name("ci_policy.py"))
+        for draft, expected in (("true", False), ("false", True)):
+            with self.subTest(draft=draft):
+                raw = subprocess.check_output([sys.executable, script, "--base", base, "--head", head,
+                                               "--draft", draft], text=True, env=env)
+                self.assertEqual(json.loads(raw)["release_panel"], expected)
+
+    def test_runtime_change_uses_source_panel(self):
+        base = self.release_fixture()
+        Path("veiltrium.sh").write_text(self.fields + "echo changed\n")
+        self.assertFalse(release_metadata_changed(base, self.commit()))
+
+    def test_final_version_switches_full_to_published_panel(self):
+        base = self.release_fixture()
+        Path("veiltrium.sh").write_text(self.fields.replace("2026-10-30", "2026-11-01"))
+        self.assertTrue(release_metadata_changed(base, self.commit()))
+
+    def test_changed_pin_switches_full_to_published_panel(self):
+        base = self.release_fixture()
+        Path("veiltrium.sh").write_text(self.fields.replace('AMD64="aaa"', 'AMD64="ccc"'))
+        self.assertTrue(release_metadata_changed(base, self.commit()))
+
+    def test_deleted_installer_does_not_claim_release_metadata(self):
+        base = self.release_fixture()
+        Path("veiltrium.sh").unlink()
+        self.assertFalse(release_metadata_changed(base, self.commit()))
 
     @unittest.skipIf(os.name == "nt", "Windows file names cannot contain newlines")
     def test_nul_delimited_paths_preserve_newlines(self):
