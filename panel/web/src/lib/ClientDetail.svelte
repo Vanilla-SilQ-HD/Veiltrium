@@ -6,6 +6,7 @@
   import { flash } from './toast.svelte.js';
   import StateBadge from './StateBadge.svelte';
   import LimitUsage from './LimitUsage.svelte';
+  import DeviceSetup from './DeviceSetup.svelte';
   import { bytes, bytesDec, ago, dateText } from './format.js';
 
   let { c, onRevoke, onReset, onLimits, onDisable, onEnable } = $props(); // c: a veiltrium-client/1 document
@@ -51,12 +52,15 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     flash(t('cl.downloaded', { file }));
   }
+  let profileManual = $state(false);
+  $effect(() => { void profileText; void reveal; profileManual = false; });
   async function copyProfile() {
     try {
       await navigator.clipboard.writeText(profileText);
+      profileManual = false;
       flash(t('common.copied', { what: t('cl.imp.profileCopy') }));
     } catch {
-      flash(t('common.error'));
+      profileManual = true;
     }
   }
 
@@ -162,6 +166,12 @@
     {/if}
   </div>
 
+  {#key c.name + c.hysteria2.link + (c.vless?.link ?? '') + c.state}
+    <DeviceSetup {c} bind:reveal />
+  {/key}
+
+  <details>
+    <summary class="cursor-pointer py-2 text-sm font-medium text-accent">{t('setup.advanced')}</summary>
   <div class="flex flex-wrap gap-5">
     <div class="flex flex-col items-center gap-2">
       {#if reveal}
@@ -222,6 +232,11 @@
               <Icon name="download" size={16} /><span>{t('cl.imp.profileDownload')}</span>
             </button>
           </div>
+          {#if profileManual}
+            <label class="flex flex-col gap-1 text-xs text-muted">{t('common.copyManual')}
+              <textarea readonly value={profileText} onfocus={(e) => e.currentTarget.select()} rows="6" class="w-full rounded-lg border border-line bg-bg p-2 font-mono text-xs text-fg"></textarea>
+            </label>
+          {/if}
           <span class="text-xs text-muted">{t('cl.imp.profileHint')}</span>
         </div>
       {/if}
@@ -236,4 +251,5 @@
     {/if}
   </div>
   <span class="text-xs text-muted">{t('cl.awgNote')}</span>
+  </details>
 </section>

@@ -84,6 +84,8 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}))
 	mux.HandleFunc("GET /api/status", s.authed(s.simple("status")))
+	mux.HandleFunc("GET /api/standby", s.authed(s.simple("standby-status")))
+	mux.HandleFunc("POST /api/standby/verify", s.authed(s.verifyStandby))
 	mux.HandleFunc("GET /api/clients", s.authed(s.simple("list-clients")))
 	mux.HandleFunc("POST /api/russia-check", s.authed(s.simple("check-russia")))
 	mux.HandleFunc("GET /api/clients/{name}", s.authed(s.showClient))
@@ -272,6 +274,24 @@ func (s *Server) simple(verb string) http.HandlerFunc {
 
 func (s *Server) showClient(w http.ResponseWriter, r *http.Request) {
 	s.run(w, r, "show-client", r.PathValue("name"))
+}
+
+// This only records a signed snapshot; it never connects to or modifies a remote server.
+func (s *Server) verifyStandby(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Receipt string `json:"receipt"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad receipt request")
+		return
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "bad receipt request")
+		return
+	}
+	s.run(w, r, "verify-standby", strings.TrimSpace(body.Receipt))
 }
 
 func (s *Server) run(w http.ResponseWriter, r *http.Request, verb, arg string) {

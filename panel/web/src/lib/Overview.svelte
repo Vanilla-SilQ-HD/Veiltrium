@@ -1,13 +1,19 @@
 <script>
   import { api, AuthError } from './api.js';
+  import { onMount } from 'svelte';
   import { t, locale } from './i18n.svelte.js';
   import Icon from './Icon.svelte';
+  import HealthSummary from './HealthSummary.svelte';
+  import Standby from './Standby.svelte';
+  import { fresh } from './health.js';
   import { bytes, mib } from './format.js';
 
-  let { onAuthLost } = $props();
+  let { onAuthLost, onClients } = $props();
   let st = $state(null);
   let error = $state('');
   let loading = $state(false);
+  let now = $state(Date.now());
+  onMount(() => { const timer = setInterval(() => (now = Date.now()), 30000); return () => clearInterval(timer); });
 
   async function load() {
     loading = true;
@@ -43,13 +49,13 @@
     .map(([, v]) => v) : []);
   // the last check from Russian networks (Globalping): reachable | partly | blocked | unchecked
   let ru = $derived(st?.russia ?? null);
-  let ruState = $derived(!st ? '' : !st.globalping && !ru ? 'off' : (ru?.verdict ?? 'unchecked'));
+  let ruState = $derived(!st ? '' : !st.globalping && !ru ? 'off' : !fresh(ru?.checked_at, now, 12 * 3600000) ? 'stale' : (ru?.verdict ?? 'unchecked'));
   let ruTally = $derived.by(() => {
     if (!ru) return null;
     const parts = [ru.icmp, ru.tcp_reality, ru.tcp_trusttunnel].filter(Boolean);
     return { ok: parts.reduce((n, x) => n + x.ok, 0), total: parts.reduce((n, x) => n + x.total, 0) };
   });
-  const ruLabel = { reachable: 'ov.ruReachable', partly: 'ov.ruPartly', blocked: 'ov.ruBlocked', unchecked: 'ov.ruUnchecked', off: 'ov.ruOff' };
+  const ruLabel = { reachable: 'ov.ruReachable', partly: 'ov.ruPartly', blocked: 'ov.ruBlocked', unchecked: 'ov.ruUnchecked', off: 'ov.ruOff', stale: 'health.russia.stale' };
   const ruColor = { reachable: 'text-ok', partly: 'text-warn', blocked: 'text-danger' };
   let checking = $state(false);
   let ruMsg = $state('');
@@ -109,6 +115,8 @@
   {:else if !st}
     <p class="text-muted">{t('common.loading')}</p>
   {:else}
+    <HealthSummary {st} {onClients} onCheckRussia={checkRussia} {checking} />
+    <Standby status={st.standby_sync} {onAuthLost} onUpdated={load} />
     <div class="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
       <div class="flex flex-col gap-1 rounded-xl border border-line bg-surface p-4">
         <span class="text-xs text-muted">{t('ov.services')}</span>

@@ -90,7 +90,7 @@
       </nav>
       <main class="flex min-w-0 flex-[999_1_560px] flex-col gap-6 px-8 py-7">
         {#if page === 'overview'}
-          <Overview onAuthLost={lost} />
+          <Overview onAuthLost={lost} onClients={() => (page = 'clients')} />
         {:else}
           <Clients onAuthLost={lost} onChanged={(l) => (node = l)} />
         {/if}

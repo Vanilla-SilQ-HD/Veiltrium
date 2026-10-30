@@ -11,6 +11,19 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
+## [2026-10-30] - 2026-10-30
+
+Web panel: 0.1.8
+
+### Added
+- Evidence-based connection overview with freshness, per-protocol home check dates and a suggested next action.
+- Four-step device setup for Android, Apple devices, Windows and Keenetic/AWG Manager, with explicit import formats and manual connection checks.
+- Authenticated standby state snapshots: `standby-receipt`, `verify-standby` and `standby-status`, a panel comparison and local-only warnings before client changes. Snapshots expire after 24 hours; there is no remote synchronization or shared traffic quota.
+
+### Fixed
+- Copy fields offer manual selection when the browser clipboard API is unavailable over HTTP.
+- Globalping failures are described as missing replies, without asserting a confirmed block.
+
 ## [2026-10-23] - 2026-10-23
 
 Web panel: 0.1.7
@@ -226,6 +239,12 @@ blocking and transactional changes with automatic rollback.
 
 The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUMS).
 
+### [0.1.8] - 2026-10-30
+- Connection health distinguishes service status, address replies and verified home-network tunnel tests, with dates and a next action.
+- Four-step device setup for Android, Apple devices, Windows and Keenetic/AWG Manager.
+- Standby state comparison with authenticated snapshots, expiry and warnings before local client changes.
+- Manual copy fallback when Clipboard API access is unavailable; shared secret visibility across the client card and setup guide.
+
 ### [0.1.7] - 2026-10-23
 - `--host IP`: the server's own address is accepted as a host name (the panel through the VPN).
 - Failed logins pause all logins with an escalating delay (1 min doubling up to 1 h).
@@ -259,6 +278,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 - First release: Overview and Clients (links, QR codes, AWG Manager JSON, add, revoke), loopback
   only with password login.
 
+[2026-10-30]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.23...v2026.10.30
 [2026-10-23]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.21...v2026.10.23
 [2026-10-21]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.5...v2026.10.21
 [2026-10-20.5]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.4...v2026.10.20.5
@@ -271,6 +291,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.8]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.7...panel-v0.1.8
 [0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7
 [0.1.6]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.5...panel-v0.1.6
 [0.1.5]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.4...panel-v0.1.5
