@@ -16,11 +16,11 @@ FAST_URL=http://11.22.33.44/fast       # 8 MB, no rate limit (tests/sites-setup.
 FAST_MIN=8000000
 WHAT=204                               # what the client cases fetch: 204 (a probe) | big (the fast file, then a counter read)
 
-inst() { sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh "$@"; }
+inst() { sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh "$@"; }
 instenv() {   # VAR=value ... [installer arguments]
     local -a e=()
     while [ $# -gt 0 ] && [[ "$1" == *=* ]]; do e+=("$1"); shift; done
-    sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 ${e[@]+"${e[@]}"} bash ./veiltrium.sh "$@"
+    sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" ${e[@]+"${e[@]}"} bash ./veiltrium.sh "$@"
 }
 collect() { sudo bash ./veiltrium.sh --collect-traffic > /dev/null 2>&1 || true; }
 code204() {
@@ -288,7 +288,7 @@ sudo bash ./veiltrium.sh --status --json - 2>/dev/null | jq -e '.standby == ["20
 # Simulate a second node's saved-state snapshot without opening a remote control port.
 # The source address differs; the shared state must still match. The other standby
 # remains unverified, and changing a local restriction must invalidate the match.
-receipt="$(sudo env PUBLIC_IP=203.0.113.5 bash ./veiltrium.sh --standby-receipt)"
+receipt="$(sudo env PUBLIC_IP=203.0.113.5 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --standby-receipt)"
 sudo bash ./veiltrium.sh --verify-standby "$receipt" --json - > "$W/standby-state.json"
 jq -e '.servers[0].state == "matching" and .servers[1].state == "unverified"' "$W/standby-state.json" > /dev/null
 if sudo bash ./veiltrium.sh --verify-standby "${receipt};id" > "$W/receipt-bad.log" 2>&1; then fail "a malformed receipt was accepted"; fi
@@ -478,7 +478,7 @@ T_P="$(sudo awk -F= '$1=="T_PASS"{print $2}' /etc/trusttunnel/node.env)"
 TSNI="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
 carol_expect 204
 test "$ssh0" = "$(sudo sshd -T | sort | sha256sum)" || fail "the SSH settings differ after the import"
-sudo env GLOBALPING=0 bash ./veiltrium.sh --diagnose > "$W/diag.log" 2>&1 || { cat "$W/diag.log"; exit 1; }
+sudo env GLOBALPING=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --diagnose > "$W/diag.log" 2>&1 || { cat "$W/diag.log"; exit 1; }
 if grep -F 'ERROR' "$W/diag.log"; then fail "--diagnose printed an error after the import"; fi
 sudo rm -f "$EXPF"
 echo "features: all checks passed"

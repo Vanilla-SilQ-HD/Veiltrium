@@ -11,6 +11,10 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
+## Unreleased
+
+- CI now selects FAST, INTEGRATION or FULL by PR risk; draft installer changes defer FULL until ready for review. Removed duplicate FAST triggers/builds and preserved the tested source panel across installer re-runs.
+
 ## [2026-10-30] - 2026-10-30
 
 Web panel: 0.1.8
