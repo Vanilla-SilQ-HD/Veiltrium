@@ -10,7 +10,7 @@ inst() {   # VAR=value... -- args...
     local -a vars=()
     while (( $# )) && [[ "$1" != "--" ]]; do vars+=("$1"); shift; done
     [[ "${1:-}" == "--" ]] && shift
-    sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 "${vars[@]}" bash ./veiltrium.sh "$@"
+    sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" "${vars[@]}" bash ./veiltrium.sh "$@"
 }
 site() { sudo awk -F= '$1=="R_SITE"{print $2}' "$RENV"; }
 keys() { sudo grep -E '^R_(UUID|PRIV|PUB|SID)=' "$RENV"; }

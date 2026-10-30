@@ -10,7 +10,7 @@ SB="$(find /tmp/sb -type f -name sing-box | head -1)"
 TTC="$(find /tmp/ttc -type f -name trusttunnel_client | head -1)"
 test -x "$SB"; test -x "$TTC"
 W="$(mktemp -d)"
-inst() { sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh "$@"; }
+inst() { sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh "$@"; }
 code204() {
     curl -s -o /dev/null -w '%{http_code}' --max-time 12 --socks5-hostname "127.0.0.1:$1" \
         https://www.gstatic.com/generate_204 || true
@@ -193,7 +193,7 @@ systemctl is-active hysteria-server xray trusttunnel
 expect "anna after the rollback: hysteria2" "$(hy_case "$A_H")" 204
 
 # ---- remove: the credentials stop working at once -----------------------------------------
-sudo env NEEDRESTART_SUSPEND=1 VEILTRIUM_PROGRESS=1 bash ./veiltrium.sh --remove-client anna --json - \
+sudo env NEEDRESTART_SUSPEND=1 VEILTRIUM_PROGRESS=1 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --remove-client anna --json - \
     > "$W/rm.json" 2> "$W/rm.log" || { cat "$W/rm.log"; exit 1; }
 jq -e '.ok == true and .action == "remove" and .name == "anna" and .main_hysteria_link_changed == false' "$W/rm.json"
 test "$(grep '^::step ' "$W/rm.log" | cut -d' ' -f2 | tr '\n' ' ')" = "write restart check-hysteria check-reality check-trusttunnel commit finished "

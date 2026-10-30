@@ -5,6 +5,8 @@
 # rules, a real client change through the API, a new password, and a re-run that changes nothing.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# A source-built suite must exercise this commit, even after earlier installer re-runs.
+if [[ -n "${PANEL_BINARY:-}" ]]; then cmp "$PANEL_BINARY" /usr/local/bin/veiltrium-panel; fi
 W="$(mktemp -d)"
 P=2096
 U="http://127.0.0.1:$P"
@@ -150,7 +152,7 @@ if bindto xray 127.0.0.2 "$(sudo awk -F= '$1=="R_STATS_PORT"{print $2}' /usr/loc
 fi
 
 # ---- PANEL_VPN=0 removes the profile (saved); PANEL_VPN=1 brings a new one ---------------------
-sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=0 bash ./veiltrium.sh > "$W/pv0.log" 2>&1 || { tail -40 "$W/pv0.log"; exit 1; }
+sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > "$W/pv0.log" 2>&1 || { tail -40 "$W/pv0.log"; exit 1; }
 if sudo grep -E 'R_ADMIN_UUID|@panel' /usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json; then echo "the panel profile stayed"; exit 1; fi
 sudo jq -e 'has("routing") | not' /usr/local/etc/xray/config.json
 if sudo grep -E '^  vless://' /root/veiltrium/panel.txt; then echo "panel.txt still offers the profile"; exit 1; fi
@@ -158,7 +160,7 @@ if systemctl show veiltrium-panel -p ExecStart --value | grep -F -- '--host'; th
 if sudo nft list chain inet veiltrium output | grep -F '127.0.0.2'; then echo "the firewall still lets Xray reach the panel"; exit 1; fi
 sudo grep -x 'N_PANEL_VPN=0' /etc/veiltrium/node.env >/dev/null
 test "$(sudo sed -n 's/^Password: //p' /root/veiltrium/panel.txt)" = "$PW"     # the password is kept
-sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=1 bash ./veiltrium.sh > "$W/pv1.log" 2>&1 || { tail -40 "$W/pv1.log"; exit 1; }
+sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=1 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > "$W/pv1.log" 2>&1 || { tail -40 "$W/pv1.log"; exit 1; }
 grep -F 'The panel is also reachable through VLESS Reality with its own profile' "$W/pv1.log" >/dev/null   # the installer's own check
 ADMIN2="$(sudo awk -F= '$1=="R_ADMIN_UUID"{print $2}' /usr/local/etc/xray/reality.env)"
 [[ "$ADMIN2" =~ ^[0-9a-f-]{36}$ && "$ADMIN2" != "$ADMIN" ]]
@@ -201,7 +203,7 @@ test "$(code -c "$J" -X POST "$U/api/login" "${h[@]}" -d "{\"password\":\"$NEW\"
 # ---- a plain re-run keeps the panel as it is ----------------------------------------------
 id0="$(systemctl show veiltrium-panel -p InvocationID --value)"
 f0="$(sudo sha256sum /usr/local/bin/veiltrium-panel /etc/veiltrium-panel/auth /etc/systemd/system/veiltrium-panel.service)"
-sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > "$W/rerun.log" 2>&1 || { tail -40 "$W/rerun.log"; exit 1; }
+sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > "$W/rerun.log" 2>&1 || { tail -40 "$W/rerun.log"; exit 1; }
 test "$id0" = "$(systemctl show veiltrium-panel -p InvocationID --value)"
 test "$f0" = "$(sudo sha256sum /usr/local/bin/veiltrium-panel /etc/veiltrium-panel/auth /etc/systemd/system/veiltrium-panel.service)"
 if sudo grep -F "$NEW" /var/log/veiltrium-install.log; then echo "the panel password is in the install log"; exit 1; fi

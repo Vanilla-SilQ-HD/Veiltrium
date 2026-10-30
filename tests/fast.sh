@@ -2,7 +2,7 @@
 # FAST checks (seconds, no root, no network services): syntax, lint, POSIX/BusyBox,
 # unit tests, HMAC agreement between the server (bash), the router (BusyBox sh) and
 # OpenSSL. The same script runs locally and in .github/workflows/fast.yml.
-# Missing tools are reported as SKIPPED (CI has all of them); FULL is e2e.yml.
+# Missing tools are reported as SKIPPED (CI has all of them); system suites are e2e.yml.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 FAIL=0
@@ -79,6 +79,12 @@ if have jq && have openssl; then
     run bash tests/unit-bundle.sh
 else
     SKIPPED+=("unit tests (need jq and openssl)")
+fi
+
+if have python3; then
+    run python3 -m unittest discover -s tests -p test_ci_policy.py
+else
+    SKIPPED+=("CI policy tests (need python3)")
 fi
 
 if have node; then

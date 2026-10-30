@@ -1,9 +1,10 @@
 name: Veiltrium fast checks
-# Veiltrium FAST: syntax, lint, BusyBox, unit tests, HMAC agreement. Seconds, on every push.
-# The full end-to-end suite is e2e.yml (manual on all branches, including main).
+# One run per PR revision; main also checks direct pushes and the merged result.
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -19,19 +20,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Tools
-        run: |
-          sudo apt-get -q update >/dev/null
-          sudo apt-get -q install -y busybox jq shellcheck >/dev/null
-          shellcheck --version | head -2; busybox | head -1; jq --version
-      - name: Fast checks
-        run: bash tests/fast.sh
-
-  panel:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: panel/go.mod
@@ -39,12 +27,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Build and test the web panel
+      - name: Tools
         run: |
-          set -euo pipefail
-          bash panel/build.sh /tmp/veiltrium-panel amd64 ci
-          cd panel
-          test -z "$(gofmt -l .)"
-          go vet ./...
-          go test ./...
-          test "$(/tmp/veiltrium-panel version)" = ci
+          sudo apt-get -q update >/dev/null
+          sudo apt-get -q install -y busybox jq shellcheck >/dev/null
+      - name: Validate workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes=
+      - name: Fast checks (including one panel build and Go tests)
+        run: bash tests/fast.sh
