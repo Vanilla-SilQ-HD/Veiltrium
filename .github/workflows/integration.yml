@@ -1,0 +1,80 @@
+name: Veiltrium integration
+# Expensive suites run for PRs only, never again on the merge or a tag push.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Select the system suite"
+        type: choice
+        options: [integration, full]
+        default: integration
+      release_panel:
+        description: "Use published checksum-pinned panel binaries"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      profile: ${{ steps.plan.outputs.profile }}
+      full_required: ${{ steps.plan.outputs.full_required }}
+      release_panel: ${{ steps.plan.outputs.release_panel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select checks from the complete PR diff
+        id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          DRAFT: ${{ github.event.pull_request.draft || false }}
+          PROFILE: ${{ inputs.profile }}
+          RELEASE_PANEL: ${{ inputs.release_panel }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            args=(--manual "$PROFILE")
+            if [[ "$RELEASE_PANEL" == true ]]; then args+=(--release-panel); fi
+            python3 tests/ci_policy.py "${args[@]}"
+          else
+            python3 tests/ci_policy.py --base "$BASE" --head "$HEAD" --draft "$DRAFT"
+          fi
+
+  system:
+    needs: plan
+    if: ${{ needs.plan.outputs.profile != 'fast' }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      profile: ${{ needs.plan.outputs.profile }}
+      release_panel: ${{ needs.plan.outputs.release_panel == 'true' }}
+
+  result:
+    name: CI policy
+    if: ${{ always() }}
+    needs: [plan, system]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the selected suite to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SYSTEM_RESULT: ${{ needs.system.result }}
+          PROFILE: ${{ needs.plan.outputs.profile }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [[ "$PROFILE" == fast ]]; then
+            test "$SYSTEM_RESULT" = skipped
+          else
+            test "$SYSTEM_RESULT" = success
+          fi

@@ -5,3 +5,7 @@ exports/
 panel/web/node_modules/
 panel/web/dist/*
 panel/veiltrium-panel*
+
+# Python CI policy tests
+__pycache__/
+*.py[cod]

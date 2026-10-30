@@ -1,12 +1,15 @@
-name: Veiltrium e2e
-# Veiltrium FULL end-to-end suite (about 30 minutes on two OS versions plus the upgrade job).
-# Run manually on the exact commit before merging, releasing or substantial changes
-# (Actions -> Veiltrium e2e -> Run workflow, or gh workflow run e2e.yml --ref <branch>).
-# A fast-forward merge of an already tested commit does not need a second FULL run.
-# Fast checks on every push: fast.yml. Nothing is merged without a green run here.
+name: Veiltrium system checks
+# INTEGRATION: one OS, real install, protocol clients, panel and standby state.
+# FULL: both OS versions, all destructive/recovery cases and legacy upgrade.
+# FAST runs separately; a merge with the same tested file tree needs no repeated FULL.
 on:
   workflow_dispatch:
     inputs:
+      profile:
+        description: "integration for API/client changes; full for installer changes or releases"
+        type: choice
+        options: [integration, full]
+        default: full
       upgrade_from:
         description: "Release the upgrade job starts from (a commit or tag of this repository)"
         default: "v2026.10.13.1"
@@ -19,42 +22,67 @@ on:
         type: boolean
         default: false
 
+  workflow_call:
+    inputs:
+      profile:
+        type: string
+        default: integration
+      upgrade_from:
+        type: string
+        default: v2026.10.13.1
+      only_upgrade:
+        type: boolean
+        default: false
+      release_panel:
+        type: boolean
+        default: false
+
 permissions:
   contents: read
 
 # A newer run on a work branch replaces an older one; runs on main always finish.
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate the selected profile
+        env:
+          PROFILE: ${{ inputs.profile }}
+          ONLY_UPGRADE: ${{ inputs.only_upgrade }}
+        run: |
+          case "$PROFILE" in integration|full) ;; *) echo "unknown profile: $PROFILE"; exit 1 ;; esac
+          if [[ "$PROFILE" == integration && "$ONLY_UPGRADE" == true ]]; then
+            echo "only_upgrade requires profile=full"; exit 1
+          fi
+
   install:
-    name: ${{ matrix.os }}
+    name: ${{ inputs.profile }} (${{ matrix.os }})
+    needs: validate
     if: ${{ !inputs.only_upgrade }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, ubuntu-24.04]
+        os: ${{ fromJSON(inputs.profile == 'integration' && '["ubuntu-24.04"]' || '["ubuntu-26.04","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: ${{ inputs.profile == 'integration' && 25 || 75 }}
     env:
       # on the runner, needrestart would restart the GitHub agent mid-job
       NEEDRESTART_SUSPEND: "1"
       GH_TOKEN: ${{ github.token }}
       RELEASE_PANEL: ${{ inputs.release_panel }}
+      PANEL_BINARY: ${{ !inputs.release_panel && '/tmp/veiltrium-panel' || '' }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Fast checks (also part of the full suite)
-        run: |
-          sudo apt-get -q install -y busybox >/dev/null
-          bash tests/fast.sh
 
       - name: Emulate a fresh VPS (sshd with password and root login)
         run: |
           set -euxo pipefail
           sudo apt-get -q update
-          sudo apt-get -q install -y openssh-server sshpass
+          sudo apt-get -q install -y openssh-server sshpass busybox
           printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' | sudo tee /etc/ssh/sshd_config.d/50-provider.conf
           sudo systemctl enable --now ssh.socket 2>/dev/null || true
           sudo systemctl start ssh.service || true
@@ -68,6 +96,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Verify the release panel contains this source
+        if: ${{ inputs.release_panel }}
+        run: |
+          set -euo pipefail
+          ref="$(sed -n 's/^PANEL_VERSION="\(panel-v[0-9.]*\)"$/\1/p' veiltrium.sh)"
+          [[ "$ref" =~ ^panel-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch --no-tags --depth=1 origin "refs/tags/$ref"
+          # Test-only files do not affect the shipped binary.
+          git diff --exit-code FETCH_HEAD HEAD -- panel ':(exclude)panel/*_test.go' ':(exclude)panel/web/scripts'
+
       - name: Build the web panel of this commit
         if: ${{ !inputs.release_panel }}
         run: bash panel/build.sh /tmp/veiltrium-panel amd64 ci
@@ -187,6 +225,7 @@ jobs:
           test -z "$(sudo find /root /run -maxdepth 1 -name '.veiltrium.*')"
 
       - name: What Russia sees (RKN block list, Globalping probes)
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euo pipefail
           sudo grep -E 'RKN block list: [0-9]+ domains' /var/log/veiltrium-install.log
@@ -395,6 +434,7 @@ jobs:
           exit $rc
 
       - name: fail2ban bans real failed password logins (from outside)
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euxo pipefail
           # The attacker is the external address 192.0.2.2 in the ext namespace (fail2ban
@@ -417,6 +457,7 @@ jobs:
           sudo ip netns exec ext timeout 5 bash -c 'exec 3<>/dev/tcp/192.0.2.1/22'
 
       - name: Reboot simulation (cold firewall, sysctl, services)
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euxo pipefail
           sudo systemctl stop nftables          # as after a reboot: no rules
@@ -457,9 +498,11 @@ jobs:
           if [ "$code" != 204 ]; then cat /tmp/hyc.log; exit 1; fi
 
       - name: Local test sites (Reality candidates, a slow download target)
+        if: ${{ inputs.profile == 'full' }}
         run: bash tests/sites-setup.sh
 
       - name: Second run changes nothing, restarts nothing, drops no connection, does not reboot
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euo pipefail
           KEEP="/etc/hysteria/node.env /etc/hysteria/config.yaml /etc/hysteria/server.crt /etc/hysteria/server.key
@@ -480,7 +523,7 @@ jobs:
           # as after an openssh-server upgrade with socket activation: no privilege separation dir
           sudo rm -rf /run/sshd
           # head closes the output after 5 lines, like a dropped SSH session without a terminal
-          sudo env NEEDRESTART_SUSPEND=1 bash -c 'set -o pipefail; bash ./veiltrium.sh | head -n 5'
+          sudo env NEEDRESTART_SUSPEND=1 PANEL_BINARY="${PANEL_BINARY:-}" bash -c 'set -o pipefail; bash ./veiltrium.sh | head -n 5'
           bash tests/longconn.sh running
           sudo rm -f /run/reboot-required
           sudo tail -n 120 /var/log/veiltrium-install.log | grep -F '== DONE ==' >/dev/null
@@ -497,6 +540,7 @@ jobs:
           bash tests/longconn.sh finish     # every download completed in full
 
       - name: A failed Hysteria or TrustTunnel change restores the previous settings
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euo pipefail
           H_FILES="/etc/hysteria/node.env /etc/hysteria/config.yaml /etc/hysteria/server.crt /etc/hysteria/server.key"
@@ -507,7 +551,7 @@ jobs:
           sudo mkdir -p /run/systemd/system/hysteria-server.service.d
           printf '[Service]\nExecStartPre=/bin/false\n' | sudo tee /run/systemd/system/hysteria-server.service.d/ci.conf >/dev/null
           sudo systemctl daemon-reload
-          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=www.example.org bash ./veiltrium.sh > /tmp/hf.log 2>&1 || rc=$?
+          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=www.example.org PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/hf.log 2>&1 || rc=$?
           sudo rm -rf /run/systemd/system/hysteria-server.service.d; sudo systemctl daemon-reload
           sudo systemctl reset-failed hysteria-server; sudo systemctl restart hysteria-server
           echo "rc=$rc"; test "$rc" = 1
@@ -519,18 +563,19 @@ jobs:
           sudo mkdir -p /run/systemd/system/trusttunnel.service.d
           printf '[Service]\nExecStartPre=/bin/false\n' | sudo tee /run/systemd/system/trusttunnel.service.d/ci.conf >/dev/null
           sudo systemctl daemon-reload
-          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.org bash ./veiltrium.sh > /tmp/tf.log 2>&1 || rc=$?
+          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.org PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/tf.log 2>&1 || rc=$?
           sudo rm -rf /run/systemd/system/trusttunnel.service.d; sudo systemctl daemon-reload
           sudo systemctl reset-failed trusttunnel; sudo systemctl restart trusttunnel
           echo "rc=$rc"; test "$rc" = 2
           grep -F 'The new TrustTunnel settings did not work; the previous settings were restored' /tmp/tf.log >/dev/null
           test "$t0" = "$(sudo sha256sum $T_FILES)"
           # the next normal run is clean and the links are the same as before
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/after.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/after.log 2>&1
           test "$links0" = "$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
           systemctl is-active hysteria-server trusttunnel
 
       - name: Hysteria and TrustTunnel names are their own saved settings, independent of Reality
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euo pipefail
           SITE="$(sudo awk -F= '$1=="R_SITE"{print $2}' /usr/local/etc/xray/reality.env)"
@@ -538,18 +583,18 @@ jobs:
           pw="$(sudo awk -F= '$1=="H_PASSWORD"{print $2}' /etc/hysteria/node.env)"
           OTHER="/usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json /etc/trusttunnel/node.env /etc/trusttunnel/cert.pem"
           other_before="$(sudo sha256sum $OTHER)"
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=bing.com bash ./veiltrium.sh > /tmp/mig1.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=bing.com PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/mig1.log 2>&1
           sudo grep -x 'H_SNI=bing.com' /etc/hysteria/node.env
           sudo openssl x509 -in /etc/hysteria/server.crt -noout -checkhost bing.com | grep -F 'does match' >/dev/null
           grep -F "Hysteria SNI changes: ${H0} -> bing.com" /tmp/mig1.log >/dev/null
           test "$(sudo sha256sum $OTHER)" = "$other_before"      # Reality and TrustTunnel untouched
           crt="$(sudo sha256sum /etc/hysteria/server.crt)"
           # the setting is saved: a run without variables keeps it (no new certificate)
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/mig2.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/mig2.log 2>&1
           sudo grep -x 'H_SNI=bing.com' /etc/hysteria/node.env
           test "$(sudo sha256sum /etc/hysteria/server.crt)" = "$crt"
           # "auto": a name of its own again - never the Reality site; same password, new certificate
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=auto bash ./veiltrium.sh > /tmp/mig3.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 HY2_SNI=auto PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/mig3.log 2>&1
           H="$(sudo awk -F= '$1=="H_SNI"{print $2}' /etc/hysteria/node.env)"
           T="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
           echo "auto -> $H (reality $SITE, trusttunnel $T)"
@@ -559,11 +604,11 @@ jobs:
           test "$(sudo sha256sum $OTHER)" = "$other_before"
           # TrustTunnel hostname: its own setting as well, same credentials
           tt_pass="$(sudo awk -F= '$1=="T_PASS"{print $2}' /etc/trusttunnel/node.env)"
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.com bash ./veiltrium.sh > /tmp/mig4.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.com PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/mig4.log 2>&1
           sudo grep -x 'T_SNI=www.example.com' /etc/trusttunnel/node.env
           sudo grep -x "H_SNI=${H}" /etc/hysteria/node.env
           test "$(sudo awk -F= '$1=="T_PASS"{print $2}' /etc/trusttunnel/node.env)" = "$tt_pass"
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=auto bash ./veiltrium.sh > /tmp/mig5.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=auto PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/mig5.log 2>&1
           T="$(sudo awk -F= '$1=="T_SNI"{print $2}' /etc/trusttunnel/node.env)"
           test "$T" != "$SITE"; test "$T" != "$H"; test "$T" != www.example.com
           URL="$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt)"
@@ -577,6 +622,7 @@ jobs:
           [ "$code" = 204 ] || { cat /tmp/mig-client.log; exit 1; }
 
       - name: Re-run with a failing Reality check keeps the working node and its link
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euo pipefail
           KEEP="/etc/hysteria/node.env /usr/local/etc/xray/reality.env /usr/local/etc/xray/config.json"
@@ -586,7 +632,7 @@ jobs:
           sudo nft add chain inet citest out '{ type filter hook output priority 10; policy accept; }'
           sudo nft add rule inet citest out meta skuid "$(id -u xray)" tcp dport 443 drop
           rc=0
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/fail.log 2>&1 || rc=$?
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/fail.log 2>&1 || rc=$?
           sudo nft delete table inet citest
           echo "rc=$rc"
           [ "$rc" = 2 ]
@@ -597,15 +643,18 @@ jobs:
           sudo grep -m1 '^vless://' /root/veiltrium/client.txt >/dev/null
 
       - name: Reality site selection, re-selection, rollback, interruption, lock, trial
+        if: ${{ inputs.profile == 'full' }}
         run: bash tests/reselect-ci.sh
 
       - name: Home-network probe (Keenetic simulation with the router's sing-box)
+        if: ${{ inputs.profile == 'full' }}
         run: bash tests/probe-ci.sh
 
       - name: Non-default Reality and TrustTunnel ports survive a plain re-run
+        if: ${{ inputs.profile == 'full' }}
         run: |
           set -euo pipefail
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 REALITY_PORT=8444 TT_PORT=9443 bash ./veiltrium.sh > /tmp/p1.log 2>&1             || { tail -40 /tmp/p1.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 REALITY_PORT=8444 TT_PORT=9443 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/p1.log 2>&1             || { tail -40 /tmp/p1.log; exit 1; }
           sudo ss -Htlpn 'sport = :8444' | grep '"xray"' >/dev/null
           sudo ss -Htulpn 'sport = :9443' | grep '"trusttunnel_end"' >/dev/null
           FILES="/usr/local/etc/xray/config.json /etc/trusttunnel/vpn.toml /etc/nftables.conf"
@@ -614,7 +663,7 @@ jobs:
           before="$(sudo sha256sum $FILES)"; ids0="$(ids)"; links0="$(links)"
           links | grep -F ':8444?' >/dev/null
           # a plain re-run: same ports, same files, same links, nothing restarted
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/p2.log 2>&1 || { tail -40 /tmp/p2.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/p2.log 2>&1 || { tail -40 /tmp/p2.log; exit 1; }
           test "$before" = "$(sudo sha256sum $FILES)"
           test "$ids0" = "$(ids)"
           test "$links0" = "$(links)"
@@ -625,7 +674,7 @@ jobs:
           grep -F 'clients main + 0 added' /tmp/p3.log >/dev/null
           grep -F 'port 8444' /tmp/p3.log >/dev/null
           # back to the defaults, explicitly
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 REALITY_PORT=443 TT_PORT=8443 bash ./veiltrium.sh > /tmp/p4.log 2>&1
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 REALITY_PORT=443 TT_PORT=8443 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/p4.log 2>&1
           sudo ss -Htlpn 'sport = :443' | grep '"xray"' >/dev/null
 
       - name: Added clients (real clients on every protocol, re-run, rollback, revoke)
@@ -635,7 +684,22 @@ jobs:
         run: bash tests/panel-ci.sh
 
       - name: Features of 2026-10-20 (traffic, limits, reset, standby, alerts, short command; export, uninstall and import last)
+        if: ${{ inputs.profile == 'full' }}
         run: bash tests/features-ci.sh
+
+      - name: Standby state and device bundles (integration)
+        if: ${{ inputs.profile == 'integration' }}
+        run: |
+          set -euo pipefail
+          sudo systemctl stop veiltrium-traffic.timer
+          trap 'sudo systemctl start veiltrium-traffic.timer' EXIT
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --add-client carol
+          bash tests/features-ci.sh d
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --remove-client carol
+
+      - name: Verify the source panel survived installer re-runs
+        if: ${{ !inputs.release_panel }}
+        run: cmp /tmp/veiltrium-panel /usr/local/bin/veiltrium-panel
 
       - name: Diagnostics
         if: always()
@@ -652,6 +716,8 @@ jobs:
   # the same keys, passwords, certificates and links, the old files gone, the services
   # restarted once (their config comments changed). A second run then changes nothing.
   upgrade:
+    needs: validate
+    if: ${{ inputs.profile == 'full' }}
     name: upgrade from ${{ inputs.upgrade_from || 'v2026.10.13.1' }} (ubuntu-24.04)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -729,7 +795,7 @@ jobs:
           printf '#!/bin/sh\necho "apt-get: simulated failure" >&2\nexit 100\n' > /tmp/failapt/apt-get
           chmod 755 /tmp/failapt/apt-get
           rc=0
-          sudo env PATH="/tmp/failapt:$PATH" NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/cut.log 2>&1 || rc=$?
+          sudo env PATH="/tmp/failapt:$PATH" NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/cut.log 2>&1 || rc=$?
           echo "cut-off move: rc=$rc"; ls -la /tmp/cut.log; grep -n -E 'ERROR|\[[0-9]+/13\]' /tmp/cut.log || true
           [ "$rc" = 1 ] && grep -F 'could not update package lists' /tmp/cut.log >/dev/null || { tail -40 /tmp/cut.log; exit 1; }
           set -x
@@ -748,7 +814,7 @@ jobs:
           if sudo bash ./veiltrium.sh --diagnose > /tmp/half.log 2>&1; then echo "diagnose ran on a half-moved node"; exit 1; fi
           grep -F 'run the installer once' /tmp/half.log >/dev/null || { cat /tmp/half.log; exit 1; }
           # 2) the move run to the end
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/up.log 2>&1 || { tail -60 /tmp/up.log; exit 1; }
           grep -F 'moving it to the Veiltrium names' /tmp/up.log >/dev/null || { echo "the move did not run"; tail -60 /tmp/up.log; exit 1; }
           if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then exit 1; fi
           # the same secrets and links (the node name file only gains the GLOBALPING setting)
@@ -783,7 +849,7 @@ jobs:
           sudo grep -m1 '^vless://' /root/veiltrium/client.txt | grep -F "#${LABEL}" >/dev/null
           # the maintenance modes work on the moved node
           # (GLOBALPING=0: a CI runner is never reachable from Russia, which --diagnose rightly reports as a failure)
-          sudo env GLOBALPING=0 bash ./veiltrium.sh --diagnose > /tmp/diag.log 2>&1 || { cat /tmp/diag.log; exit 1; }
+          sudo env GLOBALPING=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --diagnose > /tmp/diag.log 2>&1 || { cat /tmp/diag.log; exit 1; }
           sudo bash ./veiltrium.sh --list-clients --json - | jq -e '.clients | map(.name) == ["main", "anna"]'
           # a second run changes nothing and restarts nothing
           ALL="$KEYS /etc/hysteria/config.yaml /etc/trusttunnel/vpn.toml /etc/trusttunnel/hosts.toml
@@ -792,7 +858,7 @@ jobs:
             /etc/ssh/sshd_config.d/00-veiltrium-hardening.conf /etc/veiltrium/node.env /root/veiltrium/probe.env"
           ids() { for s in hysteria-server xray trusttunnel fail2ban; do systemctl show "$s" -p InvocationID --value; done; }
           all0="$(sudo sha256sum $ALL)"; ids0="$(ids)"
-          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 bash ./veiltrium.sh > /tmp/up2.log 2>&1 || { tail -60 /tmp/up2.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/up2.log 2>&1 || { tail -60 /tmp/up2.log; exit 1; }
           test "$all0" = "$(sudo sha256sum $ALL)"
           test "$ids0" = "$(ids)"
           if grep -F 'moving it to the Veiltrium names' /tmp/up2.log; then exit 1; fi
@@ -815,7 +881,7 @@ jobs:
           }
           c="$(hy "$(sudo grep -m1 '^hysteria2://' /root/veiltrium/client.txt)")"; echo "main -> $c"; [ "$c" = 204 ]
           c="$(hy "$(sudo grep -m1 '^hysteria2://' /root/veiltrium/clients/anna.txt)")"; echo "anna -> $c"; [ "$c" = 204 ]
-          sudo env NEEDRESTART_SUSPEND=1 bash ./veiltrium.sh --remove-client anna > /tmp/rm.log 2>&1 || { cat /tmp/rm.log; exit 1; }
+          sudo env NEEDRESTART_SUSPEND=1 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --remove-client anna > /tmp/rm.log 2>&1 || { cat /tmp/rm.log; exit 1; }
           sudo test ! -e /root/veiltrium/clients/anna.txt
 
       - name: Diagnostics

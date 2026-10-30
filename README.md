@@ -639,10 +639,25 @@ The examples use the Entware SSH server on the router (often port 222); adjust a
 
 ## Tests
 
-Two levels:
+Three levels:
 
-- **FAST** (`tests/fast.sh`, workflow `fast.yml`, on every push, seconds): `bash -n`, shellcheck, `dash` and BusyBox syntax for the probe, unit tests of scoring, choice, home-network records, client configs and links, and HMAC (RFC 4231 vectors and agreement with OpenSSL for both the server and the BusyBox implementation).
-- **FULL** (workflow `e2e.yml`, about 30 minutes; manual only, on any branch including `main`, before merge or release). It runs on Ubuntu 26.04 and 24.04 and covers a fresh install with the firewall checked from a separate network namespace, real clients of all three protocols, the exact router sing-box build, fail2ban bans, reboot simulation, re-runs with live connections, added clients, the web panel, every rollback path, local test sites for Reality selection, the Keenetic probe under BusyBox and an upgrade job from an earlier release.
+| Change | Checks |
+| --- | --- |
+| Documentation, translations, web interface | **FAST**: syntax, shellcheck, unit/UI tests and one panel build |
+| Panel API/helper, client operations, CI/test configuration | **INTEGRATION**: installed Ubuntu 24.04 node, real clients of all three protocols, panel authentication/CSRF/permissions, client changes, standby state and device bundles |
+| `veiltrium.sh`, Keenetic probe, release binary packaging | **FULL**: both OS versions, failure/recovery scenarios and legacy upgrade |
+
+- FAST (`fast.yml`) runs on PR updates and pushes to `main`. Work-branch pushes and tags do not duplicate the PR run; `tests/fast.sh` builds/tests the panel once.
+- `integration.yml` selects checks from the complete PR diff, including deletions and renames. Unknown code paths require FULL. An installer-change draft runs INTEGRATION; marking it Ready for review starts FULL. Updating a ready PR cancels the obsolete run and checks the new revision.
+- INTEGRATION reuses the FULL tests without lengthy Reality selection, destructive recovery cases, reboot simulation or export/reinstall. Its timeout is 25 minutes; actual time depends on installation and network access. FAST separately covers unit tests and the build. If a change alters a FULL-only test scenario, run FULL manually to validate that scenario; CI plumbing changes alone do not launch it automatically.
+- A ready PR that changes the installer version or panel pins automatically runs FULL with `release_panel=true`. The published tag must contain the same panel source. Prepare the final version/pins before marking the PR ready; reuse that successful run for the release instead of dispatching another FULL.
+- FULL (`e2e.yml`, typically 45–55 minutes) is required before an installer release, on the final version with pinned binaries. It does not automatically repeat on merge or a tag. A result may be reused after merging when the file tree is identical. For a release:
+
+  ```bash
+  gh workflow run e2e.yml --ref BRANCH -f profile=full -f release_panel=true
+  ```
+
+  Manual short check: `gh workflow run e2e.yml --ref BRANCH -f profile=integration`. Upgrade only: `-f profile=full -f only_upgrade=true`. Merging requires green FAST and `CI policy`; important installer changes also require green FULL. Route installer changes through a PR.
 
 <details>
 <summary>What FULL covers</summary>
