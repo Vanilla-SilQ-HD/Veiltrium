@@ -9,3 +9,8 @@ panel/veiltrium-panel*
 # Python CI policy tests
 __pycache__/
 *.py[cod]
+
+# Browser regression tooling and reports
+tests/browser/node_modules/
+tests/browser/test-results/
+tests/browser/playwright-report/
