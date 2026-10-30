@@ -12,7 +12,7 @@ from ci_policy import changed_files, plan, release_metadata_changed
 
 class Routing(unittest.TestCase):
     def test_docs_and_frontend_need_fast_only(self):
-        self.assertEqual(plan(["README.ru.md", "panel/web/src/lib/Overview.svelte"])['profile'], "fast")
+        self.assertEqual(plan(["README.ru.md", "panel/web/src/lib/Overview.svelte", "tests/browser/setup.spec.mjs"])['profile'], "fast")
 
     def test_backend_and_client_checks_need_integration(self):
         for path in ("panel/server.go", "panel/helper.go", "tests/panel-ci.sh", "tests/features-ci.sh"):

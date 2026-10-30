@@ -291,6 +291,30 @@ sudo bash ./veiltrium.sh --status --json - 2>/dev/null | jq -e '.standby == ["20
 receipt="$(sudo env PUBLIC_IP=203.0.113.5 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh --standby-receipt)"
 sudo bash ./veiltrium.sh --verify-standby "$receipt" --json - > "$W/standby-state.json"
 jq -e '.servers[0].state == "matching" and .servers[1].state == "unverified"' "$W/standby-state.json" > /dev/null
+# --watch must reload real clients, deduplicate transitions and recover on the CLI path.
+mkdir -p "$W/alert-bin"
+cat > "$W/alert-bin/curl" <<'STUB'
+#!/usr/bin/env bash
+cat >> "${STANDBY_ALERT_LOG}.config"
+printf '%s\n' "$*" >> "${STANDBY_ALERT_LOG}"
+printf 200
+STUB
+chmod 755 "$W/alert-bin/curl"
+watch_standby() {
+    sudo env PATH="$W/alert-bin:$PATH" STANDBY_ALERT_LOG="$W/standby-notices" \
+        ALERT_TG_TOKEN=none ALERT_WEBHOOK=https://alerts.invalid/standby-test bash ./veiltrium.sh --watch
+}
+watch_standby; watch_standby
+# The second address has never been verified; the first has a matching snapshot.
+test "$(sudo grep -c 'standby 203.0.113.6:' "$W/standby-notices")" = 1
+inst --set-client carol --limit 5G > "$W/watch-limit.log" 2>&1 || { cat "$W/watch-limit.log"; exit 1; }
+watch_standby; watch_standby
+test "$(sudo grep -c 'snapshot differs' "$W/standby-notices")" = 1
+inst --set-client carol --limit none > "$W/watch-unlimit.log" 2>&1 || { cat "$W/watch-unlimit.log"; exit 1; }
+watch_standby; watch_standby
+test "$(sudo grep -c 'matches this node again' "$W/standby-notices")" = 1
+# No real channels were saved by the watcher; discard only this CI ledger.
+sudo rm -f /var/lib/veiltrium/alert-state.standby
 if sudo bash ./veiltrium.sh --verify-standby "${receipt};id" > "$W/receipt-bad.log" 2>&1; then fail "a malformed receipt was accepted"; fi
 inst --set-client carol --limit 5G > "$W/receipt-limit.log" 2>&1 || { cat "$W/receipt-limit.log"; exit 1; }
 sudo bash ./veiltrium.sh --standby-status --json - 2>/dev/null | jq -e '.servers[0].state == "changed"' > /dev/null
