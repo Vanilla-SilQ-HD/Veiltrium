@@ -285,6 +285,17 @@ snap() {
 snap > "$W/snap0.txt"
 instenv STANDBY_HOSTS=203.0.113.5,203.0.113.6 > "$W/sb1.log" 2>&1 || { tail -40 "$W/sb1.log"; exit 1; }
 sudo bash ./veiltrium.sh --status --json - 2>/dev/null | jq -e '.standby == ["203.0.113.5", "203.0.113.6"]'
+# Simulate a second node's saved-state snapshot without opening a remote control port.
+# The source address differs; the shared state must still match. The other standby
+# remains unverified, and changing a local restriction must invalidate the match.
+receipt="$(sudo env PUBLIC_IP=203.0.113.5 bash ./veiltrium.sh --standby-receipt)"
+sudo bash ./veiltrium.sh --verify-standby "$receipt" --json - > "$W/standby-state.json"
+jq -e '.servers[0].state == "matching" and .servers[1].state == "unverified"' "$W/standby-state.json" > /dev/null
+if sudo bash ./veiltrium.sh --verify-standby "${receipt};id" > "$W/receipt-bad.log" 2>&1; then fail "a malformed receipt was accepted"; fi
+inst --set-client carol --limit 5G > "$W/receipt-limit.log" 2>&1 || { cat "$W/receipt-limit.log"; exit 1; }
+sudo bash ./veiltrium.sh --standby-status --json - 2>/dev/null | jq -e '.servers[0].state == "changed"' > /dev/null
+inst --set-client carol --limit none > "$W/receipt-unlimit.log" 2>&1 || { cat "$W/receipt-unlimit.log"; exit 1; }
+sudo bash ./veiltrium.sh --standby-status --json - 2>/dev/null | jq -e '.servers[0].state == "matching"' > /dev/null
 for f in "$MAIN" "$CF"; do
     sudo grep -c '^hysteria2://.*@203.0.113.5:443/' "$f" | grep -x 1 > /dev/null
     sudo grep -c '^vless://.*@203.0.113.6:443' "$f" | grep -x 1 > /dev/null
@@ -449,9 +460,12 @@ test -n "$(ssh-keyscan -T 5 127.0.0.1 2> /dev/null | grep -F 'ssh-')" || fail "s
 # a second uninstall finds nothing
 instenv VT_YES=uninstall --uninstall > "$W/un2.log" 2>&1 || { cat "$W/un2.log"; exit 1; }
 # a fresh install from the export
-instenv GLOBALPING=0 PANEL_BINARY=/tmp/veiltrium-panel VT_IMPORT_PASSPHRASE="$PASS" --import "$EXPF" > "$W/imp.log" 2>&1 \
+panel_args=()
+if [[ "${RELEASE_PANEL:-false}" != true ]]; then panel_args+=(PANEL_BINARY=/tmp/veiltrium-panel); fi
+instenv GLOBALPING=0 "${panel_args[@]}" VT_IMPORT_PASSPHRASE="$PASS" --import "$EXPF" > "$W/imp.log" 2>&1 \
     || { tail -60 "$W/imp.log"; exit 1; }
 grep -F 'Imported the node of' "$W/imp.log" > /dev/null
+if [[ "${RELEASE_PANEL:-false}" == true ]]; then bash tests/release-panel-ci.sh; fi
 if sudo grep -F 'ERROR:' /var/log/veiltrium-install.log; then fail "the import logged an error"; fi
 links1="$(creds "$MAIN" "$CF")"
 [ "$links0" = "$links1" ] || { echo "links changed:"; diff <(echo "$links0") <(echo "$links1") | sed -E 's/[0-9a-f]{20,}/<secret>/g'; exit 1; }

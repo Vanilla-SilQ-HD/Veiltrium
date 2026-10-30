@@ -14,6 +14,10 @@ on:
         description: "Run only the upgrade job (a targeted re-test of the move, about 15 minutes)"
         type: boolean
         default: false
+      release_panel:
+        description: "Install the published checksum-pinned panel, without PANEL_BINARY"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -37,6 +41,7 @@ jobs:
       # on the runner, needrestart would restart the GitHub agent mid-job
       NEEDRESTART_SUSPEND: "1"
       GH_TOKEN: ${{ github.token }}
+      RELEASE_PANEL: ${{ inputs.release_panel }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,12 +69,24 @@ jobs:
         with:
           node-version: 24
       - name: Build the web panel of this commit
+        if: ${{ !inputs.release_panel }}
         run: bash panel/build.sh /tmp/veiltrium-panel amd64 ci
 
       - name: Install (first run)
         # GLOBALPING=0 (saved): the many re-runs below would exceed Globalping's anonymous limit;
         # the check itself runs once in its own step and in the upgrade job
-        run: sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 GLOBALPING=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./veiltrium.sh
+        env:
+          RELEASE_PANEL: ${{ inputs.release_panel }}
+        run: |
+          if [[ "$RELEASE_PANEL" == true ]]; then
+            sudo env -u PANEL_BINARY NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 GLOBALPING=0 bash ./veiltrium.sh
+          else
+            sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 GLOBALPING=0 PANEL_BINARY=/tmp/veiltrium-panel bash ./veiltrium.sh
+          fi
+
+      - name: Verify the published panel and installed helper
+        if: ${{ inputs.release_panel }}
+        run: bash tests/release-panel-ci.sh
 
       - name: Assertions
         run: |
@@ -780,6 +797,10 @@ jobs:
           test "$ids0" = "$(ids)"
           if grep -F 'moving it to the Veiltrium names' /tmp/up2.log; then exit 1; fi
           echo "the move kept every secret and link; the second run changed nothing"
+
+      - name: Verify the published panel after upgrade
+        if: ${{ inputs.release_panel }}
+        run: bash tests/release-panel-ci.sh
 
       - name: Links of the moved node work
         run: |

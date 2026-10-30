@@ -23,9 +23,10 @@ import (
 var (
 	helperVerbs = map[string]bool{"status": false, "list-clients": false, "check-russia": false,
 		"show-client": true, "add-client": true, "remove-client": true, "reset-client": true, "disable-client": true, "enable-client": true,
-		"set-client": true, "audit": false}
-	clientNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
-	stepRE       = regexp.MustCompile(`^[a-z-]{1,32}$`)
+		"set-client": true, "audit": false, "standby-status": false, "verify-standby": true}
+	standbyReceiptRE = regexp.MustCompile(`^vt-standby-1\|[0-9.]{7,15}\|[0-9]{9,11}\|[0-9a-f]{64}\|[0-9a-f]{64}$`)
+	clientNameRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	stepRE           = regexp.MustCompile(`^[a-z-]{1,32}$`)
 	// the whole argument of set-client, the same rule as HELPER_SET_RE in veiltrium.sh
 	setArgRE = regexp.MustCompile(`^([a-z0-9][a-z0-9_-]{0,31}) limit=(none|[0-9]{1,16}) expires=(none|[0-9]{4}-[0-9]{2}-[0-9]{2}) reset=(none|daily|weekly|monthly)$`)
 )
@@ -69,6 +70,12 @@ func ValidRequest(verb, arg string) error {
 	}
 	if needsArg != (arg != "") {
 		return errors.New("wrong arguments")
+	}
+	if verb == "verify-standby" {
+		if !standbyReceiptRE.MatchString(arg) {
+			return errors.New("paste the complete signed standby receipt")
+		}
+		return nil
 	}
 	if verb == "set-client" {
 		m := setArgRE.FindStringSubmatch(arg)

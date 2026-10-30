@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CI only: the web panel on an installed node (installed with PANEL_BINARY=<this commit's
-# build>). Loopback only, nothing for the proxies or the outside, the panel's own VLESS Reality
+# CI only: the web panel on an installed node (source build or published pinned release).
+# Loopback only, nothing for the proxies or the outside, the panel's own VLESS Reality
 # profile (and only it) gets through, a helper that runs only known requests, login and CSRF
 # rules, a real client change through the API, a new password, and a re-run that changes nothing.
 set -euo pipefail
@@ -76,6 +76,11 @@ curl -s -D "$W/hdr" -o /dev/null -b "$J" "$U/api/status"
 grep -i '^content-security-policy: .*frame-ancestors' "$W/hdr" >/dev/null
 test "$(code -b "$J" "$U/api/status")" = 200
 jq -e '.schema == "veiltrium-status/1" and .protection.firewall == true' "$W/body"
+test "$(code "$U/api/standby")" = 401
+test "$(code -b "$J" "$U/api/standby")" = 200
+jq -e '.schema == "veiltrium-standby/1" and .max_age_seconds == 86400
+    and (.local_receipt | startswith("vt-standby-1|")) and (.fingerprint | test("^[0-9a-f]{64}$"))' "$W/body"
+test "$(code -b "$J" -X POST "$U/api/standby/verify" "${h[@]}" -d '{"receipt":"bad"}')" = 400
 test "$(code -b "$J" "$U/api/clients")" = 200
 jq -e '.clients[0].name == "main"' "$W/body"
 test "$(code -b "$J" -X POST "$U/api/russia-check")" = 403                     # no CSRF header
