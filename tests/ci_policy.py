@@ -43,7 +43,7 @@ def plan(paths, draft=False):
     levels = {risk(path) for path in paths}
     required = "full" if "full" in levels else "integration" if "integration" in levels else "fast"
     selected = "integration" if required == "full" and draft else required
-    return {"profile": selected, "full_required": required == "full",
+    return {"profile": selected, "full_required": required == "full", "release_panel": False,
             "reason": "FULL deferred until Ready for review" if selected != required else f"Changed files require {required.upper()}"}
 
 
@@ -57,15 +57,35 @@ def changed_files(base, head):
     return [p.decode("utf-8", errors="surrogateescape") for p in raw.split(b"\0") if p]
 
 
+def installer_metadata(text):
+    return dict(re.findall(
+        r'^(SCRIPT_VERSION|PANEL_VERSION|PANEL_SHA256_AMD64|PANEL_SHA256_ARM64)="([^"]*)"$',
+        text, re.MULTILINE))
+
+
+def release_metadata_changed(base, head):
+    metadata = []
+    for revision in (base, head):
+        result = subprocess.run(["git", "show", f"{revision}:veiltrium.sh"],
+                                capture_output=True, text=True, check=False)
+        metadata.append(installer_metadata(result.stdout))
+    return all(len(fields) == 4 for fields in metadata) and metadata[0] != metadata[1]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="")
     parser.add_argument("--draft", choices=("true", "false"), default="false")
     parser.add_argument("--manual", choices=("integration", "full"))
+    parser.add_argument("--release-panel", action="store_true")
     args = parser.parse_args()
-    result = ({"profile": args.manual, "full_required": args.manual == "full", "reason": "Manual selection"}
+    result = ({"profile": args.manual, "full_required": args.manual == "full", "release_panel": args.release_panel, "reason": "Manual selection"}
               if args.manual else plan(changed_files(args.base, args.head), args.draft == "true"))
+    if not args.manual and result["profile"] == "full":
+        result["release_panel"] = release_metadata_changed(args.base, args.head)
+        if result["release_panel"]:
+            result["reason"] += "; final version/pins select published panel"
     print(json.dumps(result))
     if output := os.environ.get("GITHUB_OUTPUT"):
         with Path(output).open("a", encoding="utf-8") as f:

@@ -650,6 +650,7 @@ Three levels:
 - FAST (`fast.yml`) runs on PR updates and pushes to `main`. Work-branch pushes and tags do not duplicate the PR run; `tests/fast.sh` builds/tests the panel once.
 - `integration.yml` selects checks from the complete PR diff, including deletions and renames. Unknown code paths require FULL. An installer-change draft runs INTEGRATION; marking it Ready for review starts FULL. Updating a ready PR cancels the obsolete run and checks the new revision.
 - INTEGRATION reuses the FULL tests without lengthy Reality selection, destructive recovery cases, reboot simulation or export/reinstall. Its timeout is 25 minutes; actual time depends on installation and network access. FAST separately covers unit tests and the build. If a change alters a FULL-only test scenario, run FULL manually to validate that scenario; CI plumbing changes alone do not launch it automatically.
+- A ready PR that changes the installer version or panel pins automatically runs FULL with `release_panel=true`. The published tag must contain the same panel source. Prepare the final version/pins before marking the PR ready; reuse that successful run for the release instead of dispatching another FULL.
 - FULL (`e2e.yml`, typically 45–55 minutes) is required before an installer release, on the final version with pinned binaries. It does not automatically repeat on merge or a tag. A result may be reused after merging when the file tree is identical. For a release:
 
   ```bash
