@@ -6777,6 +6777,8 @@ EOF
             load_tt_state
             ROLLBACKS+=("trusttunnel: the new settings did not work; the previous settings were restored")
             warn "The new TrustTunnel settings did not work; the previous settings were restored."
+            # The old link is valid even if the restored service is still starting.
+            TT_URL="$(grep -m1 '^tt://' "${CLIENT_FILE}" 2>/dev/null || true)"
             if wait_listening -Htlpn "${TT_PORT}" trusttunnel_end; then TT_UP=1; fi
         fi
     fi

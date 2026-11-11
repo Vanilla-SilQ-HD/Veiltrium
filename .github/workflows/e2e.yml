@@ -591,7 +591,9 @@ jobs:
           if sudo nft list chain inet veiltrium input | grep -F 'dport 9443 accept' >/dev/null; then
             echo "the failed TrustTunnel port stayed open"; exit 1
           fi
-          sudo grep -m1 '^tt://' /root/veiltrium/client.txt >/dev/null
+          sudo grep -m1 '^tt://' /root/veiltrium/client.txt >/dev/null || {
+            echo "TrustTunnel client link is missing after rollback"; exit 1;
+          }
           # the next normal run is clean and the links are the same as before
           sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/after.log 2>&1
           test "$links0" = "$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
