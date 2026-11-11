@@ -204,6 +204,9 @@ RUSSIA_FILE="${STATE_DIR}/russia.json"         # the last check from Russian net
 TRAFFIC_FILE="${STATE_DIR}/traffic.json"       # per-client traffic counters (see traffic_collect)
 TRAFFIC_LOCK="/run/veiltrium-traffic.lock"     # its own lock: the timer and an install must not write at once
 TXN_DIR="${STATE_DIR}/txn"                     # backups of changes in progress (see txn_begin)
+FW_TXN=0
+FW_OLD_REALITY_PORT=""; FW_OLD_TT_PORT=""
+FW_OLD_REALITY_ENABLE=0; FW_OLD_TT_ENABLE=0
 ENFORCE_FAILED="${STATE_DIR}/enforce-failed"      # set while a timer-started --enforce runs; left behind if it fails
 RECOVER_BIN="/usr/local/sbin/veiltrium-recover"
 CLI_BIN="/usr/local/bin/veiltrium"            # the short command (cli_wrapper_text)
@@ -1190,7 +1193,7 @@ selection_json() {
         }' "${TMPD}/selection.tsv"
 }
 
-# ---- Crash safety: every change of a working node is a transaction ---------
+# ---- Crash safety: proxy and firewall changes are transactional --------------
 # Before a change, the files it may replace are copied to ${TXN_DIR}/<name> and
 # a "pending" marker is set. The change is committed only after a real client
 # check. Otherwise the previous files come back, without anyone running the
@@ -1275,7 +1278,7 @@ install_recover() {
 [Unit]
 Description=Restore settings of an interrupted Veiltrium change
 After=local-fs.target
-Before=hysteria-server.service xray.service trusttunnel.service
+Before=nftables.service hysteria-server.service xray.service trusttunnel.service
 ConditionPathExistsGlob=${TXN_DIR}/*/pending
 
 [Service]
@@ -1380,11 +1383,13 @@ reality_switch() {
     if [[ "${RP_STATUS}" == "ok" && "${RP_FALLBACK}" == "ok" ]]; then
         R_SITE="${site}"
         save_reality_state
+        firewall_checkpoint
         txn_commit reality
         SWITCH_OK=1
         return 0
     fi
     txn_restore reality
+    firewall_restore_reality
     return 0
 }
 
@@ -1402,7 +1407,13 @@ reality_keep() {
         fi
         reality_verify_production "${site}"
         R_SITE="${site}"
-        if [[ "${RP_STATUS}" == "ok" ]]; then REALITY_OK=1; save_reality_state; fi
+        if [[ "${RP_STATUS}" == "ok" ]]; then
+            REALITY_OK=1
+            save_reality_state
+            firewall_checkpoint
+        else
+            firewall_restore_reality
+        fi
     else
         rm -f "${XRAY_DIR}/config.new.json"
         reality_switch "${site}"
@@ -1786,16 +1797,19 @@ russia_check() {
     russia_summary "${TMPD}/gp-icmp.json" "${TMPD}/gp-tcp-r.json" "${TMPD}/gp-tcp-t.json" "${rport}" "${tport}" \
         > "${TMPD}/russia.json" || true
     RU_VERDICT="$(jq -r '.verdict // "unchecked"' "${TMPD}/russia.json" 2>/dev/null || echo unchecked)"
-    install -d -m 700 "${STATE_DIR}"
-    # A check that got no answer from the API (down, rate limit) does not replace the last real result.
-    if [[ -s "${TMPD}/russia.json" ]] && { [[ "${RU_VERDICT}" != "unchecked" ]] || [[ ! -s "${RUSSIA_FILE}" ]]; }; then
-        if russia_streak_merge "${RUSSIA_FILE}" "${TMPD}/russia.json" > "${TMPD}/russia.merged" 2>/dev/null && [[ -s "${TMPD}/russia.merged" ]]; then
-            mv -f "${TMPD}/russia.merged" "${TMPD}/russia.json"
-        fi
-        install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"
-        if (( A_ENABLED == 1 )) && [[ "${RU_VERDICT}" != "unchecked" ]]; then
-            alert_russia_eval "${RU_VERDICT}" "$(jq -r '.bad_streak // 0' "${RUSSIA_FILE}" 2>/dev/null || echo 0)" \
-                "$(jq -r '(.networks // []) | join(", ")' "${RUSSIA_FILE}" 2>/dev/null || true)"
+    # Diagnosis is read-only: use the fresh file in TMPD, but do not replace state or alert.
+    if [[ "${MODE}" != "diagnose" ]]; then
+        install -d -m 700 "${STATE_DIR}"
+        # A check that got no answer from the API (down, rate limit) does not replace the last real result.
+        if [[ -s "${TMPD}/russia.json" ]] && { [[ "${RU_VERDICT}" != "unchecked" ]] || [[ ! -s "${RUSSIA_FILE}" ]]; }; then
+            if russia_streak_merge "${RUSSIA_FILE}" "${TMPD}/russia.json" > "${TMPD}/russia.merged" 2>/dev/null && [[ -s "${TMPD}/russia.merged" ]]; then
+                mv -f "${TMPD}/russia.merged" "${TMPD}/russia.json"
+            fi
+            install -m 600 "${TMPD}/russia.json" "${RUSSIA_FILE}"
+            if (( A_ENABLED == 1 )) && [[ "${RU_VERDICT}" != "unchecked" ]]; then
+                alert_russia_eval "${RU_VERDICT}" "$(jq -r '.bad_streak // 0' "${RUSSIA_FILE}" 2>/dev/null || echo 0)" \
+                    "$(jq -r '(.networks // []) | join(", ")' "${RUSSIA_FILE}" 2>/dev/null || true)"
+            fi
         fi
     fi
     line="$(jq -r '"ping \(.icmp.ok)/\(.icmp.total)"
@@ -1816,9 +1830,10 @@ russia_check() {
 # ---- Report (no secrets) ----------------------------------------------------
 # Writes the report JSON to stdout from the global R_*/H_*/T_* results.
 build_report() {
-    local sel='null'
+    local sel='null' russia_file="${RUSSIA_FILE}"
     if [[ -s "${TMPD}/selection.json" ]]; then sel="$(cat "${TMPD}/selection.json")"
     elif [[ -s "${SELECTION_FILE}" ]]; then sel="$(cat "${SELECTION_FILE}")"; fi
+    if [[ "${MODE}" == "diagnose" && -s "${TMPD}/russia.json" ]]; then russia_file="${TMPD}/russia.json"; fi
     jq -n --arg now "$(date -u +%FT%TZ)" --arg version "${SCRIPT_VERSION}" --arg mode "${MODE}" \
         --arg server "${PUBLIC_IP:-}" --arg label "${LABEL}" --arg n_clients "${#CL_NAMES[@]}" --arg standby "${N_STANDBY}" \
         --arg h_auth "${H_AUTH:-}" \
@@ -1836,7 +1851,7 @@ build_report() {
         --arg changes "$(printf '%s\n' "${CHANGES[@]+"${CHANGES[@]}"}")" \
         --arg links "$(printf '%s\n' "${LINKS_CHANGED[@]+"${LINKS_CHANGED[@]}"}")" \
         --arg rollbacks "$(printf '%s\n' "${ROLLBACKS[@]+"${ROLLBACKS[@]}"}")" \
-        --argjson selection "${sel}"         --argjson russia "$(jq -c '{verdict, checked_at, networks, bad_streak: (.bad_streak // 0)}' "${RUSSIA_FILE}" 2>/dev/null || echo null)" '
+        --argjson selection "${sel}"         --argjson russia "$(jq -c '{verdict, checked_at, networks, bad_streak: (.bad_streak // 0)}' "${russia_file}" 2>/dev/null || echo null)" '
         def lines: split("\n") | map(select(length > 0));
         def proof($vps; $mts): {vps_verified: ($vps == "verified" or $vps == "ok"), vps: $vps,
             mts_verified: ($mts == "ok"), mts: $mts};
@@ -4496,6 +4511,21 @@ alert_russia_eval() {
 # ---- Updates ----------------------------------------------------------------
 UPD_REPO="Vanilla-SilQ-HD/Veiltrium"
 UPD_TAG=""; UPD_ERR=""; UPD_DIR="/root"
+# PEM public key for release signatures. The private key belongs only in GitHub Secrets.
+UPDATE_PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAwY6jrCzBONbEw0Rnrpaw
+Dh3UoQS+3QVWuW0TK0hgAqxAw18RV/hZFU0Ap0vojWTpia43+XNNRpupy78sasIE
+FFSfDG2hmLOmEtKlDV//Js+55A1wu2A8g6LUyX18Aiw6FZUi3yl6QzIt6SYwdFf7
+zpDasDrsPMnY0XBZgdY/Nynh4z/DKpNsgliIWdE60rF7TeSFoJNg7tBjlS+VMYGp
+3ZYls33udAZyQNzzF3bnoGYd/vihY5tG1hzDEqZvB/BULa20nB6XOvkEHX8AAUgP
+7lg9Wq5SWnOanqOEtMVChH85RmwZ758qnseCNAPEiO/ZFQlb5fW3YQ5+F0HQDxlQ
+I6FEvDLQq9xGGdL6Xp6A3dgLgZ6IUSrGepDJ6cTofSuPlUIsMFlpSK3m5AcMRkaC
+WcN3Aqk4u+5b6U9jkA6YBq0aVvlL3+/rFkBTIFlskyotNpA2Iko6h8hUx0igM5Bp
+cu0dhRgs28zP0qGyRct13hrtWnz5rqhyar7Vynwl7go22I9L4SLuRsgy+2i4Qt1/
+7iT3hxjbfE9Soo2Odv0tGmeGi7DqCX5n6/xNRVgtYPnZClSLUDY2Q5S8WEayFUMA
+wZEbPu/ypjIdhde269ElnMVHtmtOC57Ku7TdrT0lZ89i+pYldxvDEFEyiuuuUIer
+lJEZkUxH02769g2rLOgDdcUCAwEAAQ==
+-----END PUBLIC KEY-----"
 
 # A number to compare versions by: "2026-10-20.2" or "v2026.10.20.2" (no .N means 0); fails on other text.
 ver_key() {
@@ -4533,9 +4563,10 @@ update_latest() {
     done
     return 1
 }
-# $1 = a downloaded script, $2 = its release tag: is it a bash installer of exactly that version?
+# $1 = a downloaded script, $2 = its release tag, $3 = its detached OpenSSL signature.
 update_verify() {
-    local f="$1" tag="$2" line v
+    local f="$1" tag="$2" sig="$3" line v
+    local pub="${f}.pub"
     UPD_ERR=""
     if [[ ! -s "${f}" ]] || (( $(stat -c %s "${f}") > 5000000 )); then UPD_ERR="the download is empty or too big"; return 1; fi
     if [[ "$(head -n 1 "${f}")" != "#!/usr/bin/env bash" ]]; then UPD_ERR="the download is not a bash script"; return 1; fi
@@ -4545,6 +4576,18 @@ update_verify() {
     v="${BASH_REMATCH[1]}"
     if [[ "$(ver_to_tag "${v}")" != "${tag}" ]]; then UPD_ERR="the script says version ${v}, not ${tag#v}"; return 1; fi
     if ! bash -n "${f}" 2>/dev/null; then UPD_ERR="the download does not pass bash -n"; return 1; fi
+    if [[ -z "${UPDATE_PUBLIC_KEY_PEM}" ]]; then
+        UPD_ERR="release signing is not configured in this installer; set UPDATE_PUBLIC_KEY_PEM to the project's PEM public key"
+        return 1
+    fi
+    if [[ ! -s "${sig}" ]]; then UPD_ERR="the detached release signature is missing or empty"; return 1; fi
+    printf '%s\n' "${UPDATE_PUBLIC_KEY_PEM}" > "${pub}"
+    if ! openssl dgst -sha256 -verify "${pub}" -signature "${sig}" "${f}" >/dev/null 2>&1; then
+        rm -f -- "${pub}"
+        UPD_ERR="the release signature is invalid"
+        return 1
+    fi
+    rm -f -- "${pub}"
     return 0
 }
 
@@ -4580,18 +4623,22 @@ update_main() {
     f="$(mktemp --suffix=.sh "${UPD_DIR}/veiltrium-update.XXXXXX")"
     chmod 700 "${f}"
     if ! curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 120 --max-filesize 5000000 \
-            -o "${f}" "https://raw.githubusercontent.com/${UPD_REPO}/${UPD_TAG}/veiltrium.sh"; then
+            -o "${f}" "https://github.com/${UPD_REPO}/releases/download/${UPD_TAG}/veiltrium.sh"; then
         rm -f -- "${f}"; die "could not download veiltrium.sh ${UPD_TAG} from GitHub."
     fi
-    if ! update_verify "${f}" "${UPD_TAG}"; then rm -f -- "${f}"; die "refusing to update: ${UPD_ERR}."; fi
+    if ! curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 60 --max-filesize 65536 \
+            -o "${f}.sig" "https://github.com/${UPD_REPO}/releases/download/${UPD_TAG}/veiltrium.sh.sig"; then
+        rm -f -- "${f}" "${f}.sig"; die "could not download the detached signature of veiltrium.sh ${UPD_TAG}."
+    fi
+    if ! update_verify "${f}" "${UPD_TAG}" "${f}.sig"; then rm -f -- "${f}" "${f}.sig"; die "refusing to update: ${UPD_ERR}."; fi
     printf 'Veiltrium %s -> %s (https://github.com/%s/releases/tag/%s)\n' "${SCRIPT_VERSION}" "${UPD_TAG#v}" "${UPD_REPO}" "${UPD_TAG}"
     printf 'The new script runs as a normal install: it keeps your keys, passwords and clients.\n'
-    printf 'Trust: GitHub over HTTPS (the same as the curl one-liner); there is no signature yet.\n'
+    printf 'Trust: the OpenSSL signature of the release, verified with the public key pinned in this installer.\n'
     if [[ "${VT_YES:-0}" != "1" ]]; then
         printf 'Type yes to continue: ' >&2
         read -r ans < /dev/tty 2>/dev/null || ans=""
         if [[ "${ans}" != "yes" ]]; then
-            rm -f -- "${f}"
+            rm -f -- "${f}" "${f}.sig"
             printf 'Cancelled (to run without a question: VT_YES=1).\n'
             return 0
         fi
@@ -4856,6 +4903,33 @@ uninstall_main() {
     ok "Veiltrium removed."
     uninstall_kept_report
     return 0
+}
+
+# The firewall backup follows the last confirmed protocol state. A later failure can then
+# restore it without undoing a different protocol whose change already succeeded.
+firewall_checkpoint() {
+    (( FW_TXN == 1 )) || return 0
+    cp -p /etc/nftables.conf "${TXN_DIR}/firewall/f1" || die "could not save the confirmed firewall state."
+    sync
+}
+firewall_restore_reality() {
+    (( FW_TXN == 1 )) || return 0
+    REALITY_PORT="${FW_OLD_REALITY_PORT}"
+    REALITY_ENABLE="${FW_OLD_REALITY_ENABLE}"
+    apply_firewall "${REALITY_ENABLE}"
+    firewall_checkpoint
+}
+firewall_restore_trusttunnel() {
+    (( FW_TXN == 1 )) || return 0
+    TT_PORT="${FW_OLD_TT_PORT}"
+    TT_ENABLE="${FW_OLD_TT_ENABLE}"
+    apply_firewall "${REALITY_ENABLE}"
+    firewall_checkpoint
+}
+firewall_finish() {
+    (( FW_TXN == 1 )) || return 0
+    txn_commit firewall
+    FW_TXN=0
 }
 
 usage() {
@@ -5648,6 +5722,14 @@ NODE_EXISTED=0
 if [[ -s "${HY2_STATE}" || -s "${XRAY_STATE}" || -s "${TT_STATE}" ]]; then NODE_EXISTED=1; fi
 # A server that only received an imported node is a new server (no clients are connected to it).
 if (( IMPORT_FRESH == 1 )); then NODE_EXISTED=0; fi
+if (( NODE_EXISTED == 1 )); then
+    FW_OLD_REALITY_PORT="$(sed -n 's/^    "port": \([0-9]\{1,5\}\),$/\1/p' "${XRAY_DIR}/config.json" 2>/dev/null | head -n 1 || true)"
+    FW_OLD_TT_PORT="$(sed -n 's/^listen_address = "0\.0\.0\.0:\([0-9]\{1,5\}\)"$/\1/p' "${TT_DIR}/vpn.toml" 2>/dev/null | head -n 1 || true)"
+    [[ -n "${FW_OLD_REALITY_PORT}" ]] || FW_OLD_REALITY_PORT="${REALITY_PORT}"
+    [[ -n "${FW_OLD_TT_PORT}" ]] || FW_OLD_TT_PORT="${TT_PORT}"
+    if [[ -s "${XRAY_DIR}/config.json" ]] && systemctl is-enabled --quiet xray.service 2>/dev/null; then FW_OLD_REALITY_ENABLE=1; fi
+    if [[ -s "${TT_DIR}/vpn.toml" ]] && systemctl is-enabled --quiet trusttunnel.service 2>/dev/null; then FW_OLD_TT_ENABLE=1; fi
+fi
 if [[ -n "${H_PORT}" && "${H_PORT}" != "${HY2_PORT}" ]]; then
     info "The node is already configured on port ${H_PORT}/UDP; using it."
     HY2_PORT="${H_PORT}"
@@ -5906,6 +5988,10 @@ install -d -m 700 "${SCANNER_DIR}"
 if [[ ! -f "${SCANNER_FILE}" ]]; then
     printf '# veiltrium-scanner-block: no list downloaded yet\n' > "${SCANNER_FILE}"
     chmod 600 "${SCANNER_FILE}"
+fi
+if (( NODE_EXISTED == 1 )); then
+    txn_begin firewall nftables.service /etc/nftables.conf
+    FW_TXN=1
 fi
 apply_firewall "${REALITY_ENABLE}"
 # UFW goes off only once our rules are loaded: the server is never left unfiltered.
@@ -6362,7 +6448,11 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
             elif [[ -n "${PREV_SITE}" ]]; then
                 R_SITE="${PREV_SITE}"
                 reality_verify_production "${R_SITE}"
-                if [[ "${RP_STATUS}" == "ok" ]]; then REALITY_OK=1; REALITY_VPS="verified"; else REALITY_VPS="failed"; fi
+                if [[ "${RP_STATUS}" == "ok" ]]; then
+                    REALITY_OK=1; REALITY_VPS="verified"; firewall_checkpoint
+                else
+                    REALITY_VPS="failed"; firewall_restore_reality
+                fi
                 warn "The VLESS Reality check failed; kept the previous settings (${R_SITE})."
             elif [[ -s "${XRAY_STATE}" && -s "${XRAY_DIR}/config.json" ]]; then
                 # VT_RECONFIGURE=1 on a working node: the old node came back, keep it on
@@ -6375,7 +6465,11 @@ if [[ "${REALITY_ENABLE}" == "1" ]]; then
         elif [[ -n "${PREV_SITE}" ]]; then
             R_SITE="${PREV_SITE}"
             reality_verify_production "${R_SITE}"
-            if [[ "${RP_STATUS}" == "ok" ]]; then REALITY_OK=1; REALITY_VPS="verified"; else REALITY_VPS="failed"; fi
+            if [[ "${RP_STATUS}" == "ok" ]]; then
+                REALITY_OK=1; REALITY_VPS="verified"; firewall_checkpoint
+            else
+                REALITY_VPS="failed"; firewall_restore_reality
+            fi
             warn "No candidate passed; kept the previous settings (${R_SITE})."
             if [[ -n "${REALITY_SNI}" ]]; then
                 ROLLBACKS+=("reality: the requested site ${REALITY_SNI} did not pass the checks; ${PREV_SITE} kept")
@@ -6670,13 +6764,16 @@ EOF
         fi
     fi
     if (( TT_TXN == 1 )) && [[ "${TT_SUM_BEFORE}" == "${TT_SUM_AFTER}" ]]; then
+        firewall_checkpoint
         txn_commit trusttunnel      # unchanged files: nothing to roll back
     elif (( TT_TXN == 1 )); then
         if (( TT_UP == 1 )); then
+            firewall_checkpoint
             txn_commit trusttunnel
         else
             journalctl -u trusttunnel --no-pager -n 20 || true
             txn_restore trusttunnel
+            firewall_restore_trusttunnel
             load_tt_state
             ROLLBACKS+=("trusttunnel: the new settings did not work; the previous settings were restored")
             warn "The new TrustTunnel settings did not work; the previous settings were restored."
@@ -6791,6 +6888,7 @@ if [[ "${TT_ENABLE}" == "1" ]]; then
     fi
 fi
 
+firewall_finish
 russia_check
 
 # ---- Home-network probe profile ----------------------------------------------

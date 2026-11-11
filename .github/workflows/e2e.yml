@@ -76,7 +76,7 @@ jobs:
       RELEASE_PANEL: ${{ inputs.release_panel }}
       PANEL_BINARY: ${{ !inputs.release_panel && '/tmp/veiltrium-panel' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Emulate a fresh VPS (sshd with password and root login)
         run: |
@@ -89,11 +89,11 @@ jobs:
           sudo sshd -T | grep -E '^(port|passwordauthentication|permitrootlogin|persourcepenalties) '
           test -n "$(ss -Htln 'sport = :22')"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: panel/go.mod
           cache: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - name: Verify the release panel contains this source
@@ -369,8 +369,9 @@ jobs:
       - name: Router config exactly as delivered (sing-box, key pinning)
         run: |
           set -euo pipefail
-          gh release download --repo SagerNet/sing-box --pattern 'sing-box-*-linux-amd64.tar.gz' --dir /tmp/sb
-          tar -xzf /tmp/sb/*.tar.gz -C /tmp/sb
+          gh release download v1.14.4 --repo SagerNet/sing-box --pattern 'sing-box-1.14.4-linux-amd64.tar.gz' --dir /tmp/sb
+          echo "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968  /tmp/sb/sing-box-1.14.4-linux-amd64.tar.gz" | sha256sum -c
+          tar -xzf /tmp/sb/sing-box-1.14.4-linux-amd64.tar.gz -C /tmp/sb
           SB="$(find /tmp/sb -type f -name sing-box | head -1)"
           "$SB" version | head -1
           sudo awk '/^\{/{f=1} f{print} f&&/^\}/{exit}' /root/veiltrium/client.txt > /tmp/router.json
@@ -544,7 +545,7 @@ jobs:
         run: |
           set -euo pipefail
           H_FILES="/etc/hysteria/node.env /etc/hysteria/config.yaml /etc/hysteria/server.crt /etc/hysteria/server.key"
-          T_FILES="/etc/trusttunnel/node.env /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/hosts.toml"
+          T_FILES="/etc/trusttunnel/node.env /etc/trusttunnel/cert.pem /etc/trusttunnel/key.pem /etc/trusttunnel/hosts.toml /etc/trusttunnel/vpn.toml"
           links0="$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
           # Hysteria will not start with the new settings (systemd refuses: ExecStartPre fails)
           h0="$(sudo sha256sum $H_FILES)"
@@ -563,12 +564,20 @@ jobs:
           sudo mkdir -p /run/systemd/system/trusttunnel.service.d
           printf '[Service]\nExecStartPre=/bin/false\n' | sudo tee /run/systemd/system/trusttunnel.service.d/ci.conf >/dev/null
           sudo systemctl daemon-reload
-          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_SNI=www.example.org PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/tf.log 2>&1 || rc=$?
+          rc=0; sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 TT_PORT=9443 TT_SNI=www.example.org PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/tf.log 2>&1 || rc=$?
           sudo rm -rf /run/systemd/system/trusttunnel.service.d; sudo systemctl daemon-reload
           sudo systemctl reset-failed trusttunnel; sudo systemctl restart trusttunnel
           echo "rc=$rc"; test "$rc" = 2
           grep -F 'The new TrustTunnel settings did not work; the previous settings were restored' /tmp/tf.log >/dev/null
           test "$t0" = "$(sudo sha256sum $T_FILES)"
+          sudo ss -Htlpn 'sport = :8443' | grep -F '"trusttunnel_end"' >/dev/null
+          if sudo ss -Htlpn 'sport = :9443' | grep -F '"trusttunnel_end"' >/dev/null; then
+            echo "TrustTunnel still listens on the failed port"; exit 1
+          fi
+          if sudo nft list chain inet veiltrium input | grep -F 'dport 9443 accept' >/dev/null; then
+            echo "the failed TrustTunnel port stayed open"; exit 1
+          fi
+          sudo grep -m1 '^tt://' /root/veiltrium/client.txt >/dev/null
           # the next normal run is clean and the links are the same as before
           sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/after.log 2>&1
           test "$links0" = "$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
@@ -724,7 +733,7 @@ jobs:
     env:
       NEEDRESTART_SUSPEND: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 

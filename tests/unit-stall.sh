@@ -74,6 +74,28 @@ check "$(streak unchecked)" "0 null" "first check, unchecked: 0"
 printf '{"verdict":"partly"}' > "${TMPD}/saved.json"   # an old file without bad_streak
 check "$(streak partly)" "1 partly" "old file without bad_streak counts as 0"
 
+# ---- diagnose uses a fresh result without saving state or sending alerts ------------
+STATE_DIR="${TMPD}/state"; RUSSIA_FILE="${TMPD}/saved.json"
+printf '{"verdict":"partly","bad_streak":1,"networks":["old"]}\n' > "${RUSSIA_FILE}"
+GLOBALPING=1; R_SITE=""; T_SNI=""; A_ENABLED=1; ALERT_CALLS=0
+gp_start() { printf 'measurement-id'; }
+gp_wait() { :; }
+russia_summary() {
+    printf '%s\n' '{"schema":"veiltrium-russia/1","checked_at":"now","server":"192.0.2.1","source":"stub","icmp":{"ok":0,"total":1,"probes":[]},"tcp_reality":null,"tcp_trusttunnel":null,"networks":["MTS"],"verdict":"blocked"}'
+}
+alert_russia_eval() { ALERT_CALLS=$((ALERT_CALLS + 1)); }
+MODE=diagnose
+saved_sum="$(sha256sum "${RUSSIA_FILE}")"
+russia_check
+check "$(sha256sum "${RUSSIA_FILE}")" "${saved_sum}" "diagnose: saved Russia state is byte-identical"
+check "${ALERT_CALLS}" 0 "diagnose: no alert"
+check "$(jq -r '.verdict' "${TMPD}/russia.json")" blocked "diagnose: fresh result is still available"
+check "$(build_report | jq -r '.reachable_from_russia | "\(.verdict) \(.bad_streak)"')" "blocked 0" "diagnose JSON uses the fresh unsaved result"
+MODE=check-russia
+russia_check
+check "$(jq -r '"\(.verdict) \(.bad_streak)"' "${RUSSIA_FILE}")" "blocked 2" "explicit Russia check saves the merged result"
+check "${ALERT_CALLS}" 1 "explicit Russia check evaluates alerts"
+
 # ---- probe: payload classification (POSIX sh) -------------------------------------
 probe="tools/keenetic-vpn-probe.sh"
 sed -n '/^classify_payload() {/,/^}/p' "${probe}" > "${TMPD}/classify.sh"

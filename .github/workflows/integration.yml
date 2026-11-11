@@ -1,9 +1,11 @@
 name: Veiltrium integration
-# Expensive suites run for PRs only, never again on the merge or a tag push.
+# Expensive suites run for PRs and weekly, not again on every merge or tag push.
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
     inputs:
       profile:
@@ -31,7 +33,7 @@ jobs:
       full_required: ${{ steps.plan.outputs.full_required }}
       release_panel: ${{ steps.plan.outputs.release_panel }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -44,8 +46,8 @@ jobs:
           PROFILE: ${{ inputs.profile }}
           RELEASE_PANEL: ${{ inputs.release_panel }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            args=(--manual "$PROFILE")
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$GITHUB_EVENT_NAME" == schedule ]]; then
+            args=(--manual "${PROFILE:-integration}")
             if [[ "$RELEASE_PANEL" == true ]]; then args+=(--release-panel); fi
             python3 tests/ci_policy.py "${args[@]}"
           else

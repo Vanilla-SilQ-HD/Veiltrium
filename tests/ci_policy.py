@@ -9,11 +9,12 @@ import subprocess
 
 CRITICAL = {
     "veiltrium.sh", "tools/keenetic-vpn-probe.sh",
-    ".github/workflows/panel-release.yml",
+    ".github/workflows/panel-release.yml", ".github/workflows/installer-release.yml",
 }
 CI_WORKFLOWS = {
     ".github/workflows/fast.yml", ".github/workflows/e2e.yml",
-    ".github/workflows/integration.yml", ".github/actionlint.yaml",
+    ".github/workflows/integration.yml", ".github/workflows/dependencies.yml",
+    ".github/actionlint.yaml",
 }
 FAST_TESTS = {"tests/fast.sh", "tests/unit.sh", "tests/ci_policy.py", "tests/test_ci_policy.py"}
 

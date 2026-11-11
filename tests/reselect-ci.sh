@@ -16,12 +16,13 @@ site() { sudo awk -F= '$1=="R_SITE"{print $2}' "$RENV"; }
 keys() { sudo grep -E '^R_(UUID|PRIV|PUB|SID)=' "$RENV"; }
 link() { sudo grep -m1 "^$1://" "$CLIENT"; }
 reality_via() {   # $1 = SNI; prints the HTTP code through the production port with a real Xray client
-    local u pub sid
+    local u pub sid rport
     u="$(sudo awk -F= '$1=="R_UUID"{print $2}' "$RENV")"; pub="$(sudo awk -F= '$1=="R_PUB"{print $2}' "$RENV")"
     sid="$(sudo awk -F= '$1=="R_SID"{print $2}' "$RENV")"
+    rport="$(sudo jq -r '.inbounds[0].port' "$XCFG")"
     cat > /tmp/rv.json <<EOF
 {"log":{"loglevel":"warning"},"inbounds":[{"listen":"127.0.0.1","port":18111,"protocol":"socks"}],
- "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":443,
+ "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":${rport},
    "users":[{"id":"$u","encryption":"none","flow":"xtls-rprx-vision"}]}]},
    "streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"$1",
    "fingerprint":"chrome","publicKey":"$pub","shortId":"$sid"}}}]}
@@ -115,14 +116,15 @@ test "$(sudo sha256sum "$XCFG" "$RENV")" = "$CFG1"
 
 # 8) interrupted in the middle of a switch, AFTER the new config is live.
 PENDING=/var/lib/veiltrium/txn/reality/pending
-kill_during_apply() {   # $1 = signal
+kill_during_apply() {   # $1 = signal, $2 = new Reality port (default 443)
+    local new_port="${2:-443}"
     sudo rm -f /tmp/inst.pid
     # A background job of a non-interactive shell starts with SIGINT ignored, and bash cannot
     # trap a signal ignored on entry: restore the default first, as in a terminal.
     sudo setsid python3 -c 'import os, signal
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 open("/tmp/inst.pid", "w").write(str(os.getpid()))
-env = dict(os.environ, NEEDRESTART_SUSPEND="1", VT_AUTO_REBOOT="0", REALITY_SNI="good2.cand.test")
+env = dict(os.environ, NEEDRESTART_SUSPEND="1", VT_AUTO_REBOOT="0", REALITY_SNI="good2.cand.test", REALITY_PORT="'"${new_port}"'")
 os.execvpe("bash", ["bash", "./veiltrium.sh", "--reselect-reality"], env)' > /tmp/kill.log 2>&1 &
     local i
     # wait until the unverified config is really in place (not just the marker)
@@ -140,9 +142,12 @@ restored() {   # the previous config and state are back, xray runs and works
     test "$(sudo sha256sum "$XCFG" "$RENV")" = "$CFG1"
     systemctl is-active xray
     test "$(reality_via good1.cand.test)" = 204
+    if sudo nft list chain inet veiltrium input | grep -F 'tcp dport 8444 accept' >/dev/null; then
+        echo "the interrupted Reality port stayed open"; exit 1
+    fi
 }
 # 8a) SIGKILL, nobody runs the installer again: the watchdog timer restores within a minute
-kill_during_apply KILL
+kill_during_apply KILL 8444
 systemctl is-active veiltrium-watchdog.timer
 for i in $(seq 1 60); do sudo test -e "$PENDING" || break; sleep 2; done
 sudo journalctl -t veiltrium-recover --no-pager | tail -3
@@ -150,7 +155,7 @@ restored
 test "$(systemctl is-active veiltrium-watchdog.timer || true)" != active
 # 8b) SIGKILL and then a reboot before the watchdog fires (simulated: the timer is gone, the
 #     services stop, and at boot veiltrium-recover.service runs before them)
-kill_during_apply KILL
+kill_during_apply KILL 8444
 sudo systemctl stop veiltrium-watchdog.timer
 # a foreground child of the killed run (curl, openssl) may hold the lock a few seconds longer
 for i in $(seq 1 60); do sudo flock -n /run/veiltrium.lock true && break; sleep 0.5; done
@@ -162,7 +167,7 @@ sudo systemctl start xray
 restored
 # 8c) Ctrl+C (SIGINT) and 8d) SIGTERM: restored right away by the run itself
 for sig in INT TERM; do
-    kill_during_apply "$sig"
+    kill_during_apply "$sig" 8444
     tail -5 /tmp/kill.log
     grep -F "restoring the previous settings" /tmp/kill.log >/dev/null
     if grep -F "== DONE ==" /tmp/kill.log >/dev/null; then echo "the run was not interrupted"; exit 1; fi
@@ -182,6 +187,25 @@ restored
 # 8f) no helper processes or temporary files are left behind by any of these
 test -z "$(pgrep -f '/root/.veiltrium' || true)"
 test -z "$(sudo find /root -maxdepth 1 -name '.veiltrium.*')"
+
+# 8g) a failed port change restores the config, the firewall and the client link together
+sudo nft add table inet citest
+sudo nft add chain inet citest out '{ type filter hook output priority 10; policy accept; }'
+sudo nft add rule inet citest out meta skuid 0 ip daddr 127.0.0.1 tcp dport 8444 drop
+rc=0; inst REALITY_PORT=8444 -- > /tmp/port-rb.log 2>&1 || rc=$?
+sudo nft delete table inet citest
+echo "rc=$rc"; test "$rc" = 2
+restored
+sudo nft list chain inet veiltrium input | grep -F 'tcp dport 443 accept' >/dev/null
+if sudo nft list chain inet veiltrium input | grep -F 'tcp dport 8444 accept' >/dev/null; then
+    echo "the failed Reality port stayed open"; exit 1
+fi
+if sudo ss -Htlpn 'sport = :8444' | grep -F '"xray"' >/dev/null; then
+    echo "Xray still listens on the failed port"; exit 1
+fi
+sudo grep -m1 '^vless://' "$CLIENT" | grep -F ':443?' >/dev/null
+test -z "$(sudo find /var/lib/veiltrium/txn -name pending)"
+sudo jq -e '.rollbacks | length >= 1' /var/lib/veiltrium/report.json
 
 # 9) a second run while one is going: refused at once
 sudo flock /run/veiltrium.lock sleep 20 &

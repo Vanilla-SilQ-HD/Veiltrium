@@ -85,6 +85,12 @@ func ValidRequest(verb, arg string) error {
 		if m[1] == "main" {
 			return errors.New("the main client has no limits")
 		}
+		if m[2] != "none" {
+			limit, err := strconv.ParseInt(m[2], 10, 64)
+			if err != nil || limit < 1 || limit > 1000000000000000 {
+				return errors.New("the limit is 1 to 1000000000000000 bytes or none")
+			}
+		}
 		if m[3] != "none" {
 			if _, err := time.Parse("2006-01-02", m[3]); err != nil {
 				return errors.New("the expiry is not a real date (YYYY-MM-DD)")

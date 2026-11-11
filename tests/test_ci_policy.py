@@ -24,7 +24,8 @@ class Routing(unittest.TestCase):
         self.assertEqual(plan(paths)['profile'], "integration")
 
     def test_installer_probe_and_release_packaging_require_full(self):
-        for path in ("veiltrium.sh", "tools/keenetic-vpn-probe.sh", ".github/workflows/panel-release.yml"):
+        for path in ("veiltrium.sh", "tools/keenetic-vpn-probe.sh", ".github/workflows/panel-release.yml",
+                     ".github/workflows/installer-release.yml"):
             with self.subTest(path=path):
                 self.assertEqual(plan(["README.md", path])['profile'], "full")
 
