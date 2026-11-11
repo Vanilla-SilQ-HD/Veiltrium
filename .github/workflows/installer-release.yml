@@ -53,6 +53,7 @@ jobs:
         run: |
           sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
             -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirror.yandex.ru/ubuntu|g' {} +
+          printf 'https://mirror.yandex.ru/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
           sudo rm -rf /var/lib/apt/lists/*
           sudo apt-get -q update >/dev/null
           sudo apt-get -q install -y busybox jq shellcheck >/dev/null
