@@ -171,40 +171,62 @@ check "$(printf '%s\n' "${atom}" | update_tags_from_text | update_max_tag)" "v20
 check "$(printf '[{"name": "v2026.10.13"},{"name": "v2026.10.14.1"}]' | update_tags_from_text | update_max_tag)" "v2026.10.14.1" "newest tag in the API answer"
 check "$(printf 'nothing here' | update_tags_from_text | update_max_tag)" "" "no tags: empty"
 
-# ---- --update refuses a file that is not exactly the tagged release -----------------
+# ---- signed updates: exact version, valid signature and no execution on tampering ------
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "${T}/release-key.pem" 2>/dev/null
+openssl pkey -in "${T}/release-key.pem" -pubout -out "${T}/release-public.pem"
+UPDATE_PUBLIC_KEY_PEM="$(cat "${T}/release-public.pem")"
 mk() {   # file version [first line] [end marker]
     { echo "${3:-#!/usr/bin/env bash}"; echo "SCRIPT_VERSION=\"$2\""; echo 'echo hi'; echo "${4:-# ==== VEILTRIUM END ====}"; } > "$1"
+    openssl dgst -sha256 -sign "${T}/release-key.pem" -out "$1.sig" "$1"
 }
 mk "${T}/ok.sh" 2026-10-20.10
-update_verify "${T}/ok.sh" v2026.10.20.10 && echo "ok   update_verify: matching file passes" || { echo "FAIL update_verify: matching file: ${UPD_ERR}"; FAIL=1; }
+update_verify "${T}/ok.sh" v2026.10.20.10 "${T}/ok.sh.sig" && echo "ok   update_verify: signed matching file passes" || { echo "FAIL update_verify: matching file: ${UPD_ERR}"; FAIL=1; }
 mk "${T}/old.sh" 2026-10-20.2
-update_verify "${T}/old.sh" v2026.10.20.10; check "$?:${UPD_ERR}" "1:the script says version 2026-10-20.2, not 2026.10.20.10" "update_verify: SCRIPT_VERSION differs from the tag"
+update_verify "${T}/old.sh" v2026.10.20.10 "${T}/old.sh.sig"; check "$?:${UPD_ERR}" "1:the script says version 2026-10-20.2, not 2026.10.20.10" "update_verify: SCRIPT_VERSION differs from the tag"
 mk "${T}/nobash.sh" 2026-10-20.10 "#!/bin/sh"
-update_verify "${T}/nobash.sh" v2026.10.20.10; check "$?" 1 "update_verify: not a bash script"
+update_verify "${T}/nobash.sh" v2026.10.20.10 "${T}/nobash.sh.sig"; check "$?" 1 "update_verify: not a bash script"
 mk "${T}/trunc.sh" 2026-10-20.10 "#!/usr/bin/env bash" "# cut"
-update_verify "${T}/trunc.sh" v2026.10.20.10; check "$?" 1 "update_verify: truncated file"
+update_verify "${T}/trunc.sh" v2026.10.20.10 "${T}/trunc.sh.sig"; check "$?" 1 "update_verify: truncated file"
 mk "${T}/syn.sh" 2026-10-20.10 "#!/usr/bin/env bash" "if then fi ((
 # ==== VEILTRIUM END ===="
-update_verify "${T}/syn.sh" v2026.10.20.10; check "$?" 1 "update_verify: bash -n fails"
-: > "${T}/empty.sh"
-update_verify "${T}/empty.sh" v2026.10.20.10; check "$?" 1 "update_verify: empty file"
+update_verify "${T}/syn.sh" v2026.10.20.10 "${T}/syn.sh.sig"; check "$?" 1 "update_verify: bash -n fails"
+: > "${T}/empty.sh"; : > "${T}/empty.sig"
+update_verify "${T}/empty.sh" v2026.10.20.10 "${T}/empty.sig"; check "$?" 1 "update_verify: empty file"
+update_verify "${T}/ok.sh" v2026.10.20.10 "${T}/missing.sig"; check "$?:${UPD_ERR}" "1:the detached release signature is missing or empty" "update_verify: detached signature required"
+printf '\necho tampered\n' >> "${T}/ok.sh"
+update_verify "${T}/ok.sh" v2026.10.20.10 "${T}/ok.sh.sig"; check "$?:${UPD_ERR}" "1:the release signature is invalid" "update_verify: one changed byte invalidates the signature"
+saved_key="${UPDATE_PUBLIC_KEY_PEM}"; UPDATE_PUBLIC_KEY_PEM=""
+mk "${T}/valid-again.sh" 2026-10-20.10
+update_verify "${T}/valid-again.sh" v2026.10.20.10 "${T}/valid-again.sh.sig"; check "$?" 1 "update_verify: unconfigured signing key is refused"
+UPDATE_PUBLIC_KEY_PEM="${saved_key}"
 
-# update_main end to end with a stub that "downloads" a wrong-version file: refuses, removes it, does not run it
+# update_main end to end: a wrong version is refused, a correctly signed update really runs
 UPD_DIR="${T}/upd"; mkdir -p "${UPD_DIR}"
 SCRIPT_VERSION="2026-10-20.2"
 update_latest() { UPD_TAG="v2026.10.20.10"; return 0; }
 cat > "${T}/bin/curl" <<EOF
 #!/usr/bin/env bash
 out=""; while (( \$# )); do if [[ "\$1" == "-o" ]]; then out="\$2"; fi; shift; done
-{ echo '#!/usr/bin/env bash'; echo 'SCRIPT_VERSION="2026-10-20.3"'; echo 'touch "${T}/RAN"'; echo '# ==== VEILTRIUM END ===='; } > "\${out}"
+if [[ "\${out}" == *.sig ]]; then
+    openssl dgst -sha256 -sign "${T}/release-key.pem" -out "\${out}" "\${out%.sig}"
+else
+    { echo '#!/usr/bin/env bash'; echo "SCRIPT_VERSION=\"\${UPDATE_SCRIPT_VERSION}\""; echo "touch \"${T}/RAN\""; echo '# ==== VEILTRIUM END ===='; } > "\${out}"
+fi
 EOF
 chmod +x "${T}/bin/curl"
 PATH="${T}/bin:${OLDPATH}"
-out="$( (VT_YES=1 update_main) 2>&1 )"; rc=$?
+UPDATE_SCRIPT_VERSION="2026-10-20.3"
+export UPDATE_SCRIPT_VERSION
+out="$( (VT_YES=1 UPDATE_SCRIPT_VERSION="${UPDATE_SCRIPT_VERSION}" update_main) 2>&1 )"; rc=$?
 check "${rc}" 1 "update_main: wrong version refused (exit 1)"
 [[ "${out}" == *"refusing to update"* ]] && echo "ok   update_main: says why" || { echo "FAIL update_main: message: ${out}"; FAIL=1; }
 check "$(ls "${UPD_DIR}" | wc -l)" 0 "update_main: the refused file is removed"
 check "$([[ -e "${T}/RAN" ]] && echo ran || echo not-run)" not-run "update_main: the refused file never runs"
+UPDATE_SCRIPT_VERSION="2026-10-20.10"
+out="$( (VT_YES=1 UPDATE_SCRIPT_VERSION="${UPDATE_SCRIPT_VERSION}" update_main) 2>&1 )"; rc=$?
+if [[ "${rc}" != 0 ]]; then printf '%s\n' "${out}"; fi
+check "${rc}" 0 "update_main: a valid signed update is accepted"
+check "$([[ -e "${T}/RAN" ]] && echo ran || echo not-run)" ran "update_main: the signed script really runs"
 # nothing newer: nothing downloaded
 update_latest() { UPD_TAG="v2026.10.20.2"; return 0; }
 out="$(update_main 2>&1)"

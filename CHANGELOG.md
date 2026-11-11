@@ -11,6 +11,21 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
+## Unreleased
+
+### Fixed
+- Failed Reality and TrustTunnel port changes now restore the proxy config, nftables rules and client links together. Firewall checkpoints follow only confirmed protocol state, including watchdog and boot recovery.
+- `--diagnose` uses fresh Globalping results without rewriting Russia state, incrementing `bad_streak` or sending alerts; explicit `--check-russia` still saves them.
+- The panel API enforces the same `10^15`-byte client-limit maximum and positive values as the CLI and UI.
+
+### Security
+- Updated Vite to 8.3.7 and the locked `source-map-js` to 1.2.2, removing all currently fixable OSV findings. The remaining `deepmerge 4.3.1` advisory is a narrow, documented build-only exception until upstream publishes a fix.
+- Installer updates now download a signed release asset and verify its detached OpenSSL signature and tag before execution. Updating fails closed until the maintainer configures the release public key; see `RELEASING.md`.
+- GitHub Actions are pinned by full commit SHA, and the system-test sing-box is pinned to 1.14.4 by SHA-256.
+
+### Changed
+- Go builds use supported Go 1.26.11; Svelte, Tailwind and Playwright dependencies were updated. Weekly integration and dependency scans were added, along with Dependabot for npm and GitHub Actions.
+
 ## [2026-10-30.1] - 2026-10-30
 
 - Added browser regression coverage for guided setup, clipboard fallbacks, shared secret hiding, account switching, JSON downloads and mobile layout, in both languages. FAST builds the interface once and shares it with the browser job.
