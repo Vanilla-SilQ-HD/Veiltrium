@@ -51,6 +51,7 @@ jobs:
           node-version: 24
       - name: Tools
         run: |
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get -q update >/dev/null
           sudo apt-get -q install -y busybox jq shellcheck >/dev/null
       - name: FAST checks
