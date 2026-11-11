@@ -148,10 +148,10 @@ flowchart TB
 | Протокол | Порт по умолчанию | TLS-идентичность | Клиент проверяет сервер по |
 |---|---|---|---|
 | Hysteria 2 (`v2.13.0`) | 443/UDP (QUIC) | свой самоподписанный сертификат (EC P-256) | закреплённому отпечатку (пину): `pinSHA256` в ссылках, `certificate_public_key_sha256` в sing-box |
-| VLESS + Reality + Vision (Xray `v26.3.27`) | 443/TCP | настоящий сторонний HTTPS-сайт (Reality `target`/`serverNames`) | публичному ключу Reality, UUID и shortId |
+| VLESS + Reality + Vision (Xray `v26.11.9`) | 443/TCP | настоящий сторонний HTTPS-сайт (Reality `target`/`serverNames`) | публичному ключу Reality, UUID и shortId |
 | TrustTunnel (endpoint `v1.1.0`) | 8443/TCP+UDP (HTTP/2 и HTTP/3) | свой самоподписанный сертификат, встроенный в ссылку `tt://` | встроенному сертификату как единственному корню доверия |
 
-Версия Xray намеренно закреплена на `v26.3.27`. Начиная с `26.9.8` сервер Reality отвергает ClientHello без key share X25519MLKEM768, а клиенты sing-box по умолчанию его не отправляют.
+Xray закреплён на `v26.11.9`; совместимость проверена с клиентскими конфигурациями sing-box, которые создаёт установщик.
 
 ## Поддерживаемые системы
 

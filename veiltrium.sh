@@ -104,12 +104,10 @@ SCRIPT_VERSION="2026-10-30.1"
 HY2_VERSION="v2.13.0"
 HY2_SHA256_AMD64="907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691"
 HY2_SHA256_ARM64="a68a61a84452ca250ce0368202521965ca9cc9d801a404f1dc9008ac6cf677a7"
-# Xray (XTLS/Xray-core) for VLESS Reality. Do not move to 26.9.8+ before it is
-# checked with sing-box clients: those versions reject a ClientHello without
-# X25519MLKEM768, which sing-box clients do not send by default.
-XRAY_VERSION="v26.3.27"
-XRAY_SHA256_AMD64="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
-XRAY_SHA256_ARM64="4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
+# Xray (XTLS/Xray-core) for VLESS Reality, checked with sing-box clients.
+XRAY_VERSION="v26.11.9"
+XRAY_SHA256_AMD64="b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82"
+XRAY_SHA256_ARM64="64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be"
 # TrustTunnel endpoint (TrustTunnel/TrustTunnel), latest stable release
 TT_VERSION="v1.1.0"
 TT_SHA256_AMD64="91c2ea3db7416a01b5258a4c047ec22890490bc55e1b194206031aa75144f0e7"

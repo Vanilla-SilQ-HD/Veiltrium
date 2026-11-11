@@ -24,6 +24,7 @@ All notable changes to Veiltrium are recorded here. The format follows
 - GitHub Actions are pinned by full commit SHA, and the system-test sing-box is pinned to 1.14.4 by SHA-256.
 
 ### Changed
+- Updated Xray to 26.11.9 after verifying the delivered VLESS configurations with sing-box clients.
 - Go builds use supported Go 1.26.11; Svelte, Tailwind and Playwright dependencies were updated. Weekly integration and dependency scans were added, along with Dependabot for npm and GitHub Actions.
 
 ## [2026-10-30.1] - 2026-10-30
