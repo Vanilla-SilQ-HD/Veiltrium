@@ -583,6 +583,10 @@ jobs:
           # the next normal run is clean and the links are the same as before
           sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > /tmp/after.log 2>&1
           test "$links0" = "$(sudo grep -E '^(hysteria2|tt)://' /root/veiltrium/client.txt)"
+          for _ in $(seq 1 30); do
+            if systemctl is-active --quiet trusttunnel; then break; fi
+            sleep 1
+          done
           systemctl is-active hysteria-server trusttunnel
 
       - name: Hysteria and TrustTunnel names are their own saved settings, independent of Reality
