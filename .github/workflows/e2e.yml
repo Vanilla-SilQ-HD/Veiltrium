@@ -82,8 +82,8 @@ jobs:
         run: |
           set -euxo pipefail
           sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-            -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirror.yandex.ru/ubuntu|g' {} +
-          printf 'https://mirror.yandex.ru/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
+            -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' {} +
+          printf 'https://mirrors.edge.kernel.org/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
           sudo rm -rf /var/lib/apt/lists/*
           sudo apt-get -q update
           # The desktop-only Firefox snap transition aborts when the runner cannot reach the Snap Store.
@@ -759,8 +759,8 @@ jobs:
         run: |
           set -euxo pipefail
           sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
-            -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirror.yandex.ru/ubuntu|g' {} +
-          printf 'https://mirror.yandex.ru/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
+            -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' {} +
+          printf 'https://mirrors.edge.kernel.org/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
           sudo rm -rf /var/lib/apt/lists/*
           sudo apt-get -q update
           sudo apt-get -y remove firefox || true
