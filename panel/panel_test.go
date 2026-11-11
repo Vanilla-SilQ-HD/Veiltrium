@@ -49,7 +49,7 @@ func TestValidRequest(t *testing.T) {
 		{"add-client", "a_b-1"}, {"remove-client", "x"}, {"reset-client", "bob"}, {"audit", ""},
 		{"disable-client", "bob"}, {"enable-client", "bob"},
 		{"set-client", "bob limit=53687091200 expires=2026-12-31 reset=monthly"}, {"set-client", "a_b-1 limit=none expires=none reset=none"},
-		{"set-client", "bob limit=1 expires=2028-02-29 reset=daily"}, {"set-client", "bob limit=9999999999999999 expires=none reset=weekly"}}
+		{"set-client", "bob limit=1 expires=2028-02-29 reset=daily"}, {"set-client", "bob limit=1000000000000000 expires=none reset=weekly"}}
 	for _, c := range ok {
 		if err := ValidRequest(c[0], c[1]); err != nil {
 			t.Errorf("%v rejected: %v", c, err)
@@ -62,6 +62,7 @@ func TestValidRequest(t *testing.T) {
 		{"set-client", ""}, {"set-client", "bob"}, {"set-client", "main limit=1 expires=none reset=none"},
 		{"set-client", "bob limit=1 expires=none reset=none\nadd-client x"}, {"set-client", "bob limit=1 expires=none reset=none "},
 		{"set-client", "bob  limit=1 expires=none reset=none"}, {"set-client", "bob limit=-5 expires=none reset=none"},
+		{"set-client", "bob limit=0 expires=none reset=none"}, {"set-client", "bob limit=9999999999999999 expires=none reset=weekly"},
 		{"set-client", "bob limit=12345678901234567 expires=none reset=none"}, {"set-client", "bob limit= expires=none reset=none"},
 		{"set-client", "bob limit=1.5 expires=none reset=none"}, {"set-client", "bob limit=0x10 expires=none reset=none"},
 		{"set-client", "bob limit=1 expires=2027-02-30 reset=none"}, {"set-client", "bob limit=1 expires=2026-13-01 reset=none"},

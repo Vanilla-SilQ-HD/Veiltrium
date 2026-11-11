@@ -15,7 +15,7 @@ Automated, security-focused deployment of Hysteria2, VLESS Reality and TrustTunn
 
 </div>
 
-Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved. Every change to a working node is checked with a real client and rolled back automatically if it fails. The installer also checks from Russian networks whether the server is reachable at all.
+Veiltrium is a single, self-contained Bash installer (`veiltrium.sh`) that turns a fresh Ubuntu server into a hardened node for three VPN protocols. It uses only the official release binaries of each protocol, pinned by version and SHA-256. No third-party panels, install scripts or `curl | sh` steps are involved. Changes to the proxy configs and firewall of a working node are checked with real clients and rolled back automatically if they fail. The installer also checks from Russian networks whether the server is reachable at all.
 
 The name: *Veil* (privacy), *Tri* (three protocols), *-ium* (an element, symbol **Vt**).
 
@@ -71,7 +71,7 @@ veiltrium qr anna        # QR codes of the client's links in the terminal
 
 **Reliability**
 
-- Transactional changes with automatic rollback: backup, pending marker, real-client check, commit. Errors, Ctrl+C, SIGTERM, SIGKILL and power loss all restore the previous settings without a manual step.
+- Transactional proxy and firewall changes with automatic rollback: backup, pending marker, real-client check, commit. Errors, Ctrl+C, SIGTERM, SIGKILL and power loss restore the last confirmed settings without a manual step. System packages, SSH and sysctl hardening are outside these transactions.
 - Idempotent re-runs: a plain re-run keeps passwords, keys, certificates, links and configs byte for byte, restarts no service, drops no connection and does not reboot a working node.
 - `--diagnose` and `--dry-run` change nothing; a JSON report without secrets lives in `/var/lib/veiltrium/report.json`.
 
@@ -314,7 +314,7 @@ Optional settings are environment variables written before the command: `VAR=val
 - **SSH.** Hardened (`MaxAuthTries`, `LoginGraceTime`, `MaxStartups`, verbose logging) **without** disabling password or root login. This is by design; brute force is handled by nftables limits, fail2ban and OpenSSH `PerSourcePenalties`.
 - **Updates.** Unattended security upgrades with a nightly reboot window. `needrestart` is told never to restart the proxies, so a library update does not drop clients.
 - **Secrets.** Root-only state files (`0600`). Connection details are printed to the terminal and saved to `/root/veiltrium/client.txt`, never into the install log. Reports and probe results contain no secrets.
-- **Crash safety.** A change is a transaction: backup, pending marker, real client check, then commit. Rollback happens through the EXIT trap (errors, Ctrl+C, SIGTERM), a systemd watchdog timer (SIGKILL or a hung run), and `veiltrium-recover.service` at boot (power loss).
+- **Crash safety.** Proxy and firewall changes are transactions: backup, pending marker, real client check, then commit. Rollback happens through the EXIT trap (errors, Ctrl+C, SIGTERM), a systemd watchdog timer (SIGKILL or a hung run), and `veiltrium-recover.service` at boot (power loss). The firewall checkpoint follows the last confirmed protocol state, so one failed protocol does not undo another's successful change.
 
 <details>
 <summary>Self-signed certificates: what they do and do not give you</summary>
@@ -507,8 +507,8 @@ bash veiltrium.sh --update            # download it, check it, ask, then run it 
 ```
 
 - `--check-update` reads the release feed of this repository (installer tags `vYYYY.MM.DD[.N]` only; panel tags are ignored) and compares it numerically with the installed version.
-- `--update` downloads `veiltrium.sh` of that tag from `raw.githubusercontent.com` into a private file, checks that it is a bash script of exactly that version (`SCRIPT_VERSION` equal to the tag, complete, `bash -n`), shows `current -> new` and asks you to type `yes` (`VT_YES=1` skips the question). It replaces nothing itself: it runs the new script as an ordinary install with your environment, which refreshes the installed copy as usual (keys, passwords and clients are kept).
-- Trust is the same as for the `curl` one-liner: GitHub and HTTPS. There is no signature yet.
+- `--update` downloads `veiltrium.sh` and its detached signature from the tag's GitHub release into private files, checks the OpenSSL signature with the public key pinned in the installed script, verifies the exact version (`SCRIPT_VERSION` equal to the tag, a complete file and `bash -n`), shows `current -> new` and asks you to type `yes` (`VT_YES=1` skips the question). It replaces nothing itself: it runs the new script as an ordinary install with your environment, which refreshes the installed copy as usual (keys, passwords and clients are kept). A missing key/signature, a bad signature or a version mismatch refuses the update.
+- The signing key is configured by the repository maintainer as described in `RELEASING.md`; it is not downloaded at update time. HTTPS remains the transport, but no longer the only release check.
 
 </details>
 
@@ -649,10 +649,11 @@ Three levels:
 | `veiltrium.sh`, Keenetic probe, release binary packaging | **FULL**: both OS versions, failure/recovery scenarios and legacy upgrade |
 
 - FAST (`fast.yml`) runs on PR updates and pushes to `main`. Work-branch pushes and tags do not duplicate the PR run; `tests/fast.sh` builds/tests the panel once.
-- `integration.yml` selects checks from the complete PR diff, including deletions and renames. Unknown code paths require FULL. An installer-change draft runs INTEGRATION; marking it Ready for review starts FULL. Updating a ready PR cancels the obsolete run and checks the new revision.
+- `integration.yml` selects checks from the complete PR diff, including deletions and renames, and also runs weekly to catch changes in external sites and lists. Unknown code paths require FULL. An installer-change draft runs INTEGRATION; marking it Ready for review starts FULL. Updating a ready PR cancels the obsolete run and checks the new revision.
 - INTEGRATION reuses the FULL tests without lengthy Reality selection, destructive recovery cases, reboot simulation or export/reinstall. Its timeout is 25 minutes; actual time depends on installation and network access. FAST separately covers unit tests and the build. If a change alters a FULL-only test scenario, run FULL manually to validate that scenario; CI plumbing changes alone do not launch it automatically.
+- `dependencies.yml` checks every locked npm version against OSV and runs `govulncheck` on PRs, pushes and weekly. Only the documented no-fix `deepmerge 4.3.1` build-only advisory is exempt. Dependabot proposes npm and GitHub Action updates weekly; Actions themselves are pinned by full commit SHA.
 - A ready PR that changes the installer version or panel pins automatically runs FULL with `release_panel=true`. The published tag must contain the same panel source. Prepare the final version/pins before marking the PR ready; reuse that successful run for the release instead of dispatching another FULL.
-- FULL (`e2e.yml`, typically 45–55 minutes) is required before an installer release, on the final version with pinned binaries. It does not automatically repeat on merge or a tag. A result may be reused after merging when the file tree is identical. For a release:
+- FULL (`e2e.yml`, typically 45–55 minutes) is required before an installer release, on the final version with pinned binaries. It does not automatically repeat on merge. An installer tag runs it through `installer-release.yml` before signing and publishing; a previous result may be reused after merging when the file tree is identical. For a manual release check:
 
   ```bash
   gh workflow run e2e.yml --ref BRANCH -f profile=full -f release_panel=true

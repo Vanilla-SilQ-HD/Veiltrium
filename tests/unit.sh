@@ -180,6 +180,22 @@ rm -f "${XRAY_DIR}/config.json" "${TT_DIR}/vpn.toml"; REALITY_PORT_GIVEN=""; TT_
 load_ports
 check "${REALITY_PORT}/${TT_PORT}" "443/8443" "a new node uses the defaults"
 
+# ---- firewall rollback restores only the failed protocol's port -------------------
+FW_TXN=1; FW_OLD_REALITY_PORT=443; FW_OLD_TT_PORT=8443; FW_OLD_REALITY_ENABLE=0; FW_OLD_TT_ENABLE=1
+REALITY_PORT=8444; REALITY_ENABLE=1; TT_PORT=9443; TT_ENABLE=1; FW_CALLS=""
+apply_firewall() { FW_CALLS+=" reality_on=$1"; }
+firewall_checkpoint() { FW_CALLS+=" checkpoint"; }
+firewall_restore_reality
+check "${REALITY_PORT}/${REALITY_ENABLE}" "443/0" "Reality rollback: old port and enabled state"
+check "${FW_CALLS}" " reality_on=0 checkpoint" "Reality rollback: firewall rebuilt and checkpointed"
+FW_CALLS=""; REALITY_ENABLE=1; firewall_restore_trusttunnel
+check "${TT_PORT}/${TT_ENABLE}" "8443/1" "TrustTunnel rollback: old port and enabled state"
+check "${FW_CALLS}" " reality_on=1 checkpoint" "TrustTunnel rollback: Reality stays enabled in firewall"
+FW_TXN=0; REALITY_PORT=8444; FW_CALLS=""; firewall_restore_reality
+check "${REALITY_PORT}/${FW_CALLS}" "8444/" "firewall rollback is a no-op outside an install transaction"
+unset -f apply_firewall firewall_checkpoint
+check "$(grep -c '^Before=nftables.service hysteria-server.service xray.service trusttunnel.service$' veiltrium.sh)" 1 "boot recovery restores firewall before proxies and nftables start"
+
 # ---- added clients: config texts, order, links ----------------------------------
 CLIENTS_DIR="${TMPD}/clients"; mkdir -p "${CLIENTS_DIR}"
 mkclient() {   # name uuid-last-digit

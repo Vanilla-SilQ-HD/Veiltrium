@@ -1,0 +1,85 @@
+name: Veiltrium installer release
+# vYYYY.MM.DD[.N]: test, sign and publish the self-contained installer.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the release key pair and the pinned public key
+        env:
+          VT_RELEASE_PRIVATE_KEY: ${{ secrets.VT_RELEASE_PRIVATE_KEY }}
+          VT_RELEASE_PUBLIC_KEY: ${{ vars.VT_RELEASE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VT_RELEASE_PRIVATE_KEY"
+          test -n "$VT_RELEASE_PUBLIC_KEY"
+          printf '%s\n' "$VT_RELEASE_PRIVATE_KEY" > private.pem
+          printf '%s\n' "$VT_RELEASE_PUBLIC_KEY" > configured.pem
+          chmod 600 private.pem
+          openssl pkey -in private.pem -pubout -out derived.pem
+          cmp configured.pem derived.pem
+          grep -F -- "$(cat configured.pem)" veiltrium.sh >/dev/null
+
+  test:
+    needs: preflight
+    uses: ./.github/workflows/e2e.yml
+    with:
+      profile: full
+      release_panel: true
+
+  publish:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: panel/go.mod
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Tools
+        run: |
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirrors.edge.kernel.org/ubuntu|g' {} +
+          printf 'https://mirrors.edge.kernel.org/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get -q update >/dev/null
+          sudo apt-get -q install -y busybox jq shellcheck >/dev/null
+      - name: FAST checks
+        run: bash tests/fast.sh
+      - name: Sign and verify the installer
+        env:
+          VT_RELEASE_PRIVATE_KEY: ${{ secrets.VT_RELEASE_PRIVATE_KEY }}
+          VT_RELEASE_PUBLIC_KEY: ${{ vars.VT_RELEASE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          [[ "$v" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]{1,3})?$ ]]
+          test "$(sed -n 's/^SCRIPT_VERSION="\(.*\)"$/\1/p' veiltrium.sh)" = "${v//./-}"
+          mkdir -p dist
+          cp veiltrium.sh dist/
+          printf '%s\n' "$VT_RELEASE_PRIVATE_KEY" > private.pem
+          printf '%s\n' "$VT_RELEASE_PUBLIC_KEY" > public.pem
+          chmod 600 private.pem
+          openssl dgst -sha256 -sign private.pem -out dist/veiltrium.sh.sig dist/veiltrium.sh
+          openssl dgst -sha256 -verify public.pem -signature dist/veiltrium.sh.sig dist/veiltrium.sh
+          cd dist && sha256sum veiltrium.sh veiltrium.sh.sig > SHA256SUMS
+      - name: Publish the signed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/veiltrium.sh dist/veiltrium.sh.sig dist/SHA256SUMS \
+            --verify-tag --title "Veiltrium ${GITHUB_REF_NAME#v}" --latest=true \
+            --notes "The self-contained Veiltrium installer, its detached OpenSSL signature and SHA-256 sums. veiltrium --update verifies the signature before running the installer."
