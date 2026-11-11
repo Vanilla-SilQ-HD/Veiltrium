@@ -82,6 +82,8 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get -q update
+          # The desktop-only Firefox snap transition aborts when the runner cannot reach the Snap Store.
+          sudo apt-get -y remove firefox || true
           sudo apt-get -q install -y openssh-server sshpass busybox
           printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' | sudo tee /etc/ssh/sshd_config.d/50-provider.conf
           sudo systemctl enable --now ssh.socket 2>/dev/null || true
@@ -741,6 +743,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo apt-get -q update
+          sudo apt-get -y remove firefox || true
           sudo apt-get -q install -y openssh-server
           printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' | sudo tee /etc/ssh/sshd_config.d/50-provider.conf
           sudo systemctl enable --now ssh.socket 2>/dev/null || true
