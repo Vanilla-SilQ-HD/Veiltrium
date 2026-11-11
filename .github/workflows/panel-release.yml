@@ -33,10 +33,21 @@ jobs:
           for a in amd64 arm64; do bash panel/build.sh "dist/veiltrium-panel-linux-$a" "$a" "$v"; done
           test "$(dist/veiltrium-panel-linux-amd64 version)" = "$v"
           cd dist && sha256sum veiltrium-panel-linux-* | tee SHA256SUMS
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#panel-v}"
+          awk -v section="### [$v]" '
+            index($0, section " ") == 1 { found = 1; next }
+            found && /^### \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/veiltrium-panel-linux-amd64 dist/veiltrium-panel-linux-arm64 dist/SHA256SUMS \
             --title "Veiltrium panel ${GITHUB_REF_NAME#panel-v}" --latest=false \
-            --notes "Web panel binaries for veiltrium.sh (loopback only, reached through an SSH tunnel). The installer downloads them itself and checks the SHA-256 sums below."
+            --notes-file "$RUNNER_TEMP/release-notes.md"
