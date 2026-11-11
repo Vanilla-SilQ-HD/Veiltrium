@@ -159,11 +159,11 @@ kill_during_apply KILL 8444
 sudo systemctl stop veiltrium-watchdog.timer
 # a foreground child of the killed run (curl, openssl) may hold the lock a few seconds longer
 for i in $(seq 1 60); do sudo flock -n /run/veiltrium.lock true && break; sleep 0.5; done
-sudo systemctl stop xray
+sudo systemctl stop xray nftables
 rc=0; sudo bash ./veiltrium.sh --diagnose > /tmp/d.log 2>&1 || rc=$?
 grep -F 'interrupted change is pending' /tmp/d.log >/dev/null
 sudo systemctl start veiltrium-recover.service
-sudo systemctl start xray
+sudo systemctl start nftables xray
 restored
 # 8c) Ctrl+C (SIGINT) and 8d) SIGTERM: restored right away by the run itself
 for sig in INT TERM; do
