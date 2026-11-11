@@ -53,3 +53,5 @@ Do not edit release assets after publication. Make a new tag for any change.
 ## Panel release
 
 A `panel-vX.Y.Z` tag runs `panel-release.yml`, which tests and publishes static amd64/arm64 binaries and `SHA256SUMS`. Update `PANEL_VERSION` and both panel hashes in the installer before the installer FULL release check.
+
+Both workflows use the matching section of the English `CHANGELOG.md` as the release description. They stop before publication if the section for the tag is missing or empty.
