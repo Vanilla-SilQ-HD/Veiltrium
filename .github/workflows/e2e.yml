@@ -81,7 +81,7 @@ jobs:
       - name: Emulate a fresh VPS (sshd with password and root login)
         run: |
           set -euxo pipefail
-          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirror.yandex.ru/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get -q update
           # The desktop-only Firefox snap transition aborts when the runner cannot reach the Snap Store.
           sudo apt-get -y remove firefox || true
@@ -747,7 +747,7 @@ jobs:
       - name: Emulate a fresh VPS
         run: |
           set -euxo pipefail
-          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirror.yandex.ru/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get -q update
           sudo apt-get -y remove firefox || true
           sudo apt-get -q install -y openssh-server
