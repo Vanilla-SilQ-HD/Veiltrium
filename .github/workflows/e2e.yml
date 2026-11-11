@@ -574,8 +574,16 @@ jobs:
           sudo rm -rf /run/systemd/system/trusttunnel.service.d; sudo systemctl daemon-reload
           sudo systemctl reset-failed trusttunnel; sudo systemctl restart trusttunnel
           echo "rc=$rc"; test "$rc" = 2
-          grep -F 'The new TrustTunnel settings did not work; the previous settings were restored' /tmp/tf.log >/dev/null
-          test "$t0" = "$(sudo sha256sum $T_FILES)"
+          grep -F 'The new TrustTunnel settings did not work; the previous settings were restored' /tmp/tf.log >/dev/null || {
+            tail -60 /tmp/tf.log | sed -E 's/[0-9a-f]{48}/<pw>/g'; exit 1;
+          }
+          test "$t0" = "$(sudo sha256sum $T_FILES)" || {
+            printf '%s\n' "$t0"; sudo sha256sum $T_FILES; exit 1;
+          }
+          for _ in $(seq 1 30); do
+            if sudo ss -Htlpn 'sport = :8443' | grep -F '"trusttunnel_end"' >/dev/null; then break; fi
+            sleep 1
+          done
           sudo ss -Htlpn 'sport = :8443' | grep -F '"trusttunnel_end"' >/dev/null
           if sudo ss -Htlpn 'sport = :9443' | grep -F '"trusttunnel_end"' >/dev/null; then
             echo "TrustTunnel still listens on the failed port"; exit 1

@@ -61,6 +61,10 @@ jobs:
           path: panel/web/dist
       - name: Install locked test and preview dependencies
         run: |
+          sudo find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|https://mirror.yandex.ru/ubuntu|g' {} +
+          printf 'https://mirror.yandex.ru/ubuntu\n' | sudo tee /etc/apt/apt-mirrors.txt
+          sudo rm -rf /var/lib/apt/lists/*
           npm ci --prefix panel/web --ignore-scripts --no-audit --no-fund
           npm ci --prefix tests/browser --ignore-scripts --no-audit --no-fund
           cd tests/browser && npx playwright install --with-deps chromium
