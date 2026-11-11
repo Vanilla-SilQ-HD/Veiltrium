@@ -11,7 +11,9 @@
 - У веб-панели свои версии (`panel-vX.Y.Z`, см. [Веб-панель](#веб-панель)). Каждый релиз
   установщика закрепляет ровно один релиз панели по SHA-256.
 
-## Unreleased
+## [2026-11-11] - 2026-11-11
+
+Веб-панель: 0.1.9
 
 ### Исправлено
 - При неудачной смене порта Reality или TrustTunnel конфиг прокси, правила nftables и клиентские ссылки теперь восстанавливаются согласованно. Контрольные точки фаервола сохраняют только подтверждённое состояние протоколов, в том числе при watchdog и восстановлении при загрузке.
@@ -276,6 +278,10 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 
 Панель выпускается отдельно (`panel-vX.Y.Z`; amd64 и arm64 с SHA256SUMS).
 
+### [0.1.9] - 2026-11-11
+- Лимиты трафика клиентов должны быть положительными и не превышать `10^15` байт, как в CLI и интерфейсе.
+- Обновлены зависимости Svelte, Tailwind, Vite и Playwright.
+
 ### [0.1.8] - 2026-10-30
 - Обзор разделяет состояние служб, ответы адреса и проверку настоящего туннеля из домашней сети; показаны даты и следующий шаг.
 - Подключение Android, устройств Apple, Windows и Keenetic/AWG Manager за четыре шага.
@@ -318,6 +324,7 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 - Первый релиз: «Обзор» и «Клиенты» (ссылки, QR-коды, JSON для AWG Manager, добавление,
   отзыв), только loopback и вход по паролю.
 
+[2026-11-11]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.30.1...v2026.11.11
 [2026-10-30]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.23...v2026.10.30
 [2026-10-23]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.21...v2026.10.23
 [2026-10-21]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.5...v2026.10.21
@@ -331,6 +338,7 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.9]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.8...panel-v0.1.9
 [0.1.8]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.7...panel-v0.1.8
 [0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7
 [0.1.6]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.5...panel-v0.1.6

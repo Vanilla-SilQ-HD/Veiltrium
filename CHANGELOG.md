@@ -11,7 +11,9 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
-## Unreleased
+## [2026-11-11] - 2026-11-11
+
+Web panel: 0.1.9
 
 ### Fixed
 - Failed Reality and TrustTunnel port changes now restore the proxy config, nftables rules and client links together. Firewall checkpoints follow only confirmed protocol state, including watchdog and boot recovery.
@@ -260,6 +262,10 @@ blocking and transactional changes with automatic rollback.
 
 The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUMS).
 
+### [0.1.9] - 2026-11-11
+- Client traffic limits must be positive and no greater than `10^15` bytes, matching the CLI and UI.
+- Updated the Svelte, Tailwind, Vite and Playwright dependencies.
+
 ### [0.1.8] - 2026-10-30
 - Connection health distinguishes service status, address replies and verified home-network tunnel tests, with dates and a next action.
 - Four-step device setup for Android, Apple devices, Windows and Keenetic/AWG Manager.
@@ -299,6 +305,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 - First release: Overview and Clients (links, QR codes, AWG Manager JSON, add, revoke), loopback
   only with password login.
 
+[2026-11-11]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.30.1...v2026.11.11
 [2026-10-30]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.23...v2026.10.30
 [2026-10-23]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.21...v2026.10.23
 [2026-10-21]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.20.5...v2026.10.21
@@ -312,6 +319,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.9]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.8...panel-v0.1.9
 [0.1.8]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.7...panel-v0.1.8
 [0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7
 [0.1.6]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.5...panel-v0.1.6
