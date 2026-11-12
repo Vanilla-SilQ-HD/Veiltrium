@@ -76,10 +76,21 @@ jobs:
           openssl dgst -sha256 -sign private.pem -out dist/veiltrium.sh.sig dist/veiltrium.sh
           openssl dgst -sha256 -verify public.pem -signature dist/veiltrium.sh.sig dist/veiltrium.sh
           cd dist && sha256sum veiltrium.sh veiltrium.sh.sig > SHA256SUMS
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          awk -v section="## [${v//./-}]" '
+            index($0, section " ") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
       - name: Publish the signed release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/veiltrium.sh dist/veiltrium.sh.sig dist/SHA256SUMS \
             --verify-tag --title "Veiltrium ${GITHUB_REF_NAME#v}" --latest=true \
-            --notes "The self-contained Veiltrium installer, its detached OpenSSL signature and SHA-256 sums. veiltrium --update verifies the signature before running the installer."
+            --notes-file "$RUNNER_TEMP/release-notes.md"
