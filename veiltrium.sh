@@ -98,12 +98,12 @@ fi
 set -Eeuo pipefail
 umask 022
 
-SCRIPT_VERSION="2026-11-11"
+SCRIPT_VERSION="2026-11-25"
 
 # ---- Pinned versions (change only together with the checksums) -------------
-HY2_VERSION="v2.13.0"
-HY2_SHA256_AMD64="907ba8c9693edb104b20582681fb7dc15639d5b64a9cbb616a7b539190a86691"
-HY2_SHA256_ARM64="a68a61a84452ca250ce0368202521965ca9cc9d801a404f1dc9008ac6cf677a7"
+HY2_VERSION="v2.14.0"
+HY2_SHA256_AMD64="fc25edff9948708cb00a4ff01f3bccde677660aca050133bb1ad46c6860362d2"
+HY2_SHA256_ARM64="e7c52241299fe85aba11e9d36e85d8d88ddbb5799ac0e33d272219d20e313bab"
 # Xray (XTLS/Xray-core) for VLESS Reality. Do not move to 26.9.8+ before it is
 # checked with sing-box clients: those versions reject a ClientHello without
 # X25519MLKEM768, which sing-box clients do not send by default.
@@ -111,15 +111,15 @@ XRAY_VERSION="v26.3.27"
 XRAY_SHA256_AMD64="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
 XRAY_SHA256_ARM64="4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
 # TrustTunnel endpoint (TrustTunnel/TrustTunnel), latest stable release
-TT_VERSION="v1.1.0"
-TT_SHA256_AMD64="91c2ea3db7416a01b5258a4c047ec22890490bc55e1b194206031aa75144f0e7"
-TT_SHA256_ARM64="c2aee17a1ced349283cba4775202e2baba053b8ea835d4cc23dc67d16c6b9686"
+TT_VERSION="v1.3.1"
+TT_SHA256_AMD64="29fd330eafab37eb8ab668dcbd57aa8f99b46e26b268e5dc9b416a483fadca97"
+TT_SHA256_ARM64="b82795893d50ea1ffe92fe5712d14282a024e87ee968cca25afdc4cb0aae6238"
 
 # Veiltrium web panel: this repository's own release, SHA-256 pinned like the proxies.
 # Empty sums: no release pinned yet (the panel is skipped unless PANEL_BINARY is given).
-PANEL_VERSION="panel-v0.1.9"
-PANEL_SHA256_AMD64="c80f3e0a0d34c88d223540859d5e4956e81de0ced775ed56de19fbf0aa3a05f4"
-PANEL_SHA256_ARM64="e7ba5752abf37acf4c1753e617006e6f665adb43a967b09fb2ff9d1fc92054fe"
+PANEL_VERSION="panel-v0.1.10"
+PANEL_SHA256_AMD64="6541dda132ecd4977f6e13201fd31348749c9869b09822c05dfe4123607f6c11"
+PANEL_SHA256_ARM64="3c58e50616130cd263c31079320d9e3434427fff9afa6d63ed6c14c1c819b8b9"
 
 # ---- Settings (can be overridden with environment variables) ---------------
 HY2_PORT="${HY2_PORT:-443}"
