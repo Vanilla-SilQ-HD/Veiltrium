@@ -11,7 +11,7 @@
 - У веб-панели свои версии (`panel-vX.Y.Z`, см. [Веб-панель](#веб-панель)). Каждый релиз
   установщика закрепляет ровно один релиз панели по SHA-256.
 
-## Unreleased
+## [2026-11-25] - 2026-11-25
 
 Веб-панель: 0.1.10
 
@@ -334,6 +334,7 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 - Первый релиз: «Обзор» и «Клиенты» (ссылки, QR-коды, JSON для AWG Manager, добавление,
   отзыв), только loopback и вход по паролю.
 
+[2026-11-25]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.11.11...v2026.11.25
 [2026-11-11]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.30.1...v2026.11.11
 [2026-10-30]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.23...v2026.10.30
 [2026-10-23]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.21...v2026.10.23
