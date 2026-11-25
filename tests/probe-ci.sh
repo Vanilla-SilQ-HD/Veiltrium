@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # CI only: keenetic-vpn-probe.sh against the installed server, from the network
 # namespace "ext" (192.0.2.2, "WAN" = veth-e), with the sing-box build AWG Manager
-# runs on the router (amnezia-box fork, linux-amd64 of the same release) and with
+# runs on the router (awgm-box fork, linux-amd64 of the same release) and with
 # BusyBox applets instead of GNU tools where the router has BusyBox.
 # This is a simulation: there is no Russian home network here.
 set -euxo pipefail
-FORK_VER="1.15.0-alpha.12-awgm.33"
-FORK_SHA="2cb65160e10ac40e83e9e14155b2ef317d795445ee5d0e459362601e2e6c4499"
+FORK_VER="43"
+FORK_ASSET="awgm-box-${FORK_VER}-linux-amd64"
+FORK_SHA="84994b2805b95771efc664a1bb83652359cf1725433e5a40bbf607f494ff463b"
 W=/tmp/probe
 mkdir -p "$W"
 sudo apt-get -q install -y busybox tcpdump conntrack >/dev/null
 
-gh release download "$FORK_VER" --repo hoaxisr/amnezia-box \
-    --pattern "singbox-${FORK_VER}-linux-amd64" --dir "$W" --clobber
-echo "$FORK_SHA  $W/singbox-${FORK_VER}-linux-amd64" | sha256sum -c
-install -m 755 "$W/singbox-${FORK_VER}-linux-amd64" "$W/sing-box"
+gh release download "$FORK_VER" --repo hoaxisr/awgm-box \
+    --pattern "$FORK_ASSET" --dir "$W" --clobber
+echo "$FORK_SHA  $W/$FORK_ASSET" | sha256sum -c
+install -m 755 "$W/$FORK_ASSET" "$W/sing-box"
 "$W/sing-box" version | head -1
 
 # BusyBox applets first in PATH (the router's userland); curl, ip, iptables, tcpdump stay real.
