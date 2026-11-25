@@ -11,6 +11,11 @@ All notable changes to Veiltrium are recorded here. The format follows
 - The web panel has its own versions (`panel-vX.Y.Z`, see [Web panel](#web-panel)). Each
   installer release pins exactly one panel release by SHA-256.
 
+## Unreleased
+
+### Changed
+- Hysteria is updated to 2.14.0 and TrustTunnel to 1.3.1, both pinned by SHA-256. Xray remains at 26.3.27 because the latest sing-box client for compatibility testing is still 1.14.4, which rejects Reality handshakes from Xray 26.11.9.
+
 ## [2026-11-11] - 2026-11-11
 
 Web panel: 0.1.9
