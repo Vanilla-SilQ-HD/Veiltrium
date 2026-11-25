@@ -13,6 +13,8 @@
 
 ## Unreleased
 
+Веб-панель: 0.1.10
+
 ### Изменено
 - Hysteria обновлена до 2.14.0, TrustTunnel — до 1.3.1; обе версии закреплены по SHA-256. Xray остаётся на 26.3.27: последняя версия sing-box для проверки совместимости по-прежнему 1.14.4, и она отклоняет Reality-handshake от Xray 26.11.9.
 
@@ -283,6 +285,9 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 
 Панель выпускается отдельно (`panel-vX.Y.Z`; amd64 и arm64 с SHA256SUMS).
 
+### [0.1.10] - 2026-11-25
+- Svelte обновлён до 5.59.1, Vite — до 8.3.8, тестовая зависимость Playwright — до 1.65.1.
+
 ### [0.1.9] - 2026-11-11
 - Лимиты трафика клиентов должны быть положительными и не превышать `10^15` байт, как в CLI и интерфейсе.
 - Обновлены зависимости Svelte, Tailwind, Vite и Playwright.
@@ -343,6 +348,7 @@ TrustTunnel на Ubuntu с упором на безопасность: офиц�
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.10]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.9...panel-v0.1.10
 [0.1.9]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.8...panel-v0.1.9
 [0.1.8]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.7...panel-v0.1.8
 [0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7

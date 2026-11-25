@@ -13,6 +13,8 @@ All notable changes to Veiltrium are recorded here. The format follows
 
 ## Unreleased
 
+Web panel: 0.1.10
+
 ### Changed
 - Hysteria is updated to 2.14.0 and TrustTunnel to 1.3.1, both pinned by SHA-256. Xray remains at 26.3.27 because the latest sing-box client for compatibility testing is still 1.14.4, which rejects Reality handshakes from Xray 26.11.9.
 
@@ -267,6 +269,9 @@ blocking and transactional changes with automatic rollback.
 
 The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUMS).
 
+### [0.1.10] - 2026-11-25
+- Updated Svelte to 5.59.1, Vite to 8.3.8 and the Playwright test dependency to 1.65.1.
+
 ### [0.1.9] - 2026-11-11
 - Client traffic limits must be positive and no greater than `10^15` bytes, matching the CLI and UI.
 - Updated the Svelte, Tailwind, Vite and Playwright dependencies.
@@ -324,6 +329,7 @@ The panel is released separately (`panel-vX.Y.Z`; amd64 and arm64 with SHA256SUM
 [2026-10-13.3]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13.1...v2026.10.13.3
 [2026-10-13.1]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/v2026.10.13...v2026.10.13.1
 [2026-10-13]: https://github.com/Vanilla-SilQ-HD/Veiltrium/tree/v2026.10.13
+[0.1.10]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.9...panel-v0.1.10
 [0.1.9]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.8...panel-v0.1.9
 [0.1.8]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.7...panel-v0.1.8
 [0.1.7]: https://github.com/Vanilla-SilQ-HD/Veiltrium/compare/panel-v0.1.6...panel-v0.1.7
