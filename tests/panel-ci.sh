@@ -90,6 +90,7 @@ test "$(code -b "$J" -X POST "$U/api/russia-check" "${h[@]}")" = 200
 jq -e '.schema == "veiltrium-russia/1"' "$W/body"
 
 # ---- the panel through VLESS Reality (PANEL_VPN=1, the default) ----------------------------
+set -x
 # A real Xray client in the outside namespace with the panel's profile from panel.txt: the panel answers on
 # the server's address and a login works; the main client gets nothing there; no raw socket of a proxy
 # service reaches the panel, except Xray's own panel outbound (source 127.0.0.2, the panel's port only).
@@ -153,6 +154,7 @@ for u in hysteria trusttunnel; do if bindto "$u" 127.0.0.2 "$P"; then echo "$u r
 if bindto xray 127.0.0.2 "$(sudo awk -F= '$1=="R_STATS_PORT"{print $2}' /usr/local/etc/xray/reality.env)"; then
     echo "xray reached another loopback port from 127.0.0.2"; exit 1
 fi
+set +x
 
 # ---- PANEL_VPN=0 removes the profile (saved); PANEL_VPN=1 brings a new one ---------------------
 sudo env NEEDRESTART_SUSPEND=1 VT_AUTO_REBOOT=0 PANEL_VPN=0 PANEL_BINARY="${PANEL_BINARY:-}" bash ./veiltrium.sh > "$W/pv0.log" 2>&1 || { tail -40 "$W/pv0.log"; exit 1; }
