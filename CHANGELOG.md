@@ -18,6 +18,9 @@ Web panel: 0.1.10
 ### Changed
 - Xray is updated to 26.11.9, including its security and RootCA updates. Reality clients must send X25519MLKEM768: use a current AWG Manager core or another compatible client. Stock sing-box 1.14.4 is incompatible with this Xray release.
 
+### Fixed
+- The panel-through-VPN outbound explicitly allows only `127.0.0.1:2096` through Xray's new default private-address protection. Other private and loopback targets remain blocked.
+
 ## [2026-11-25] - 2026-11-25
 
 Web panel: 0.1.10

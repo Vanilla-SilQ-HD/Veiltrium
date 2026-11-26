@@ -885,11 +885,12 @@ reality_server_json() {
     done
     # The panel profile (production and trial configs only): its TCP connections to the panel's port, whatever
     # the address, go to the panel on 127.0.0.1 from PANEL_VPN_SRC. The firewall lets Xray reach the panel
-    # from that source address only, so no other user (and no other outbound) gets there.
+    # from that source address only, and finalRules permits only this loopback target; other private targets
+    # stay under Xray's default protection, so no other user or local service is exposed.
     if [[ -n "${R_ADMIN_UUID}" && -z "${listen}" ]]; then
         clients+=", {\"id\": \"${R_ADMIN_UUID}\", \"flow\": \"xtls-rprx-vision\", \"email\": \"${PANEL_VPN_EMAIL}\"}"
         routing_lines="  \"routing\": {\"rules\": [{\"type\": \"field\", \"user\": [\"${PANEL_VPN_EMAIL}\"], \"network\": \"tcp\", \"port\": \"${PANEL_PORT}\", \"outboundTag\": \"panel\"}]},"$'\n'
-        panel_outbound=", {\"protocol\": \"freedom\", \"tag\": \"panel\", \"sendThrough\": \"${PANEL_VPN_SRC}\", \"settings\": {\"redirect\": \"127.0.0.1:${PANEL_PORT}\"}}"
+        panel_outbound=", {\"protocol\": \"freedom\", \"tag\": \"panel\", \"sendThrough\": \"${PANEL_VPN_SRC}\", \"settings\": {\"redirect\": \"127.0.0.1:${PANEL_PORT}\", \"finalRules\": [{\"action\": \"allow\", \"network\": \"tcp\", \"ip\": [\"127.0.0.1\"], \"port\": ${PANEL_PORT}}]}"
     fi
     cat > "${out}" <<EOF
 {
