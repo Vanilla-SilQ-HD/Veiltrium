@@ -101,7 +101,8 @@ SRV="$(sed -n 's#^.*open in the browser:  http://\([0-9.]*\):'"$P"'/$#\1#p' "$W/
 [[ -n "$SRV" && "$SRV" != 127.0.0.1 ]]
 sudo jq -e --arg a "$ADMIN" '(.inbounds[0].settings.clients[-1] == {id: $a, flow: "xtls-rprx-vision", email: "@panel"})
     and .routing.rules == [{type: "field", user: ["@panel"], network: "tcp", port: "2096", outboundTag: "panel"}]
-    and .outbounds[0].tag == "direct"' /usr/local/etc/xray/config.json
+    and .outbounds[0].tag == "direct"
+    and .outbounds[1].settings.finalRules == [{action: "allow", network: "tcp", ip: ["127.0.0.1"], port: 2096}]' /usr/local/etc/xray/config.json
 systemctl show veiltrium-panel -p ExecStart --value | grep -F -- "--host $SRV" >/dev/null
 sudo nft list chain inet veiltrium output | grep -E 'ip saddr 127\.0\.0\.2 ip daddr 127\.0\.0\.1 tcp dport 2096 accept' >/dev/null
 xray_client() {   # $1 = UUID, $2 = SOCKS port: a client like the one in an app, in the outside namespace
@@ -120,8 +121,12 @@ EOF
     for _ in $(seq 1 30); do [ -n "$(sudo ip netns exec ext ss -Htln "sport = :$2")" ] && break; sleep 0.3; done
 }
 via() {   # $1 = SOCKS port, then curl arguments: the HTTP code through that client
-    local port="$1"; shift
-    sudo ip netns exec ext curl -s -o "$W/vbody" -w '%{http_code}' --max-time 10 --socks5-hostname "127.0.0.1:$port" "$@" || true
+    local port="$1" code
+    shift
+    code="$(sudo ip netns exec ext curl -s -o "$W/vbody" -w '%{http_code}' --max-time 10 --socks5-hostname "127.0.0.1:$port" "$@" || true)"
+    echo "via SOCKS $port $* -> $code" >&2
+    if [[ "$code" == 000 ]]; then sudo tail -80 "$W/x-$port.log" || true; fi
+    printf '%s' "$code"
 }
 xray_client "$ADMIN" 18131
 MAINU="$(sudo awk -F= '$1=="R_UUID"{print $2}' /usr/local/etc/xray/reality.env)"

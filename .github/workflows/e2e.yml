@@ -372,13 +372,13 @@ jobs:
           echo "trusttunnel client, HTTP/3 only -> $code"
           [ "$code" = 204 ] || { grep -iE 'error|quic|h3|http3|certif' /tmp/ttc.log | head -40; exit 1; }
 
-      - name: Router config exactly as delivered (sing-box, key pinning)
+      - name: Router config exactly as delivered (AWG Manager sing-box, key pinning)
         run: |
           set -euo pipefail
-          gh release download v1.14.4 --repo SagerNet/sing-box --pattern 'sing-box-1.14.4-linux-amd64.tar.gz' --dir /tmp/sb
-          echo "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968  /tmp/sb/sing-box-1.14.4-linux-amd64.tar.gz" | sha256sum -c
-          tar -xzf /tmp/sb/sing-box-1.14.4-linux-amd64.tar.gz -C /tmp/sb
-          SB="$(find /tmp/sb -type f -name sing-box | head -1)"
+          gh release download 44 --repo hoaxisr/awgm-box --pattern 'awgm-box-44-linux-amd64' --dir /tmp/sb
+          echo "59b092fc760afd952b90644609bf2e2c2f42b5006cf647129c151160340aa204  /tmp/sb/awgm-box-44-linux-amd64" | sha256sum -c
+          install -m 755 /tmp/sb/awgm-box-44-linux-amd64 /tmp/sb/sing-box
+          SB=/tmp/sb/sing-box
           "$SB" version | head -1
           sudo awk '/^\{/{f=1} f{print} f&&/^\}/{exit}' /root/veiltrium/client.txt > /tmp/router.json
           jq -e '.type=="hysteria2" and .tls.insecure==false and (.tls.certificate_public_key_sha256|length)==1' /tmp/router.json

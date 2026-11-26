@@ -74,7 +74,7 @@ check "$(jq -r '[.inbounds[0].settings.clients[] | .email + "=" + .id] | join(",
 check "$(jq -c '.routing.rules' "${T}/xr-pv.json")" \
     '[{"type":"field","user":["@panel"],"network":"tcp","port":"2096","outboundTag":"panel"}]' "routing: only the @panel user, TCP to the panel port"
 check "$(jq -c '.outbounds' "${T}/xr-pv.json")" \
-    '[{"protocol":"freedom","tag":"direct"},{"protocol":"freedom","tag":"panel","sendThrough":"127.0.0.2","settings":{"redirect":"127.0.0.1:2096"}}]' \
+    '[{"protocol":"freedom","tag":"direct"},{"protocol":"freedom","tag":"panel","sendThrough":"127.0.0.2","settings":{"redirect":"127.0.0.1:2096","finalRules":[{"action":"allow","network":"tcp","ip":["127.0.0.1"],"port":2096}]}}]' \
     "outbounds: direct stays first (the default), the panel outbound binds 127.0.0.2 and goes to the panel only"
 check "$(diff <(jq -S 'del(.routing) | .outbounds |= .[:1] | .inbounds[0].settings.clients |= .[:-1]' "${T}/xr-pv.json") \
     <(jq -S . "${T}/xr-1.json") >/dev/null && echo same)" same "the panel profile adds nothing else"
