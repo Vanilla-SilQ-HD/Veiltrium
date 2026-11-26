@@ -5,9 +5,9 @@
 # BusyBox applets instead of GNU tools where the router has BusyBox.
 # This is a simulation: there is no Russian home network here.
 set -euxo pipefail
-FORK_VER="43"
+FORK_VER="44"
 FORK_ASSET="awgm-box-${FORK_VER}-linux-amd64"
-FORK_SHA="84994b2805b95771efc664a1bb83652359cf1725433e5a40bbf607f494ff463b"
+FORK_SHA="59b092fc760afd952b90644609bf2e2c2f42b5006cf647129c151160340aa204"
 W=/tmp/probe
 mkdir -p "$W"
 sudo apt-get -q install -y busybox tcpdump conntrack >/dev/null

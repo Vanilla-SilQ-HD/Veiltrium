@@ -98,18 +98,17 @@ fi
 set -Eeuo pipefail
 umask 022
 
-SCRIPT_VERSION="2026-11-25"
+SCRIPT_VERSION="2026-11-26"
 
 # ---- Pinned versions (change only together with the checksums) -------------
 HY2_VERSION="v2.14.0"
 HY2_SHA256_AMD64="fc25edff9948708cb00a4ff01f3bccde677660aca050133bb1ad46c6860362d2"
 HY2_SHA256_ARM64="e7c52241299fe85aba11e9d36e85d8d88ddbb5799ac0e33d272219d20e313bab"
-# Xray (XTLS/Xray-core) for VLESS Reality. Do not move to 26.9.8+ before it is
-# checked with sing-box clients: those versions reject a ClientHello without
-# X25519MLKEM768, which sing-box clients do not send by default.
-XRAY_VERSION="v26.3.27"
-XRAY_SHA256_AMD64="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
-XRAY_SHA256_ARM64="4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
+# Xray 26.9.8+ requires X25519MLKEM768 in the Reality ClientHello. Use a current
+# AWG Manager build or another compatible client; stock sing-box 1.14.4 rejects it.
+XRAY_VERSION="v26.11.9"
+XRAY_SHA256_AMD64="b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82"
+XRAY_SHA256_ARM64="64ed6858982a7f5eb85d88b811089063bd4f17561f4c8f44e0f1dc8e6f6430be"
 # TrustTunnel endpoint (TrustTunnel/TrustTunnel), latest stable release
 TT_VERSION="v1.3.1"
 TT_SHA256_AMD64="29fd330eafab37eb8ab668dcbd57aa8f99b46e26b268e5dc9b416a483fadca97"
