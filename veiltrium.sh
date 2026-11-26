@@ -890,7 +890,7 @@ reality_server_json() {
     if [[ -n "${R_ADMIN_UUID}" && -z "${listen}" ]]; then
         clients+=", {\"id\": \"${R_ADMIN_UUID}\", \"flow\": \"xtls-rprx-vision\", \"email\": \"${PANEL_VPN_EMAIL}\"}"
         routing_lines="  \"routing\": {\"rules\": [{\"type\": \"field\", \"user\": [\"${PANEL_VPN_EMAIL}\"], \"network\": \"tcp\", \"port\": \"${PANEL_PORT}\", \"outboundTag\": \"panel\"}]},"$'\n'
-        panel_outbound=", {\"protocol\": \"freedom\", \"tag\": \"panel\", \"sendThrough\": \"${PANEL_VPN_SRC}\", \"settings\": {\"redirect\": \"127.0.0.1:${PANEL_PORT}\", \"finalRules\": [{\"action\": \"allow\", \"network\": \"tcp\", \"ip\": [\"127.0.0.1\"], \"port\": ${PANEL_PORT}}]}"
+        panel_outbound=", {\"protocol\": \"freedom\", \"tag\": \"panel\", \"sendThrough\": \"${PANEL_VPN_SRC}\", \"settings\": {\"redirect\": \"127.0.0.1:${PANEL_PORT}\", \"finalRules\": [{\"action\": \"allow\", \"network\": \"tcp\", \"ip\": [\"127.0.0.1\"], \"port\": ${PANEL_PORT}}]}}"
     fi
     cat > "${out}" <<EOF
 {
