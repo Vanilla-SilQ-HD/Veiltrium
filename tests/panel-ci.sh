@@ -120,8 +120,11 @@ EOF
     for _ in $(seq 1 30); do [ -n "$(sudo ip netns exec ext ss -Htln "sport = :$2")" ] && break; sleep 0.3; done
 }
 via() {   # $1 = SOCKS port, then curl arguments: the HTTP code through that client
-    local port="$1"; shift
-    sudo ip netns exec ext curl -s -o "$W/vbody" -w '%{http_code}' --max-time 10 --socks5-hostname "127.0.0.1:$port" "$@" || true
+    local port="$1" code
+    shift
+    code="$(sudo ip netns exec ext curl -s -o "$W/vbody" -w '%{http_code}' --max-time 10 --socks5-hostname "127.0.0.1:$port" "$@" || true)"
+    echo "via SOCKS $port $* -> $code"
+    printf '%s' "$code"
 }
 xray_client "$ADMIN" 18131
 MAINU="$(sudo awk -F= '$1=="R_UUID"{print $2}' /usr/local/etc/xray/reality.env)"
