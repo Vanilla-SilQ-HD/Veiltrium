@@ -124,7 +124,8 @@ via() {   # $1 = SOCKS port, then curl arguments: the HTTP code through that cli
     local port="$1" code
     shift
     code="$(sudo ip netns exec ext curl -s -o "$W/vbody" -w '%{http_code}' --max-time 10 --socks5-hostname "127.0.0.1:$port" "$@" || true)"
-    echo "via SOCKS $port $* -> $code"
+    echo "via SOCKS $port $* -> $code" >&2
+    if [[ "$code" == 000 ]]; then sudo tail -80 "$W/x-$port.log" || true; fi
     printf '%s' "$code"
 }
 xray_client "$ADMIN" 18131
